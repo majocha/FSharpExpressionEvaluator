@@ -1,0 +1,35 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+Copyright (c) Microsoft. All rights reserved.
+Licensed under the MIT license. See LICENSE file in the project root for full license information.
+-->
+
+<!--
+This file is used to describe the HelloWorld component. This file is run through 
+vsdconfigtool.exe as part of the build, which generates HelloWorld.vsdconfig. HelloWorld.vsdconfig 
+is a binary version of this file which is deployed along with HelloWorld.dll. HelloWorld.vsdconfig 
+is then read by he component loading system at runtime.
+
+For more information about this file, see https://github.com/Microsoft/ConcordExtensibilitySamples/wiki/Component-discovery-and-configuration
+-->
+
+<Configuration xmlns="http://schemas.microsoft.com/vstudio/vsdconfig/2008">
+
+  <!--TODO: If you copy the sample, ensure to regenerate the GUID in this file. This
+  can be done with the 'Create GUID' tool ('Tools->Create GUID' in Visual Sudio or 
+  guidgen.exe from the command line).-->
+  <ManagedComponent
+    ComponentId="80771233-2a16-4b7f-a6be-2b6d94221670"
+    ComponentLevel="9991500"
+    AssemblyName="FSharp.ExpressionEvaluator">
+
+    <Class Name="FSharp.ExpressionEvaluator.ExpressionCompiler">
+      <Implements>
+        <InterfaceGroup>
+          <NoFilter />
+          <Interface Name="IDkmClrExpressionCompiler"/>
+        </InterfaceGroup>
+      </Implements>
+    </Class>
+  </ManagedComponent>
+</Configuration>

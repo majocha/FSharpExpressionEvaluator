@@ -1,0 +1,31 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Formatter.fs" />
+  </ItemGroup>
+
+  <ItemGroup />
+
+  <ItemGroup>
+    <None Include="Formatter.vsdconfigxml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <VsdConfigXmlFiles Include="Formatter.vsdconfigxml" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.Debugger.Engine" Version="17.8.1101801" />
+    <PackageReference Include="Microsoft.VisualStudio.Debugger.Metadata" Version="17.8.1101801" />
+    <PackageReference Include="Microsoft.VSSDK.Debugger.VSDConfigTool" Version="17.8.1101801">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

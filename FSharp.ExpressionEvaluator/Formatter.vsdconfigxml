@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Configuration xmlns="http://schemas.microsoft.com/vstudio/vsdconfig/2008">
+
+  <ManagedComponent
+    ComponentId="04312df8-340b-4f1f-9843-9caca8dff162"
+    ComponentLevel="63000"
+    AssemblyName="FSharp.ExpressionEvaluator">
+
+    <Class Name="FSharp.ExpressionEvaluator.Formatter">
+      
+      <Implements>
+        <InterfaceGroup>
+          <Filter>
+            <LanguageId RequiredValue="ab4f38c9-b6e6-43ba-be3b-58080b2ccce3"/>
+          </Filter>
+          <Interface Name="IDkmClrFormatter"/>
+        </InterfaceGroup>
+      </Implements>
+    </Class>
+
+  </ManagedComponent>
+</Configuration>

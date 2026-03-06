@@ -6,7 +6,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="TypeNameFormatter.fs" />
     <Compile Include="Formatter.fs" />
+    <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
 
   <ItemGroup />

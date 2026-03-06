@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    vsdconfigtool.exe is a Windows-only binary.  On non-Windows CI / dev machines
+    (e.g. Linux) we replace the CreateVsdbgConfigFile target with a no-op so
+    that the library and test projects can still be built and the unit tests
+    can be run.  The generated .vsdconfig file is only needed when packaging the
+    VSIX on Windows; the formatter logic itself has no OS dependency.
+  -->
+  <Target Name="CreateVsdbgConfigFile"
+          Condition="'$([MSBuild]::IsOSPlatform(Windows))' != 'true'"
+          AfterTargets="CopyFilesToOutputDirectory" />
+</Project>

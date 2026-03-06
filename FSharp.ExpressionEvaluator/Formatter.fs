@@ -32,8 +32,8 @@ module private FormatterHelpers =
     // -----------------------------------------------------------------------
 
     /// Recursively converts a <see cref="Microsoft.VisualStudio.Debugger.Metadata.Type"/>
-    /// value (an LMR type representing a type in the debugged process) into an
-    /// idiomatic F# type-name string.
+    /// value (an LMR—Lightweight Metadata Reader—type representing a type in the debugged
+    /// process) into an idiomatic F# type-name string.
     ///
     /// The conversion is delegated to <see cref="TypeNameFormatter.formatTypeName"/>
     /// so the core logic can be tested independently without VS APIs.

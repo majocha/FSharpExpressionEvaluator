@@ -56,8 +56,8 @@ the raw `<>f__AnonymousType0'2[System.Int32,System.String]`.
 > **Note on FSharp.Compiler.Service**: Using FCS for type-name formatting was
 > considered but is not appropriate here.  FCS would require loading assembly
 > metadata and/or F# source files at debug time—expensive operations that
-> would noticeably slow the debugger.  The LMR (Language Model for
-> Reflection) API already exposes everything needed (type names, generic
+> would noticeably slow the debugger.  The LMR (Lightweight Metadata Reader)
+> API already exposes everything needed (type names, generic
 > arguments, and property metadata) with no runtime cost penalty.
 
 ### Value formatting
@@ -128,8 +128,8 @@ FSharp.DebugSample/
 
 * **`Formatter`** bridges the Concord API world: it calls
   `DkmClrType.GetLmrType()` to obtain an
-  `Microsoft.VisualStudio.Debugger.Metadata.Type` (the LMR type—a
-  reflection-like object representing the type in the debugged process) and
+  `Microsoft.VisualStudio.Debugger.Metadata.Type` (an LMR—Lightweight
+  Metadata Reader—type representing the type in the debugged process) and
   recursively formats it using `TypeNameFormatter` for the type column and
   `ValueFormatter` for the value column.
 

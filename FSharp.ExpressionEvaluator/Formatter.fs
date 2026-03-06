@@ -74,7 +74,13 @@ type Formatter() =
                 inspectionContext.GetTypeName(clrType, customTypeInfo, formatSpecifiers)
 
         member _.GetValueString(clrValue, inspectionContext, formatSpecifiers) =
-            clrValue.GetValueString(inspectionContext, formatSpecifiers)
+            let rawValue = clrValue.GetValueString(inspectionContext, formatSpecifiers)
+            try
+                let lmrType  = clrValue.Type.GetLmrType()
+                let typeName = FormatterHelpers.fsharpTypeName lmrType
+                ValueFormatter.formatValue typeName rawValue
+            with _ ->
+                rawValue
 
         member _.HasUnderlyingString(clrValue, inspectionContext) =
             clrValue.HasUnderlyingString inspectionContext

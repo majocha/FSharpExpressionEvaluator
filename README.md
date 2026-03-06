@@ -35,21 +35,57 @@ names are displayed using idiomatic F# syntax instead of the raw .NET names.
 | `int[]` | `int[]` |
 | `int[,]` | `int[,]` |
 
-Generic types that are not specifically recognised are displayed using their
-simple class name with F# angle-bracket syntax (e.g. `MyGeneric<int>`).
+### Value formatting
+
+`GetValueString` applies F#-specific post-processing to the raw value string
+returned by the default CLR formatter:
+
+| F# type | Default C# EE value | With F# EE |
+|---|---|---|
+| `unit` | `{}` | `()` |
+| `char` | `65 'A'` | `'A'` |
+
+#### Locals window example
+
+Given this F# code stopped at a breakpoint:
+
+```fsharp
+let greet (name: string) =
+    let initial : char = name.[0]
+    let result  : unit = printfn "Hello, %s!" name
+    initial, result
+```
+
+Without the F# Expression Evaluator the **Locals** window would show:
+
+| Name | Value | Type |
+|---|---|---|
+| `name` | `"Alice"` | `System.String` |
+| `initial` | `65 'A'` | `System.Char` |
+| `result` | `{}` | `Microsoft.FSharp.Core.Unit` |
+
+With the F# Expression Evaluator installed:
+
+| Name | Value | Type |
+|---|---|---|
+| `name` | `"Alice"` | `string` |
+| `initial` | `'A'` | `char` |
+| `result` | `()` | `unit` |
 
 ## Architecture
 
 ```
 ExpressionEvaluator.csproj          ← VSIX host project (C#)
 FSharp.ExpressionEvaluator/
-  TypeNameFormatter.fs              ← Pure F# formatting logic (no VS APIs)
+  TypeNameFormatter.fs              ← Pure type-name formatting logic (no VS APIs)
+  ValueFormatter.fs                 ← Pure value-string formatting logic (no VS APIs)
   Formatter.fs                      ← IDkmClrFormatter implementation
   ExpressionCompiler.fs             ← IDkmClrExpressionCompiler skeleton
   Formatter.vsdconfigxml            ← Concord component registration (Formatter)
   Compiler.vsdconfigxml             ← Concord component registration (compiler – not yet active)
 FSharp.ExpressionEvaluator.Tests/
   TypeNameFormatterTests.fs         ← xUnit tests for TypeNameFormatter
+  ValueFormatterTests.fs            ← xUnit tests for ValueFormatter
 ```
 
 ### Key design decisions
@@ -58,11 +94,17 @@ FSharp.ExpressionEvaluator.Tests/
   lists and has no dependency on any VS/Concord API.  This makes it directly
   unit-testable and re-usable without VS being installed.
 
+* **`ValueFormatter`** is likewise a pure module—it post-processes the raw
+  value string returned by the default CLR formatter and applies F#-specific
+  rules (e.g. `unit` → `()`, strip char code-point prefix).  Having no VS
+  dependency keeps it fully unit-testable.
+
 * **`Formatter`** bridges the Concord API world: it calls
   `DkmClrType.GetLmrType()` to obtain an
   `Microsoft.VisualStudio.Debugger.Metadata.Type` (the LMR type—a
   reflection-like object representing the type in the debugged process) and
-  recursively formats it using `TypeNameFormatter`.
+  recursively formats it using `TypeNameFormatter` for the type column and
+  `ValueFormatter` for the value column.
 
 * **`ExpressionCompiler`** is an architectural skeleton for future F#-specific
   expression compilation.  It is not yet registered with the component system;
@@ -87,7 +129,7 @@ dotnet build ExpressionEvaluator.sln
 ```
 
 On **Linux / macOS** (unit tests only—`vsdconfigtool.exe` is skipped
-automatically via `Directory.Build.targets`):
+automatically via the OS condition on the `VsdConfigXmlFiles` item):
 
 ```
 dotnet test FSharp.ExpressionEvaluator.Tests/FSharp.ExpressionEvaluator.Tests.fsproj
@@ -99,8 +141,9 @@ dotnet test FSharp.ExpressionEvaluator.Tests/FSharp.ExpressionEvaluator.Tests.fs
 dotnet test FSharp.ExpressionEvaluator.Tests/FSharp.ExpressionEvaluator.Tests.fsproj
 ```
 
-36 xUnit tests cover the `TypeNameFormatter` module (primitives, F# library
-types, tuples, arrays, nested generics, fallback behaviour).
+49 xUnit tests cover the `TypeNameFormatter` and `ValueFormatter` modules
+(primitives, F# library types, tuples, arrays, nested generics, fallback
+behaviour, unit/char value formatting).
 
 ## Roadmap
 
@@ -120,10 +163,11 @@ The `ExpressionCompiler.fs` skeleton can be registered by:
 
 ### Longer term
 
-* **F#-specific value formatting** in `GetValueString`: display discriminated
-  union cases as `Case value` rather than raw field projections, render
-  `FSharpList` as `[a; b; c]`, etc.  This requires walking `DkmClrValue`
-  children via the Concord inspection API.
+* **Discriminated union value formatting** in `GetValueString`: display DU
+  cases as `Case value` rather than raw field projections, render
+  `FSharpList` as `[a; b; c]`, render `FSharpOption` as `Some value` /
+  `None`.  This requires walking `DkmClrValue` children via the Concord
+  inspection API.
 
 * **Expression preprocessing**: transform idiomatic F# syntax (pipeline
   operators `|>`, `||>`, lambda shorthands, `match` expressions) into an

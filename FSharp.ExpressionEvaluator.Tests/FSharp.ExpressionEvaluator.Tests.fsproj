@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="TypeNameFormatterTests.fs" />
+    <Compile Include="ValueFormatterTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -9,6 +9,28 @@ open Microsoft.VisualStudio.Debugger.Metadata
 
 module private FormatterHelpers =
 
+    // -----------------------------------------------------------------------
+    // Anonymous record detection
+    // -----------------------------------------------------------------------
+
+    /// Returns <c>true</c> when <paramref name="lmrType"/> is a compiler-
+    /// generated anonymous record / anonymous type.
+    ///
+    /// Both F# anonymous records (<c>{| … |}</c>) and C# anonymous types
+    /// compile to sealed generic classes (or structs for <c>struct {| … |}</c>)
+    /// whose CLR names begin with <c>"&lt;&gt;f__AnonymousType"</c>.  In an
+    /// F# debugging session (the formatter is scoped to the F# language ID)
+    /// we treat all such types as F# anonymous records and display them with
+    /// <c>{| field: type; … |}</c> syntax.
+    let private isAnonymousRecord (lmrType: Type) : bool =
+        lmrType.IsGenericType &&
+        (lmrType.Name.StartsWith("<>f__AnonymousType") ||
+         lmrType.Name.StartsWith("<>__AnonType"))
+
+    // -----------------------------------------------------------------------
+    // Recursive type-name builder
+    // -----------------------------------------------------------------------
+
     /// Recursively converts a <see cref="Microsoft.VisualStudio.Debugger.Metadata.Type"/>
     /// value (an LMR type representing a type in the debugged process) into an
     /// idiomatic F# type-name string.
@@ -23,6 +45,23 @@ module private FormatterHelpers =
             TypeNameFormatter.formatArrayType elem (lmrType.GetArrayRank())
         elif lmrType.IsByRef then
             fsharpTypeName (lmrType.GetElementType()) + " byref"
+        elif isAnonymousRecord lmrType then
+            // Format as {| field1: type1; field2: type2 |} (or struct {| … |}).
+            // Properties are sorted alphabetically – F# compiles anonymous record
+            // fields in alphabetical order.
+            try
+                let fields =
+                    lmrType.GetProperties()
+                    |> Array.filter (fun p -> p.CanRead)
+                    |> Array.sortBy (fun p -> p.Name)
+                    |> Array.toList
+                    |> List.map (fun p -> (p.Name, fsharpTypeName p.PropertyType))
+                TypeNameFormatter.formatAnonymousRecordType lmrType.IsValueType fields
+            with _ ->
+                // Fall back to the simple name on any reflection failure.
+                let lastDot = lmrType.FullName.LastIndexOf('.')
+                if lastDot >= 0 then lmrType.FullName.Substring(lastDot + 1)
+                else lmrType.Name
         elif lmrType.IsGenericType then
             let args =
                 lmrType.GetGenericArguments()

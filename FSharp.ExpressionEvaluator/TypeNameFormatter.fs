@@ -159,3 +159,27 @@ module TypeNameFormatter =
         else
             // Multi-dimensional: int[,], int[,,], …
             elementName + "[" + String.replicate (rank - 1) "," + "]"
+
+    /// <summary>
+    /// Formats an F# anonymous record type signature.
+    /// </summary>
+    /// <param name="isStruct">
+    /// <c>true</c> for struct anonymous records (<c>struct {| … |}</c>);
+    /// <c>false</c> for reference anonymous records (<c>{| … |}</c>).
+    /// </param>
+    /// <param name="fields">
+    /// The fields as <c>(name, already-formatted-F#-type-name)</c> pairs,
+    /// in the order they should appear.
+    /// </param>
+    /// <returns>
+    /// An F# anonymous record type signature string, e.g.
+    /// <c>{| Age: int; Name: string |}</c> or
+    /// <c>struct {| X: float; Y: float |}</c>.
+    /// </returns>
+    let formatAnonymousRecordType (isStruct: bool) (fields: (string * string) list) : string =
+        let body =
+            fields
+            |> List.map (fun (name, typeName) -> name + ": " + typeName)
+            |> String.concat "; "
+        let inner = "{| " + body + " |}"
+        if isStruct then "struct " + inner else inner

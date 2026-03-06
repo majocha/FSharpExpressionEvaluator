@@ -34,6 +34,31 @@ names are displayed using idiomatic F# syntax instead of the raw .NET names.
 | `List<int>` *(BCL)* | `ResizeArray<int>` |
 | `int[]` | `int[]` |
 | `int[,]` | `int[,]` |
+| DU / record / class | Simple name, e.g. `Color`, `Point` |
+| `<>f__AnonymousType0<int,string>` | `{| Age: int; Name: string |}` |
+| Struct anonymous record | `struct {| X: float; Y: float |}` |
+
+Generic types that are not specifically recognised are displayed using their
+simple class name with F# angle-bracket syntax (e.g. `MyGeneric<int>`).
+
+#### Anonymous record formatting
+
+F# anonymous records (`{| … |}`) and C# anonymous types both compile to
+compiler-generated sealed generic classes whose CLR names begin with
+`<>f__AnonymousType`.  The formatter detects this naming convention, reads
+the public readable properties of the type via LMR reflection, and displays
+the type as a proper F# anonymous record signature.
+
+For example, given `let anon = {| Name = "Alice"; Age = 30 |}`, the **Type**
+column in the Locals window shows `{| Age: int; Name: string |}` instead of
+the raw `<>f__AnonymousType0'2[System.Int32,System.String]`.
+
+> **Note on FSharp.Compiler.Service**: Using FCS for type-name formatting was
+> considered but is not appropriate here.  FCS would require loading assembly
+> metadata and/or F# source files at debug time—expensive operations that
+> would noticeably slow the debugger.  The LMR (Language Model for
+> Reflection) API already exposes everything needed (type names, generic
+> arguments, and property metadata) with no runtime cost penalty.
 
 ### Value formatting
 
@@ -86,6 +111,8 @@ FSharp.ExpressionEvaluator/
 FSharp.ExpressionEvaluator.Tests/
   TypeNameFormatterTests.fs         ← xUnit tests for TypeNameFormatter
   ValueFormatterTests.fs            ← xUnit tests for ValueFormatter
+FSharp.DebugSample/
+  Program.fs                        ← F# console app for live-testing the extension
 ```
 
 ### Key design decisions
@@ -135,15 +162,56 @@ automatically via the OS condition on the `VsdConfigXmlFiles` item):
 dotnet test FSharp.ExpressionEvaluator.Tests/FSharp.ExpressionEvaluator.Tests.fsproj
 ```
 
+## Live debugging with the sample project
+
+`FSharp.DebugSample/Program.fs` is a small F# console application that
+exercises every type the formatter handles.  Use it to verify the extension
+end-to-end in Visual Studio:
+
+1. Build and install the VSIX extension.
+2. Open the solution in Visual Studio 2022.
+3. Set `FSharp.DebugSample` as the startup project.
+4. Set a breakpoint on the `printfn ">>> Locals are ready for inspection."` line.
+5. Press **F5**.
+6. When the breakpoint is hit, open the **Locals** or **Watch** window and
+   compare the Type column against the tables above.
+
+Locals you will see and their expected types with the F# EE:
+
+| Variable | Expected type |
+|---|---|
+| `n` | `int` |
+| `f` | `float` |
+| `b` | `bool` |
+| `c` | `char` |
+| `s` | `string` |
+| `u` | `unit` |
+| `pair` | `(int * string)` |
+| `triple` | `(int * float * string)` |
+| `opt` | `int option` |
+| `vopt` | `float voption` |
+| `lst` | `int list` |
+| `arr` | `string[]` |
+| `mapped` | `Map<string, int>` |
+| `s_et` | `Set<int>` |
+| `r` | `int ref` |
+| `color` | `Color` |
+| `shape` | `Shape` |
+| `pt` | `Point` |
+| `anon` | `{| Age: int; Name: string |}` |
+| `anonStruct` | `struct {| X: float; Y: float |}` |
+| `tree` | `BinaryTree<int>` |
+| `add` | `int -> int -> int` |
+
 ## Running the tests
 
 ```
 dotnet test FSharp.ExpressionEvaluator.Tests/FSharp.ExpressionEvaluator.Tests.fsproj
 ```
 
-49 xUnit tests cover the `TypeNameFormatter` and `ValueFormatter` modules
-(primitives, F# library types, tuples, arrays, nested generics, fallback
-behaviour, unit/char value formatting).
+54 xUnit tests cover the `TypeNameFormatter` and `ValueFormatter` modules
+(primitives, F# library types, tuples, arrays, nested generics, anonymous
+records, fallback behaviour, unit/char value formatting).
 
 ## Roadmap
 

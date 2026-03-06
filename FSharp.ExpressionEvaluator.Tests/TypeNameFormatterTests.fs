@@ -3,6 +3,7 @@ module FSharp.ExpressionEvaluator.Tests.TypeNameFormatterTests
 open Xunit
 open FSharp.ExpressionEvaluator.TypeNameFormatter
 
+
 // ---------------------------------------------------------------------------
 // Primitive and keyword aliases
 // ---------------------------------------------------------------------------
@@ -191,3 +192,33 @@ let ``func taking option returns list`` () =
     let listString = formatTypeName "Microsoft.FSharp.Collections.FSharpList`1" [ "string" ]
     let funcType   = formatTypeName "Microsoft.FSharp.Core.FSharpFunc`2" [ optionInt; listString ]
     Assert.Equal("int option -> string list", funcType)
+
+// ---------------------------------------------------------------------------
+// Anonymous record types
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``anonymous record with two fields`` () =
+    Assert.Equal("{| Age: int; Name: string |}",
+        formatAnonymousRecordType false [ ("Age", "int"); ("Name", "string") ])
+
+[<Fact>]
+let ``anonymous record with one field`` () =
+    Assert.Equal("{| X: float |}",
+        formatAnonymousRecordType false [ ("X", "float") ])
+
+[<Fact>]
+let ``struct anonymous record with two fields`` () =
+    Assert.Equal("struct {| X: float; Y: float |}",
+        formatAnonymousRecordType true [ ("X", "float"); ("Y", "float") ])
+
+[<Fact>]
+let ``anonymous record with complex field types`` () =
+    let intList   = formatTypeName "Microsoft.FSharp.Collections.FSharpList`1" [ "int" ]
+    let intOption = formatTypeName "Microsoft.FSharp.Core.FSharpOption`1"       [ "string" ]
+    Assert.Equal("{| Items: int list; Tag: string option |}",
+        formatAnonymousRecordType false [ ("Items", intList); ("Tag", intOption) ])
+
+[<Fact>]
+let ``anonymous record with no fields`` () =
+    Assert.Equal("{|  |}", formatAnonymousRecordType false [])

@@ -6,17 +6,31 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="TypeNameFormatter.fs" />
+    <Compile Include="ValueFormatter.fs" />
+    <Compile Include="ExpressionLowering.fs" />
     <Compile Include="Formatter.fs" />
+    <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
 
   <ItemGroup />
 
   <ItemGroup>
     <None Include="Formatter.vsdconfigxml" />
+    <None Include="Compiler.vsdconfigxml" />
   </ItemGroup>
 
   <ItemGroup>
-    <VsdConfigXmlFiles Include="Formatter.vsdconfigxml" />
+    <!--
+      vsdconfigtool.exe (which processes VsdConfigXmlFiles) is a Windows-only
+      binary.  Exclude the item on non-Windows so CreateVsdbgConfigFile skips
+      itself via its own Condition="'@(VsdConfigXmlFiles)'!=''" guard, keeping
+      the build usable on Linux / macOS CI without touching the Windows path.
+    -->
+    <VsdConfigXmlFiles Include="Formatter.vsdconfigxml"
+                       Condition="'$([MSBuild]::IsOSPlatform(Windows))' == 'true'" />
+    <VsdConfigXmlFiles Include="Compiler.vsdconfigxml"
+                       Condition="'$([MSBuild]::IsOSPlatform(Windows))' == 'true'" />
   </ItemGroup>
   
   <ItemGroup>

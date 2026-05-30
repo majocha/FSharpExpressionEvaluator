@@ -26,7 +26,9 @@ For more information about this file, see https://github.com/Microsoft/ConcordEx
     <Class Name="FSharp.ExpressionEvaluator.ExpressionCompiler">
       <Implements>
         <InterfaceGroup>
-          <NoFilter />
+          <Filter>
+            <LanguageId RequiredValue="ab4f38c9-b6e6-43ba-be3b-58080b2ccce3"/>
+          </Filter>
           <Interface Name="IDkmClrExpressionCompiler"/>
         </InterfaceGroup>
       </Implements>

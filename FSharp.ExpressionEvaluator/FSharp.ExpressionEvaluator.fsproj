@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="TypeNameFormatter.fs" />
     <Compile Include="ValueFormatter.fs" />
+    <Compile Include="ExpressionLowering.fs" />
     <Compile Include="Formatter.fs" />
     <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
@@ -16,6 +17,7 @@
 
   <ItemGroup>
     <None Include="Formatter.vsdconfigxml" />
+    <None Include="Compiler.vsdconfigxml" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,6 +28,8 @@
       the build usable on Linux / macOS CI without touching the Windows path.
     -->
     <VsdConfigXmlFiles Include="Formatter.vsdconfigxml"
+                       Condition="'$([MSBuild]::IsOSPlatform(Windows))' == 'true'" />
+    <VsdConfigXmlFiles Include="Compiler.vsdconfigxml"
                        Condition="'$([MSBuild]::IsOSPlatform(Windows))' == 'true'" />
   </ItemGroup>
   

@@ -104,11 +104,13 @@ ExpressionEvaluator.csproj          ← VSIX host project (C#)
 FSharp.ExpressionEvaluator/
   TypeNameFormatter.fs              ← Pure type-name formatting logic (no VS APIs)
   ValueFormatter.fs                 ← Pure value-string formatting logic (no VS APIs)
+  ExpressionLowering.fs             ← Pure F# → C#-EE expression lowering logic
   Formatter.fs                      ← IDkmClrFormatter implementation
-  ExpressionCompiler.fs             ← IDkmClrExpressionCompiler skeleton
+  ExpressionCompiler.fs             ← IDkmClrExpressionCompiler delegating via lowering
   Formatter.vsdconfigxml            ← Concord component registration (Formatter)
-  Compiler.vsdconfigxml             ← Concord component registration (compiler – not yet active)
+  Compiler.vsdconfigxml             ← Concord component registration (compiler)
 FSharp.ExpressionEvaluator.Tests/
+  ExpressionLoweringTests.fs        ← xUnit tests for ExpressionLowering
   TypeNameFormatterTests.fs         ← xUnit tests for TypeNameFormatter
   ValueFormatterTests.fs            ← xUnit tests for ValueFormatter
 FSharp.DebugSample/
@@ -133,9 +135,14 @@ FSharp.DebugSample/
   recursively formats it using `TypeNameFormatter` for the type column and
   `ValueFormatter` for the value column.
 
-* **`ExpressionCompiler`** is an architectural skeleton for future F#-specific
-  expression compilation.  It is not yet registered with the component system;
-  see the [Roadmap](#roadmap) section below.
+* **`ExpressionLowering`** is a pure F# module that lowers a small supported
+  subset of F# expressions (currently identifiers, member access, tuple/indexer
+  syntax, and initial `Seq`/`List` module calls) into forms that the built-in
+  C# EE can compile.
+
+* **`ExpressionCompiler`** is now registered for F# sessions and uses
+  `ExpressionLowering` before delegating supported expressions to the built-in
+  C# EE. Unsupported expressions still fall through safely.
 
 ### Roslyn reference
 
@@ -209,25 +216,25 @@ Locals you will see and their expected types with the F# EE:
 dotnet test FSharp.ExpressionEvaluator.Tests/FSharp.ExpressionEvaluator.Tests.fsproj
 ```
 
-54 xUnit tests cover the `TypeNameFormatter` and `ValueFormatter` modules
-(primitives, F# library types, tuples, arrays, nested generics, anonymous
-records, fallback behaviour, unit/char value formatting).
+64 xUnit tests cover `TypeNameFormatter`, `ValueFormatter`, and
+`ExpressionLowering` (primitives, F# library types, tuples, arrays, nested
+generics, anonymous records, fallback behaviour, unit/char value formatting,
+and the initial expression-lowering subset).
 
 ## Roadmap
 
-### Next: ExpressionCompiler registration
+### Next: extend the supported lowering subset
 
-The `ExpressionCompiler.fs` skeleton can be registered by:
+The compiler now lowers and delegates a small F# subset. The next increments
+should stay inside the pure `ExpressionLowering` module first, then wire each
+new form through `ExpressionCompiler`:
 
-1. Adding `Compiler.vsdconfigxml` to the `VsdConfigXmlFiles` item group in
-   `FSharp.ExpressionEvaluator.fsproj`.
-2. Changing the component's `<NoFilter />` to
-   `<Filter><LanguageId RequiredValue="ab4f38c9-b6e6-43ba-be3b-58080b2ccce3"/></Filter>`
-   so it only intercepts F# sessions.
-3. Implementing the three methods—initially by throwing
-   `NotImplementedException` (which maps to E\_NOTIMPL and causes the Concord
-   host to fall through to the default C# EE), later by preprocessing F#
-   expressions or by invoking the F# compiler service directly.
+1. Add more FSharp.Core module coverage beyond the initial `Seq` and `List`
+   support.
+2. Support additional expression forms that already have direct C#-EE
+   equivalents, such as more indexing/member-access combinations.
+3. Keep `GetClrLocalVariableQuery` and unsupported expressions on the safe
+   fallback path until there is a proven F#-specific implementation.
 
 ### Longer term
 

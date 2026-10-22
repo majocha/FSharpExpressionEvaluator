@@ -670,7 +670,7 @@ resolver binds.
   `FSharp.ProjectSystem.FSharp.pkgdef`).
 - Consequences:
   1. Compile against an FSharp.Core **no newer than the one in the oldest VS
-     we support**. Assembly version alone does not protect us: 11.0.0.0 covers
+     we support**, which is VS 18.0 (§12.6). Assembly version alone does not protect us: 11.0.0.0 covers
      every 11.x file, so APIs added in 11.2 are missing in 11.0. Pin it, and
      have a CI check against each supported VS.
   2. **Ship FSharp.Core in the VSIX anyway**, as ThemeFontWeight does with
@@ -696,6 +696,33 @@ resolver binds.
   `dotnet/fsharp`. This fits the hot-reload work already there, which also
   emits code against a running baseline. Then this repo consumes an official
   FCS with IVT, or a small `[<Experimental>]` public API.
+- **Its own compiler instance, always.** The EE never shares the IDE's
+  `FSharpChecker` (the instance in VS's F# tools that serves the editor), and
+  it does not use `FSharpChecker` at all. Four reasons:
+  - **Different inputs.** The editor checks a project against its reference
+    assemblies. The EE compiles against what the **debuggee has loaded**:
+    implementation assemblies, metadata blocks and F# resources read from
+    process memory (§6.2). It also works when no project is open: attach to
+    process, dumps, remote debugging.
+  - **Different API level.** The EE needs a `TcImports`/`TcGlobals` per
+    AppDomain, a synthetic `TcEnv` for the frame and IlxGen storage hooks
+    (§6.1). Those are internals below `FSharpChecker`, whose project options,
+    incremental builder and caches would only add cost.
+  - **Different lifetime.** The state is created on the first break in an F#
+    frame. It is cached per AppDomain, invalidated by module
+    load/unload/EnC, and dropped when the debug session ends. The editor's
+    checker lives for the whole IDE session.
+  - **Isolation.** A debugger evaluation must not block on, invalidate or
+    pollute the editor's caches, and vice versa.
+
+  So §12.5 is only about **where the code ships**. If it ships as a separate
+  VSIX, the EE carries its own privately named FCS build. If it is upstreamed
+  and shipped with VS's F# tools (as Roslyn's EE ships with Roslyn), the EE
+  could load **the same FCS binary** through `InternalsVisibleTo` while still
+  keeping separate in-memory state. Cost of either: one FCS image plus the
+  debuggee's imports. The imports are dominated by FSharp.Core's ~400 KB of
+  signature and optimization data (§13), and the state is released when
+  debugging stops.
 - **Alternative kept open: an out-of-process compiler.** A .NET 10 helper
   process would host the core from §6.1, with Concord-side code sending it
   metadata and PDB blobs. That removes every host conflict and runs FCS on
@@ -791,8 +818,8 @@ Key packaging points:
   `.vsdconfig`. Each `Asset Type="DebuggerEngineExtension"` names the
   `.vsdconfig` file. The VSIX also carries FSharp.Core; the Interop
   assemblies the Concord packages drag in are left out.
-- **Install targets.** `InstallationTarget [18.0,19.0)` on amd64. arm64 is to
-  be added.
+- **Install targets.** `InstallationTarget [18.0,)` on amd64 (VS 2026 and
+  later, §12.6). arm64 is to be added.
 - **Concord packages.** `Microsoft.VisualStudio.Debugger.Engine` and
   `.Metadata`, at least 17.14, so `IDkmClrExpressionCompiler1714` is available.
 - **Testing.** Roslyn tests its RP by compiling it against a hand-written
@@ -837,9 +864,11 @@ the `dotnet/fsharp` branch.
 4. **List and Map indexing in full names** is O(n) / O(log n) through
    func-eval. Acceptable, or should full names avoid indexers?
 5. **Where the compiler core lives long term.** An upstream FCS module
-   (preferred), or a permanent fork shipped privately?
-6. **VS version floor.** VS 2026 (18.x) only, or also 17.14? Supporting
-   17.14 adds an FSharp.Core and FCS compatibility matrix (§8.1).
+   (preferred), or a permanent fork shipped privately? Either way the EE has
+   **its own compiler state**; see §8.2, "Its own compiler instance".
+6. ~~**VS version floor.**~~ **Decided: VS 2026 (18.0) and later only.** No
+   17.x support. The VSIX targets `[18.0,)`, and FSharp.Core and FCS are pinned
+   against VS 18.0 (§8.1).
 
 ---
 

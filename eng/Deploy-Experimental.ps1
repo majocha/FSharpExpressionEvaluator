@@ -5,15 +5,15 @@ param(
     [string] $Configuration = 'Debug'
 )
 
-# Builds the VSIX and installs it into the Exp instance of the latest VS 2026 (18.x), Insiders included.
+# Builds the VSIX and installs it into the Exp instance of the latest VS 2026 or later, Insiders included.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = Split-Path $PSScriptRoot -Parent
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-$instance = @(& $vswhere -latest -prerelease -products '*' -version '[18.0,19.0)' -format json | ConvertFrom-Json)[0]
-if (-not $instance) { throw 'No VS 2026 installation found.' }
+$instance = @(& $vswhere -latest -prerelease -products '*' -version '18.0' -format json | ConvertFrom-Json)[0]
+if (-not $instance) { throw 'No VS 2026 or later installation found.' }
 $devenv = Join-Path $instance.installationPath 'Common7\IDE\devenv.exe'
 
 $runningExp = Get-CimInstance Win32_Process -Filter "Name='devenv.exe'" |

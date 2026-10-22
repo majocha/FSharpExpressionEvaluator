@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Drives the VS 2026 Exp instance through DTE: attaches to tests\TestDebuggee, and at every
+  Drives the Exp instance of VS 2026 or later through DTE: attaches to tests\TestDebuggee, and at every
   Debugger.Break() reports the frame name, locals and a set of watch expressions.
   Run with Windows PowerShell 5.1 (powershell.exe): it needs STA COM and Marshal-free ROT access.
 #>
@@ -64,7 +64,7 @@ $exe = Join-Path $root "tests\TestDebuggee\bin\Debug\$Target\TestDebuggee.exe"
 if (-not (Test-Path $exe)) { throw "Build tests\TestDebuggee first: $exe" }
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-$instance = @(& $vswhere -latest -prerelease -products '*' -version '[18.0,19.0)' -format json | ConvertFrom-Json)[0]
+$instance = @(& $vswhere -latest -prerelease -products '*' -version '18.0' -format json | ConvertFrom-Json)[0]
 $devenv = Join-Path $instance.installationPath 'Common7\IDE\devenv.exe'
 
 Add-Type -Path (Join-Path $instance.installationPath 'Common7\IDE\PublicAssemblies\envdte.dll')
@@ -108,7 +108,8 @@ if (-not $vs) {
     $vsPid = $vs.ProcessId
 }
 $script:dte = $null
-Wait-Until { $script:dte = [Rot]::Get("!VisualStudio.DTE.18.0:$vsPid"); $null -ne $script:dte } 180 'DTE registration'
+$dteVersion = "$(([version]$instance.installationVersion).Major).0"
+Wait-Until { $script:dte = [Rot]::Get("!VisualStudio.DTE.$($dteVersion):$vsPid"); $null -ne $script:dte } 180 'DTE registration'
 $dte = $script:dte
 Write-Host "VS $($dte.Version) (pid $vsPid), EE log: $Log"
 

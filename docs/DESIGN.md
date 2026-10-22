@@ -1085,7 +1085,7 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;
 - tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
-  (13 passing).
+  (17 passing).
 
 **API (internal for now).**
 
@@ -1185,6 +1185,28 @@ surgery than planned:
     `None`) has its type parameters fixed to `obj` (`obj list`): the debugger
     runs the query without choosing type arguments for it. The result type is
     read from the rewritten binding.
+13. **Aliases.** `FrameContext` carries the debugger's aliases (name, kind,
+    CLR type name) and the display name of the assembly defining
+    `Microsoft.VisualStudio.Debugger.Clr.IntrinsicMethods`.
+    - **Names.** `$name` isn't an F# identifier, so before parsing it is
+      quoted to ``` ``$name`` ```, except inside string and character
+      literals, backticked names and line comments.
+    - **Reads.** Each alias is a variable of its runtime type. As with fields
+      of `this`, each read is rewritten after checking, here into a call as
+      Roslyn binds it:
+      - `GetException()` for `$exception`, `GetStowedException()` for
+        `$stowedexception`;
+      - `GetReturnValue(N)` for `$ReturnValueN` (no suffix means 0);
+      - `GetObjectByAlias(name)` for object ids and Immediate-window
+        variables.
+
+      The call is then unboxed or cast to the alias's type.
+    - **Types.** The CLR type name (generic arguments in `[[...]]`, arrays)
+      is resolved among the session's assemblies, preferring the one it
+      names; a type that can't be found reads as `obj`.
+    - **No intrinsics metadata needed.** The call is raw IL against an
+      assembly reference, so the checker never imports the intrinsics
+      assembly.
 
 **Tested (in-process, the query invoked by reflection).**
 
@@ -1202,6 +1224,10 @@ surgery than planned:
 - a closure frame (`captured + x`, also from inside a lambda);
 - a class member reading `let` fields, one of them mutable;
 - generic results (`[]` is `obj list`);
+- aliases: `$exception.Message`, `$ReturnValue + $ReturnValue2`, an object
+  id `$1` of type `int list`, a user variable, `$1` left alone inside a
+  string and a comment, and an unknown type reading as `obj` (calls go to a
+  stand-in `IntrinsicMethods` in the test assembly);
 - F# error diagnostics.
 
 **Next in M3**
@@ -1213,8 +1239,8 @@ surgery than planned:
 - **Generic frames.** The frame's type parameters need to map to F# typars.
   For a generic class that needs a generic query *class*, which an F#
   module can't be.
-- **Aliases and the rest of §6.6–6.8.** `$exception` and friends, format
-  specifiers, assignment, side-effect flags and custom type info.
+- **The rest of §6.6–6.8.** Format specifiers, assignment (including to
+  user variables), side-effect flags and custom type info.
 - **Diagnostics.** Line and column numbers relative to the user's text rather
   than the synthesized wrapper.
 

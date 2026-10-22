@@ -1080,7 +1080,7 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 ## 16. M3 progress (2026-10-22)
 
 **Where.** Branch `expression-evaluator` of `dotnet/fsharp`, in the local worktree
-`E:\repos\fsharp.worktrees\expression-evaluator`; not pushed. The code:
+`E:\repos\fsharp.worktrees\expression-evaluator`, pushed to [majocha/fsharp `expression-evaluator`](https://github.com/majocha/fsharp/tree/expression-evaluator). The code:
 
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;

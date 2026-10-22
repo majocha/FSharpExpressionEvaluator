@@ -7,7 +7,7 @@ namespace FSharp.ExpressionEvaluator
 open System.Collections.Generic
 
 /// A custom attribute: full type name and constructor arguments (enums as their underlying value).
-type internal Attribute = { TypeName: string; Args: obj list }
+type internal AttributeData = { TypeName: string; Args: obj list }
 
 type internal IType =
     /// Null for generic parameters, as in reflection.
@@ -25,7 +25,7 @@ type internal IType =
     abstract ElementType: IType
     abstract IsValueType: bool
     abstract IsEnum: bool
-    abstract Attributes: Attribute list
+    abstract Attributes: AttributeData list
     /// Fields declared on this type itself (static and instance).
     abstract Fields: Field list
     /// Properties declared on this type itself (static and instance).
@@ -37,9 +37,9 @@ type internal IType =
 
 and internal Field = { Name: string; FieldType: IType; IsStatic: bool }
 
-and internal Property = { Name: string; PropertyType: IType; Attributes: Attribute list }
+and internal Property = { Name: string; PropertyType: IType; Attributes: AttributeData list }
 
-and internal Method = { Name: string; IsStatic: bool; Attributes: Attribute list }
+and internal Method = { Name: string; IsStatic: bool; Attributes: AttributeData list }
 
 /// A value in the debuggee (or, in tests, a live object).
 type internal IValue =
@@ -68,7 +68,7 @@ module internal Types =
             | None -> ()
         }
 
-    let attribute (name: string) (attributes: Attribute list) =
+    let attribute (name: string) (attributes: AttributeData list) =
         attributes |> List.tryFind (fun a -> a.TypeName = name)
 
     /// Finds an instance field declared on the type or one of its base types.
@@ -106,11 +106,11 @@ module internal CompilationMapping =
     let KindMask = 31
 
     /// The CompilationMapping arguments (kind and the optional numbers) of a member, if any.
-    let tryGet (attributes: Attribute list) =
+    let tryGet (attributes: AttributeData list) =
         Types.attribute AttributeName attributes
         |> Option.map (fun a -> a.Args |> List.map System.Convert.ToInt32)
 
-    let kind (attributes: Attribute list) =
+    let kind (attributes: AttributeData list) =
         match tryGet attributes with
         | Some(flags :: _) -> Some(flags &&& KindMask)
         | _ -> None

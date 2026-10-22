@@ -4,10 +4,11 @@ An F# expression evaluator for the Visual Studio debugger. It covers F# syntax i
 Watch, Immediate and conditions; F#-shaped values and type names; and F# call stack
 names. It ships as a VSIX written entirely in F#.
 
-The plan and its rationale are in [docs/DESIGN.md](docs/DESIGN.md). Status: **M1** is
+The plan and its rationale are in [docs/DESIGN.md](docs/DESIGN.md). Status: **M2** is
 done. In F# frames, records, unions, options, lists, arrays, tuples, Map/Set, closures and
-other F# values display F#-style with F# type names, read from memory without func-eval.
-Everything else, and expression evaluation, still goes to the C# EE.
+other F# values display F#-style with F# type names, read from memory without func-eval,
+and the call stack shows F# names (`inspect (xs: int list) (name: string)`). Everything
+else, and expression evaluation, still goes to the C# EE.
 
 ## Layout
 
@@ -16,6 +17,7 @@ Everything else, and expression evaluation, still goes to the C# EE.
 | `src/FSharp.ExpressionEvaluator.ResultProvider` | `IDkmClrResultProvider`; `netstandard2.0`, loads in devenv and msvsmon |
 | `src/FSharp.ExpressionEvaluator.ExpressionCompiler` | `IDkmClrExpressionCompiler`, frame and instruction decoders; `net48`, IDE only |
 | `src/FSharp.ExpressionEvaluator.Vsix` | Packaging only |
+| `tests/FSharp.ExpressionEvaluator.ExpressionCompiler.Tests` | Frame names from F# fixtures read back through System.Reflection.Metadata |
 | `tests/FSharp.ExpressionEvaluator.ResultProvider.Tests` | Result provider core against live F# values (`dotnet test`) |
 | `tests/TestDebuggee` | F# app that hits `Debugger.Break()` in a module function, a closure and a member; net10.0 (x64) and net48 (x86) |
 | `eng/` | Deploy to the Exp instance; drive it through DTE |

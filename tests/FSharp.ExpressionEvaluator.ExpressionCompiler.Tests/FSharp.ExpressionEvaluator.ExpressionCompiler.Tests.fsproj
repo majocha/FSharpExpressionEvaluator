@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit tests for the expression compiler component's Concord-free core (frame names for now).
+    Fixtures are F# code in this assembly, read back through System.Reflection.Metadata.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>FSharp.ExpressionEvaluator.Tests</RootNamespace>
+    <Optimize>false</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\Model.fs" Link="Core\Model.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Core\FSharpTypes.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MetadataTypes.fs" Link="Core\MetadataTypes.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MethodNames.fs" Link="Core\MethodNames.fs" />
+    <Compile Include="Fixtures.fs" />
+    <Compile Include="MethodNameTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" VersionOverride="10.1.402" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

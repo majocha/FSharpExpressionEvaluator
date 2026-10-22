@@ -19,6 +19,11 @@
           </Filter>
           <Interface Name="IDkmClrExpressionCompiler"/>
         </InterfaceGroup>
+      </Implements>
+    </Class>
+
+    <Class Name="FSharp.ExpressionEvaluator.FrameDecoder">
+      <Implements>
         <InterfaceGroup>
           <Filter>
             <LanguageId RequiredValue="FSharpLanguageId"/>

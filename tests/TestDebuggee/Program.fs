@@ -79,6 +79,19 @@ type Counter(start: int) =
         Debugger.Break()
         count
 
+/// Break 4: a generic function with a tuple parameter.
+let generic (value: 'T) (pair: int * string) =
+    Debugger.Break()
+    value, pair
+
+/// Break 5: inside a task state machine.
+let work (delay: int) =
+    task {
+        do! System.Threading.Tasks.Task.Delay delay
+        Debugger.Break()
+        return delay
+    }
+
 [<EntryPoint>]
 let main argv =
     if Array.contains "--wait" argv then
@@ -90,4 +103,6 @@ let main argv =
     inspect [ 1; 2; 3 ] "test"
     closure () |> ignore
     Counter(10).Increment 2 |> ignore
+    generic [ 1; 2 ] (3, "c") |> ignore
+    (work 1).Wait()
     0

@@ -8,8 +8,8 @@
 param(
     [ValidateSet('net10.0', 'net48')]
     [string] $Target = 'net10.0',
-    [string[]] $Expressions = @('point', 'shape', 'five', 'someShape', 'map', 'boxed', 'add', 'moduleList', 'captured', 'counter', 'count', 'this'),
-    [int] $Breaks = 3,
+    [string[]] $Expressions = @('point', 'shape', 'someShape', 'map', 'captured', 'count'),
+    [int] $Breaks = 5,
     [string] $Log = (Join-Path $env:LOCALAPPDATA 'FSharpExpressionEvaluator\ee.log'),
     [switch] $KeepVsOpen,
     # Inspect a debug session that is already stopped at a break (attached by hand or by an earlier run).
@@ -163,6 +163,10 @@ function Show-Value($e, [string] $indent) {
         $frame = $dte.Debugger.CurrentStackFrame
         Write-Host ''
         Write-Host "=== Break $i : $($frame.FunctionName)  [language: $($frame.Language)]"
+        Write-Host '--- Call stack'
+        foreach ($f in @(Get-Items $dte.Debugger.CurrentThread.StackFrames ([EnvDTE.StackFrames]) | Select-Object -First 4)) {
+            Write-Host "  $($f.FunctionName)  : $($f.ReturnType)"
+        }
         Write-Host '--- Locals'
         foreach ($local in Get-Items $frame.Locals ([EnvDTE.Expressions])) {
             Show-Value $local '  '

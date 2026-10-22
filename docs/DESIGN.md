@@ -621,27 +621,39 @@ are never retried as C#.
 
 ## 7. Frame and instruction decoder
 
-Names come from metadata plus the shared F# naming rules. FCS is not needed.
+Names come from module metadata (System.Reflection.Metadata over
+`GetMetaDataBytesPtr`). Type names are rendered by the result provider's own
+rules. FCS is not needed. Implemented in M2 (§15); "Shown" is with the Call
+Stack window's default Types+Names.
 
-| Compiled | Shown (Types+Names) |
+| Compiled | Shown |
 |---|---|
 | `Program.main(String[] argv)` | `Program.main (argv: string array)` |
 | curried `M.add(Int32 x, Int32 y)` with `CompilationArgumentCounts [1;1]` | `M.add (x: int) (y: int)` |
+| tuple parameter in a curried function, `pair_0`, `pair_1` | `generic<int list> (value: int list) (pair: int * string)` |
 | tupled member `T.M(Int32 a, String b)` | `T.M (a: int, b: string)` |
-| `Program.f@12.Invoke(Int32 x)` | `Program.f@12 (fun) (x: int)` |
-| task state machine `MoveNext()` | `Program.fetch (task)` |
-| `seq` `GenerateNext(...)` | `Program.numbers (seq)` |
-| `<StartupCode$App>.$Program.main@()` | `Program (module init)` |
-| property getter `get_Name()` | `Person.Name (get)` |
-| operator `op_Addition` | `Vector.(+)` |
+| no arguments / unit | `Program.closure ()` |
+| `Program.f@66.Invoke(Int32 x)` | `Program.f@66 (x: int)` |
+| `OptimizedClosures` `Invoke(a, b)` | `Program.add@53 (a: int) (b: int)` |
+| task state machine `MoveNext()` | `Program.work@24 (state machine)` |
+| `seq` `GenerateNext(...)` | `Program.numbers@12 (seq)` |
+| constructor / static constructor | `Person.new (name: string)` / `Person.(static initializer)` |
+| property getter `get_Name()` | `Person.Name (get) ()` |
+| operators `op_Addition`, `op_PlusDot` | `Person.(+) (…)`, `Fixtures.(+.) (…)` |
+| `[<CompiledName>]` members | the `CompilationSourceName` |
+| `PersonModule` (ModuleSuffix) | `Person.create (name: string)` |
+| generic frames | the actual type arguments from `GetClrGenericParameters`: `Box<int>.Map<string>` |
 
-With argument values: `M.add (x: int = 1) (y: int = 2)`. The return type
-uses F# type names. `GetBindableFrameName` returns the **compiled**
-`Type.Method` form, because the function resolver (C#, `NoFilter`) has to
-bind it.
+Other argument formats:
 
-The exact strings are open to taste. The table records intent: show source
-names, curried groups, and closure and state-machine context.
+- Names only: `add x y`.
+- Types only: `add (int) (int)`.
+- With values: `add (x: int = 1) (y: int = 2)`, or `add 1 2` when values
+  only. A tuple parameter's value shows as `(1, "a")`.
+
+The return type uses F# type names. `IDkmLanguageFrameDecoder1714.GetBindableFrameName`
+is not implemented; C#'s compiled `Type.Method` form is what the function
+resolver binds.
 
 ---
 
@@ -802,7 +814,7 @@ Removed in M0: `ExpressionEvaluator.csproj`, `Properties/`, the root
 |---|---|---|
 | **M0** ✅ | Spikes: F#-only VSIX skeleton loads in VS 18 Exp; RP registered for F# that chains everything; decoder stub. Confirm every **(verify)** item: chaining, msvsmon loading, `GetSymReader` returning portable metadata, reading F# resources from debuggee memory. | Done 2026-10-22, see §13 |
 | **M1** ✅ | **Result Provider v1**: shapes from §5.2, values and types (§5.3), full names (§5.4), hiding rules, delegation; unit tests against live values. Expressions still evaluated by C#. | Done 2026-10-22, see §14 |
-| **M2** | **Frame and instruction decoder** (§7) | Call stack and breakpoint names in F# form |
+| **M2** ✅ | **Frame and instruction decoder** (§7) | Done 2026-10-22, see §15 |
 | **M3** | **Compiler core in the FCS branch**: in-memory `TcImports` with sigdata; frame `TcEnv`; storage hooks; pre-seeded locals; query emit; accessor domain. Tested in-process, without VS. | Locals, params, `this`, module values, member access, calls, operators, lambdas compile and pass IL checks |
 | **M4** | **Concord integration**: metadata context and caching, retries, aliases, format specifiers, Locals query (`1714`), assignment, side-effect flags, C# fallback switch | Watch, Immediate, conditional breakpoints and tracepoints work in `TestDebuggee`; perf targets (§6.9) met |
 | **M5** | Closures, state machines and temporaries (§6.4); custom type info (§6.8); RP uses it | `task`, `seq` and closure frames show the right variables |
@@ -977,4 +989,60 @@ dialog.
     of measure (§6.8 custom type info);
   - honouring the hex radix inside previews;
   - a configurable preview length.
+
+---
+
+## 15. M2 results (2026-10-22)
+
+The F# frame and instruction decoder (`FrameDecoder.fs`) is a separate class
+in the compiler component, registered for F# frames. It never loads FCS.
+
+- **Names.** `MethodNames.fs` builds the name from the method's metadata:
+  - curried groups from `CompilationArgumentCounts`;
+  - flattened tuple parameters (`p_0`, `p_1`) folded back into `p`;
+  - `()` for unit and no-argument methods;
+  - operator and `CompilationSourceName` names;
+  - module suffix stripped;
+  - closures without `.Invoke`;
+  - `(state machine)` / `(seq)` markers.
+- **Types.** `MetadataTypes.fs` decodes signatures into `IType`. The **same
+  `FSharpTypes.typeName`** that formats values then names parameter and return
+  types, so the call stack and the Locals window spell types identically.
+- **Generic frames.** The decoder asks Concord for the actual type arguments
+  (`DkmStackWalkFrame.GetClrGenericParameters`). It parses the serialized
+  reflection names it gets back: `generic<int list>`.
+- **Argument values.** These come from `GetFrameArguments` in a
+  `NoExpansion` context, so they are the result providers' one-line previews
+  (ours for F# values).
+- **Fallback.** Anything that fails is passed to the next decoder (C#).
+- **Tests.** `tests/FSharp.ExpressionEvaluator.ExpressionCompiler.Tests` (13
+  tests) reads fixtures compiled into the test assembly back through
+  System.Reflection.Metadata.
+
+In VS (net10.0 `TestDebuggee`), the Call Stack window (Types+Names) shows:
+
+```
+TestDebuggee.Program.inspect (xs: int list) (name: string)
+TestDebuggee.Program.f@66 (x: int)
+TestDebuggee.Program.Counter.Increment (by: int)
+TestDebuggee.Program.generic<int list> (value: int list) (pair: int * string)
+TestDebuggee.Program.main (argv: string array)
+```
+
+Return types show as `unit`, `int list * (int * string)` and so on.
+
+**Observations**
+
+- **Debug builds use the dynamic `task` fallback.** `task { }` is not compiled
+  to a static state machine, so `TestDebuggee` has no `MoveNext` frame: its
+  `work@91-3` frame is a closure. Some FSharp.Core-inlined helpers carry
+  `@1` line numbers (`work@1-2.Invoke`), and their frames are still named by
+  C#. The static form is covered by the unit test fixture.
+- **Locals show the flattened tuple parameter** (`pair_0`, `pair_1`) next to
+  the compiler's `pair` local. That is the C# compiler's locals query, and
+  M5's job (§6.4).
+- **Open questions.**
+  - Whether to strip the namespace: VS shows the module name separately.
+  - Whether closures should name their enclosing function rather than
+    `name@line`.
 

@@ -10,8 +10,13 @@
 
   <ItemGroup>
     <Compile Include="..\Shared\Log.fs" Link="Shared\Log.fs" />
+    <Compile Include="..\FSharp.ExpressionEvaluator.ResultProvider\Model.fs" Link="Shared\Model.fs" />
+    <Compile Include="..\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Shared\FSharpTypes.fs" />
     <Compile Include="PeImage.fs" />
     <Compile Include="Probes.fs" />
+    <Compile Include="MetadataTypes.fs" />
+    <Compile Include="MethodNames.fs" />
+    <Compile Include="FrameDecoder.fs" />
     <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
 

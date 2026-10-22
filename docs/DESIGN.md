@@ -1085,7 +1085,7 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;
 - tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
-  (22 passing).
+  (29 passing).
 
 **API (internal for now).**
 
@@ -1242,6 +1242,52 @@ surgery than planned:
       second load, shadowed by the frame's own fields.
     - **Structs elsewhere.** `this` of an ordinary struct member is now
       `byref<T>`.
+16. **`seq` frames, and a hidden `this`.**
+    - **`seq`.** A `seq` compiles to a class deriving from
+      `GeneratedSequenceBase<T>`, and `GenerateNext` is its frame. Captured
+      and hoisted variables are fields of that class. Its plumbing (`pc`,
+      `current`, `enum`, `redirect`, `redirectTo`) is left out.
+    - **`async`.** `async` is not a state machine: its frames are closures
+      chained through `AsyncActivation`, which the closure support covers.
+    - **Hidden `this`.** In every compiler-generated frame (closures, `seq`,
+      `task`) the generated object's own `this` is hidden, as §6.4 says. A
+      hoisted `this` field stands for the member's `this`.
+17. **Format specifiers (§6.7).** A trailing run of known specifiers after
+    top-level commas is split off before parsing and returned with the
+    query: `x, h, nq` is `x` with `h` and `nq`.
+    - The known specifiers are `ac`, `d`, `dynamic`, `h`, `hidden`, `nq`,
+      `nse`, `raw`, `results` and `view(...)`.
+    - Anything else stays an F# tuple, and so does `(x, h)` in parentheses.
+    - The scanner that skips literals and comments is shared with the
+      `$name` quoting.
+18. **Result properties (§6.8).** Each query reports Concord's
+    `PotentialSideEffect`, `ReadOnlyResult` and `BoolResult`, read from the
+    checked body.
+    - **Side effects.** Assignments, method and constructor calls, and
+      function applications may have side effects. Field reads, property
+      getters, inline functions (the operators) and an allowlist of
+      FSharp.Core functions (`fst`, `List.length`, ...) don't.
+    - **Writable results.** A result can be assigned when it is a frame
+      value, a field of `this`, a user variable or a mutable value.
+19. **Assignment (§6.6).** `CompileAssignment(frame, target, value)`
+    compiles `target <- value`.
+    - **Mutability.** For an assignment only, the frame's values are
+      mutable, so the checker accepts it. F# doesn't let closures capture
+      mutable values, so plain expressions keep them immutable.
+    - **Writes become explicit stores.** IlxGen never stores to an argument,
+      so each write is rewritten in the typed tree:
+      - `starg` for a frame value; for a local that lives in the frame's
+        slots this then becomes `stloc` to the slot;
+      - `stfld` for a field of `this`, including a state machine's hoisted
+        variables.
+    - **No ref cells.** The rewritten body then uses immutable copies of the
+      frame values. Otherwise the optimizer turns a mutable value used in an
+      inner lambda (the curried frame parameters) into a ref cell.
+    - **Not yet:**
+      - immutable record fields;
+      - Immediate-window variables (Roslyn writes them through
+        `GetVariableAddress<T>`).
+    - Code generation for queries no longer runs in parallel.
 
 **Tested (in-process, the query invoked by reflection).**
 
@@ -1269,16 +1315,28 @@ surgery than planned:
 - `task` frames: hoisted variables and a `MoveNext` local, plumbing not in
   scope, and a task in a class member reading `this.Owner`, the hoisted
   parameter and the class's `let` fields;
+- a `seq` frame: captured and hoisted variables, plumbing and `this` not in
+  scope;
+- format specifiers split off (`x, h`, `"a, h", nq`, `view(simple)`), and
+  tuples left alone (`x, y`, `(x, y)`);
+- result properties of field reads, operators, property getters, FSharp.Core
+  allowlisted functions, calls, constructors and function applications;
+- assignment:
+  - to fields of `this`, observed on the object;
+  - to a state machine's hoisted variable, observed on the struct passed by
+    reference;
+  - to a parameter (`starg`) and to a local in its frame slot (`stloc`);
+  - and frame values staying immutable in plain expressions;
 - F# error diagnostics.
 
 **Next in M3**
 
-- **The rest of §6.4.** Other state machines (`seq`, `async`), hoisted
-  names that clash (if the compiler renames them), and ref-cell unwrapping.
+- **The rest of §6.4.** Hoisted names that clash (if the compiler renames
+  them), and ref-cell unwrapping.
 - **Generic constraints.** Copy the constraints of the frame's type
   parameters onto the typars.
-- **The rest of §6.6–6.8.** Format specifiers, assignment (including to
-  user variables), side-effect flags and custom type info.
+- **The rest of §6.6–6.8.** Assignment to record fields and user variables,
+  and custom type info.
 - **Diagnostics.** Line and column numbers relative to the user's text rather
   than the synthesized wrapper.
 

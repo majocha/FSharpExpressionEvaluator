@@ -1,0 +1,20 @@
+<Project>
+  <ItemGroup>
+    <!--
+      EE components load into devenv, which redirects FSharp.Core 2.0.0.0-11.0.0.0 to its own copy,
+      so this must stay no newer than the FSharp.Core of the oldest supported VS (docs/DESIGN.md §8.1).
+    -->
+    <PackageVersion Include="FSharp.Core" Version="10.0.100" />
+
+    <PackageVersion Include="Microsoft.VisualStudio.Debugger.Engine" Version="17.14.1051801" />
+    <PackageVersion Include="Microsoft.VisualStudio.Debugger.Metadata" Version="17.14.1051801" />
+    <PackageVersion Include="Microsoft.VSSDK.Debugger.VSDConfigTool" Version="17.14.1051801" />
+
+    <!-- devenv redirects these to its own copies; they are not shipped in the VSIX. -->
+    <PackageVersion Include="System.Reflection.Metadata" Version="9.0.0" />
+    <PackageVersion Include="Microsoft.DiaSymReader" Version="2.0.0" />
+
+    <PackageVersion Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" />
+    <PackageVersion Include="Microsoft.VSSDK.BuildTools" Version="18.9.820" />
+  </ItemGroup>
+</Project>

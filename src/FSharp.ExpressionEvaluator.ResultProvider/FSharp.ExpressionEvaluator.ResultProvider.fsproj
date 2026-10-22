@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Monitor-side component: loads in devenv for local debugging and in msvsmon / vsdbg otherwise.
+    Keep dependencies to Concord + FSharp.Core (docs/DESIGN.md §4, §8.4).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>FSharp.ExpressionEvaluator</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\Log.fs" Link="Shared\Log.fs" />
+    <Compile Include="FSharpShapes.fs" />
+    <Compile Include="ResultProvider.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <VsdConfigXmlFiles Include="ResultProvider.vsdconfigxml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="Microsoft.VisualStudio.Debugger.Engine" />
+    <PackageReference Include="Microsoft.VisualStudio.Debugger.Metadata" />
+    <PackageReference Include="Microsoft.VSSDK.Debugger.VSDConfigTool" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

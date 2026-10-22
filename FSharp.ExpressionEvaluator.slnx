@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FSharp.ExpressionEvaluator.ExpressionCompiler/FSharp.ExpressionEvaluator.ExpressionCompiler.fsproj" />
+    <Project Path="src/FSharp.ExpressionEvaluator.ResultProvider/FSharp.ExpressionEvaluator.ResultProvider.fsproj" />
+    <Project Path="src/FSharp.ExpressionEvaluator.Vsix/FSharp.ExpressionEvaluator.Vsix.fsproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TestDebuggee/TestDebuggee.fsproj" />
+  </Folder>
+  <Folder Name="/docs/">
+    <File Path="docs/DESIGN.md" />
+  </Folder>
+</Solution>

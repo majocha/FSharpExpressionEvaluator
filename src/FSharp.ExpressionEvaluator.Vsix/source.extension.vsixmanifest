@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Id="FSharp.ExpressionEvaluator.f049de54-75e7-4bb4-9839-fb6993919394" Version="0.0.1" Language="en-US" Publisher="Jakub Majocha" />
+    <DisplayName>F# Expression Evaluator</DisplayName>
+    <Description xml:space="preserve">F# expression evaluation, value display and call stack names for the Visual Studio debugger. Written entirely in F#.</Description>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[18.0,19.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName=".NET Framework" Version="[4.8,)" />
+  </Dependencies>
+  <Prerequisites>
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[18.0,19.0)" DisplayName="Visual Studio core editor" />
+  </Prerequisites>
+  <Assets>
+    <Asset Type="DebuggerEngineExtension" d:Source="File" Path="FSharp.ExpressionEvaluator.ResultProvider.vsdconfig" />
+    <Asset Type="DebuggerEngineExtension" d:Source="File" Path="FSharp.ExpressionEvaluator.ExpressionCompiler.vsdconfig" />
+  </Assets>
+</PackageManifest>

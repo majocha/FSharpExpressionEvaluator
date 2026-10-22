@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- IDE-side component: loads only in devenv (docs/DESIGN.md §4). -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>FSharp.ExpressionEvaluator</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);9</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\Log.fs" Link="Shared\Log.fs" />
+    <Compile Include="PeImage.fs" />
+    <Compile Include="Probes.fs" />
+    <Compile Include="ExpressionCompiler.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <VsdConfigXmlFiles Include="ExpressionCompiler.vsdconfigxml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.VisualStudio.Debugger.Engine" />
+    <PackageReference Include="Microsoft.VisualStudio.Debugger.Metadata" />
+    <PackageReference Include="Microsoft.VSSDK.Debugger.VSDConfigTool" PrivateAssets="all" />
+    <!-- Provided by devenv through binding redirects + codeBase; not shipped. -->
+    <PackageReference Include="System.Reflection.Metadata" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.DiaSymReader" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+</Project>

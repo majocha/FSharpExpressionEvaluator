@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- See docs/DESIGN.md §4. Monitor-side component; same level as Roslyn's result provider. -->
+<Configuration xmlns="http://schemas.microsoft.com/vstudio/vsdconfig/2008">
+
+  <DefineGuid Name="FSharpLanguageId" Value="AB4F38C9-B6E6-43BA-BE3B-58080B2CCCE3"/>
+  <DefineGuid Name="FSharpResultProviderId" Value="C08358A6-392D-4CA1-8A78-C0D9D05CED45"/>
+
+  <ManagedComponent
+    ComponentId="FSharpResultProviderId"
+    ComponentLevel="63000"
+    AssemblyName="FSharp.ExpressionEvaluator.ResultProvider">
+
+    <Class Name="FSharp.ExpressionEvaluator.ResultProvider">
+      <Implements>
+        <InterfaceGroup>
+          <Filter>
+            <LanguageId RequiredValue="FSharpLanguageId"/>
+          </Filter>
+          <Interface Name="IDkmClrResultProvider"/>
+        </InterfaceGroup>
+      </Implements>
+    </Class>
+
+  </ManagedComponent>
+</Configuration>

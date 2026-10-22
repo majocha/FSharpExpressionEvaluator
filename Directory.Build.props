@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <WarnOn>$(WarnOn);3390</WarnOn>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- FSharp.Core is pinned explicitly per project (see docs/DESIGN.md §8). -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Version>0.0.1</Version>
+    <Authors>Jakub Majocha</Authors>
+  </PropertyGroup>
+</Project>

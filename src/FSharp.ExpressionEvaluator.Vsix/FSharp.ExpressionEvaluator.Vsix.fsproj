@@ -1,0 +1,64 @@
+<Project>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <!--
+    Packaging-only project (docs/DESIGN.md §10). Its own assembly is not shipped; the VSIX carries
+    the Concord components (dll + vsdconfig) and FSharp.Core for hosts without the F# workload.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>FSharp.ExpressionEvaluator.Vsix</AssemblyName>
+    <GeneratePkgDefFile>false</GeneratePkgDefFile>
+    <IncludeAssemblyInVSIXContainer>false</IncludeAssemblyInVSIXContainer>
+    <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
+    <IncludeDebugSymbolsInLocalVSIXDeployment>false</IncludeDebugSymbolsInLocalVSIXDeployment>
+    <VsixType>v3</VsixType>
+    <DeployExtension>false</DeployExtension>
+    <TargetVSVersion>18.0</TargetVSVersion>
+    <VSSDKTargetPlatformRegRootSuffix>Exp</VSSDKTargetPlatformRegRootSuffix>
+    <StartAction>Program</StartAction>
+    <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
+    <StartArguments>/RootSuffix Exp /Log</StartArguments>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Vsix.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="source.extension.vsixmanifest">
+      <SubType>Designer</SubType>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FSharp.ExpressionEvaluator.ResultProvider\FSharp.ExpressionEvaluator.ResultProvider.fsproj">
+      <IncludeOutputGroupsInVSIX>BuiltProjectOutputGroup</IncludeOutputGroupsInVSIX>
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\FSharp.ExpressionEvaluator.ExpressionCompiler\FSharp.ExpressionEvaluator.ExpressionCompiler.fsproj">
+      <IncludeOutputGroupsInVSIX>BuiltProjectOutputGroup</IncludeOutputGroupsInVSIX>
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="$(PkgFSharp_Core)\lib\netstandard2.0\FSharp.Core.dll" Link="FSharp.Core.dll">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+  <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" />
+
+  <!-- VSSDK build tools declare the CSharp capability, which makes VS use the C# language service. -->
+  <ItemGroup>
+    <ProjectCapability Remove="CSharp" />
+  </ItemGroup>
+</Project>

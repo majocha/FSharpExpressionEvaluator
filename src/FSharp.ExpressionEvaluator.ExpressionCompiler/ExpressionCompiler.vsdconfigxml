@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- See docs/DESIGN.md §4. IDE-side component; same level as Roslyn's expression compilers. -->
+<Configuration xmlns="http://schemas.microsoft.com/vstudio/vsdconfig/2008">
+
+  <DefineGuid Name="FSharpLanguageId" Value="AB4F38C9-B6E6-43BA-BE3B-58080B2CCCE3"/>
+  <DefineGuid Name="FSharpExpressionCompilerId" Value="0517C25A-50CC-4589-A2A0-3CADBF4526DA"/>
+
+  <ManagedComponent
+    ComponentId="FSharpExpressionCompilerId"
+    ComponentLevel="9991500"
+    Synchronized="true"
+    AssemblyName="FSharp.ExpressionEvaluator.ExpressionCompiler">
+
+    <Class Name="FSharp.ExpressionEvaluator.ExpressionCompiler">
+      <Implements>
+        <InterfaceGroup>
+          <Filter>
+            <LanguageId RequiredValue="FSharpLanguageId"/>
+          </Filter>
+          <Interface Name="IDkmClrExpressionCompiler"/>
+        </InterfaceGroup>
+        <InterfaceGroup>
+          <Filter>
+            <LanguageId RequiredValue="FSharpLanguageId"/>
+            <RuntimeId RequiredValue="DkmRuntimeId.Clr"/>
+            <RuntimeId RequiredValue="DkmRuntimeId.ClrNativeCompilation"/>
+          </Filter>
+          <Interface Name="IDkmLanguageFrameDecoder"/>
+          <Interface Name="IDkmLanguageInstructionDecoder"/>
+        </InterfaceGroup>
+      </Implements>
+    </Class>
+
+  </ManagedComponent>
+</Configuration>

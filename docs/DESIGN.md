@@ -1085,7 +1085,7 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;
 - tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
-  (20 passing).
+  (22 passing).
 
 **API (internal for now).**
 
@@ -1226,6 +1226,22 @@ surgery than planned:
       - In a generic class, an expression that compiles to extra methods of
         `<>x` is refused, since those methods would need their type
         variables shifted.
+15. **Task state machines.** Only lowered state machines are supported: a
+    `MoveNext` on a generated struct. Released SDKs (11, maybe 10) don't
+    lower them in Debug builds; that's a bug, fixed on dotnet/fsharp main.
+    - **Variables.** Hoisted variables are fields of the struct, under the
+      variables' own names, so the fields of `this` above cover them. The
+      plumbing fields (`Data`, `ResumptionPoint`, `awaiter`) are left out.
+      Variables that aren't hoisted are ordinary PDB locals of `MoveNext`.
+    - **`this`.** The struct's own `this` is hidden: it is typed `nativeint`
+      for checking, and `<>m0`'s first parameter is given the struct's byref
+      type in IL.
+    - **The member's `this`.** In a member, the original `this` is hoisted
+      into a field named `this`. That field is the expression's `this`, and
+      it brings the class's own fields (`let` fields) into scope through a
+      second load, shadowed by the frame's own fields.
+    - **Structs elsewhere.** `this` of an ordinary struct member is now
+      `byref<T>`.
 
 **Tested (in-process, the query invoked by reflection).**
 
@@ -1250,14 +1266,15 @@ surgery than planned:
 - generic frames: a generic function, a member of a generic class
   (including a lambda capturing a `'T` field), and a generic method of a
   generic class (`'U * 'T`);
+- `task` frames: hoisted variables and a `MoveNext` local, plumbing not in
+  scope, and a task in a class member reading `this.Owner`, the hoisted
+  parameter and the class's `let` fields;
 - F# error diagnostics.
 
 **Next in M3**
 
-- **State machines and the rest of §6.4.** For `task`/`seq` frames, the
-  hoisted variables are fields of the state machine. Fields of `this` cover
-  part of it already; the naming conventions and ref-cell unwrapping still
-  need doing.
+- **The rest of §6.4.** Other state machines (`seq`, `async`), hoisted
+  names that clash (if the compiler renames them), and ref-cell unwrapping.
 - **Generic constraints.** Copy the constraints of the frame's type
   parameters onto the typars.
 - **The rest of §6.6–6.8.** Format specifiers, assignment (including to

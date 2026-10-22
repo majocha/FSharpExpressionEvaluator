@@ -842,7 +842,7 @@ Removed in M0: `ExpressionEvaluator.csproj`, `Properties/`, the root
 | **M0** ✅ | Spikes: F#-only VSIX skeleton loads in VS 18 Exp; RP registered for F# that chains everything; decoder stub. Confirm every **(verify)** item: chaining, msvsmon loading, `GetSymReader` returning portable metadata, reading F# resources from debuggee memory. | Done 2026-10-22, see §13 |
 | **M1** ✅ | **Result Provider v1**: shapes from §5.2, values and types (§5.3), full names (§5.4), hiding rules, delegation; unit tests against live values. Expressions still evaluated by C#. | Done 2026-10-22, see §14 |
 | **M2** ✅ | **Frame and instruction decoder** (§7) | Done 2026-10-22, see §15 |
-| **M3** | **Compiler core in the FCS branch**: in-memory `TcImports` with sigdata; frame `TcEnv`; storage hooks; pre-seeded locals; query emit; accessor domain. Tested in-process, without VS. | Locals, params, `this`, module values, member access, calls, operators, lambdas compile and pass IL checks |
+| **M3** 🚧 | **Compiler core in the FCS branch**: in-memory `TcImports` with sigdata; frame `TcEnv`; storage hooks; pre-seeded locals; query emit; accessor domain. Tested in-process, without VS. | In progress, see §16 |
 | **M4** | **Concord integration**: metadata context and caching, retries, aliases, format specifiers, Locals query (`1714`), assignment, side-effect flags, C# fallback switch | Watch, Immediate, conditional breakpoints and tracepoints work in `TestDebuggee`; perf targets (§6.9) met |
 | **M5** | Closures, state machines and temporaries (§6.4); custom type info (§6.8); RP uses it | `task`, `seq` and closure frames show the right variables |
 | **M6** | Upstream work: PDB CDIs (§9) in `dotnet/fsharp`; EE consumes them when present | Heuristics become fallbacks |
@@ -1074,4 +1074,93 @@ Return types show as `unit`, `int list * (int * string)` and so on.
   - Whether to strip the namespace: VS shows the module name separately.
   - Whether closures should name their enclosing function rather than
     `name@line`.
+
+---
+
+## 16. M3 progress (2026-10-22)
+
+**Where.** Branch `expression-evaluator` of `dotnet/fsharp`, in the local worktree
+`E:\repos\fsharp.worktrees\expression-evaluator`; not pushed. The code:
+
+- `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
+  `FSharp.Compiler.Debugging.ExpressionEvaluation`;
+- tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
+  (8 passing).
+
+**API (internal for now).**
+
+- `EvaluationSession.Create(references)` builds `TcGlobals`/`TcImports` once.
+- `CompileExpression(frame, text, ?localsAsParameters)` returns the query
+  assembly bytes, `<>x`/`<>m0`, and the F# result type (`int list`), or F#
+  diagnostics (`FS0039 …`).
+- `FrameContext` carries:
+  - the frame method (assembly name and token);
+  - the PDB opens;
+  - the locals in scope (name and slot).
+
+**How it works.** This is the §6.1 approach, realised with less compiler
+surgery than planned:
+
+1. **Frame.** The frame's method is found by token. The F# entities enclosing
+   it are looked up in the debuggee CCU.
+2. **Opens.** Its namespace and modules are opened (skipping
+   `RequireQualifiedAccess`), followed by the PDB's opens.
+3. **Variables.** `this`, the parameters and the in-scope locals become local
+   `Val`s in the `TcEnv`, typed by importing their IL types. The locals' IL
+   types come from the frame's local signature.
+4. **Access.** The frame's module and the debuggee assembly are added to
+   `eInternalsVisibleCompPaths`. That grants F# `private` access within the
+   frame's module and `internal` access to the assembly, with no change to
+   `AccessibilityLogic`.
+5. **Checking.** The expression is wrapped as source,
+   ``module ``<>x`` … let ``<>m0`` () = (expr)``, and checked with the
+   standard `CheckOneImplFile`. Post-inference checks accept the free frame
+   `Val`s.
+6. **Rewrite to parameters.** The checked `<>m0` is rewritten to
+   `fun this p1 … l1 … -> body`, with a matching `ValReprInfo`. IlxGen therefore
+   stores the frame values as **method arguments**: no new `ValStorage` kind
+   or IlxGen hook was needed.
+7. **Code generation.** `ApplyAllOptimizations` (local optimizations off;
+   `inline` is still inlined), then `GenerateIlxCode`, `mkILSimpleModule` and
+   `WriteILBinaryInMemory`, as `fsi` does.
+8. **Locals into slots.** The emitted `<>m0` is rewritten at IL level: the
+   trailing parameters that stand for frame locals become the **frame's local
+   slots**. The frame's full local signature is prepended to the method's
+   locals, `ldarg`/`starg`/`ldarga` on them become `ldloc`/`stloc`/`ldloca`,
+   and the method's own locals shift up. This replaces the planned "pre-seeded
+   locals" IlxGen hook.
+9. **Access at run time.** The query assembly defines and applies
+   `IgnoresAccessChecksToAttribute` for the debuggee. CoreCLR then permits the
+   private access when the query runs as ordinary code (tests, and
+   func-eval-loaded queries). The debugger's IL interpreter ignores access
+   anyway.
+
+**Tested (in-process, the query invoked by reflection).**
+
+- constants;
+- parameters;
+- `this` and instance members;
+- module values and FSharp.Core functions, including inlined operators and a
+  lambda capturing a parameter (`moduleValue |> List.map (fun i -> i * x)`);
+- private module values;
+- locals, both as parameters and in their frame slots (the query's local
+  signature starts with the frame's);
+- F# error diagnostics.
+
+**Next in M3**
+
+- **In-memory debuggee metadata.** Build imports from metadata blocks plus the
+  F# resources read from process memory (§6.2, §13), instead of file paths.
+  The local signature must then be decoded from its `StandAloneSig` token: it
+  currently comes from a second reader of the binary that includes bodies.
+- **Closures and state machines (§6.4).** Frames inside closures need
+  `this.field` variables (§6.4). The rewrite-to-parameters scheme extends
+  naturally: a capture becomes a field load from `this`.
+- **Generics.** Generic frames (map the frame's type parameters to F# typars)
+  and generic results (an expression whose type is still generic, e.g. `[]`,
+  should default to `obj` rather than make `<>m0` generic).
+- **Aliases and the rest of §6.6–6.8.** `$exception` and friends, format
+  specifiers, assignment, side-effect flags and custom type info.
+- **Diagnostics.** Line and column numbers relative to the user's text rather
+  than the synthesized wrapper.
 

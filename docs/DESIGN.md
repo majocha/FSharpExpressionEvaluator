@@ -1085,7 +1085,7 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;
 - tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
-  (10 passing).
+  (13 passing).
 
 **API (internal for now).**
 
@@ -1165,6 +1165,27 @@ surgery than planned:
       The existing multi-project tests still pass. The only failure needs a
       TestTP artifact that isn't built in this worktree.
 
+11. **Fields of `this`.** In instance frames, the instance fields of `this`
+    are variables too, shadowed by the parameters and then the locals. That
+    covers a closure's captured values and a class's `let` fields.
+    - **Skipped:** compiler-generated and backing fields (`X@`, `_tag`), and
+      fields whose type is a generated class.
+    - **Reads become field loads.** After checking, each read of such a
+      variable is rewritten in the typed tree into a field load from `this`,
+      as class `let` fields are compiled. A lambda inside the expression then
+      simply captures `this`.
+    - **`this` in closures.** Closure classes are not in the assembly's F#
+      signature data, so `this` gets the nearest base type F# can see (e.g.
+      `FSharpFunc<int, int>`). The field loads still name the generated
+      class, which exists in IL.
+    - **One more FCS change.** The optimizer's protected-field check now
+      tolerates such types: `AccessibilityLogic.isProtectedILFieldSpec`
+      ignores a type it can't import.
+12. **Generic results.** An expression whose type stays generic (`[]`,
+    `None`) has its type parameters fixed to `obj` (`obj list`): the debugger
+    runs the query without choosing type arguments for it. The result type is
+    read from the rewritten binding.
+
 **Tested (in-process, the query invoked by reflection).**
 
 - constants;
@@ -1178,16 +1199,20 @@ surgery than planned:
   token;
 - a session whose modules all come from memory, metadata-only, under paths
   that don't exist;
+- a closure frame (`captured + x`, also from inside a lambda);
+- a class member reading `let` fields, one of them mutable;
+- generic results (`[]` is `obj list`);
 - F# error diagnostics.
 
 **Next in M3**
 
-- **Closures and state machines (§6.4).** Frames inside closures need
-  `this.field` variables (§6.4). The rewrite-to-parameters scheme extends
-  naturally: a capture becomes a field load from `this`.
-- **Generics.** Generic frames (map the frame's type parameters to F# typars)
-  and generic results (an expression whose type is still generic, e.g. `[]`,
-  should default to `obj` rather than make `<>m0` generic).
+- **State machines and the rest of §6.4.** For `task`/`seq` frames, the
+  hoisted variables are fields of the state machine. Fields of `this` cover
+  part of it already; the naming conventions and ref-cell unwrapping still
+  need doing.
+- **Generic frames.** The frame's type parameters need to map to F# typars.
+  For a generic class that needs a generic query *class*, which an F#
+  module can't be.
 - **Aliases and the rest of §6.6–6.8.** `$exception` and friends, format
   specifiers, assignment, side-effect flags and custom type info.
 - **Diagnostics.** Line and column numbers relative to the user's text rather

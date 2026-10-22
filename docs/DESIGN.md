@@ -1085,7 +1085,7 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;
 - tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
-  (17 passing).
+  (20 passing).
 
 **API (internal for now).**
 
@@ -1207,6 +1207,25 @@ surgery than planned:
     - **No intrinsics metadata needed.** The call is raw IL against an
       assembly reference, so the checker never imports the intrinsics
       assembly.
+14. **Generic frames.** The frame's class and method type parameters become
+    rigid F# typars, class ones first. They type the frame's values, and the
+    expression can name them (`typeof<'T>`).
+    - **The query is generic.** `<>m0` is made generic over these typars.
+      After IL generation the class ones move from `<>m0` to `<>x`, so the
+      debugger instantiates the query class and method like the frame's.
+      IL numbers class type parameters before method ones, so the body's
+      type variables keep their meaning, and closures generated for the
+      expression just work.
+    - **Scope checks run twice.** Until `<>m0` is rewritten, the checker
+      sees the frame's typars as escaping (FS3188). Those errors are ignored
+      in the first pass. The post-inference checks
+      (`PostTypeCheckSemanticChecks.CheckImplFile`) are then rerun on the
+      rewritten tree, where any real escape is still reported.
+    - **Limits.**
+      - Constraints of the frame's type parameters aren't copied yet.
+      - In a generic class, an expression that compiles to extra methods of
+        `<>x` is refused, since those methods would need their type
+        variables shifted.
 
 **Tested (in-process, the query invoked by reflection).**
 
@@ -1228,6 +1247,9 @@ surgery than planned:
   id `$1` of type `int list`, a user variable, `$1` left alone inside a
   string and a comment, and an unknown type reading as `obj` (calls go to a
   stand-in `IntrinsicMethods` in the test assembly);
+- generic frames: a generic function, a member of a generic class
+  (including a lambda capturing a `'T` field), and a generic method of a
+  generic class (`'U * 'T`);
 - F# error diagnostics.
 
 **Next in M3**
@@ -1236,9 +1258,8 @@ surgery than planned:
   hoisted variables are fields of the state machine. Fields of `this` cover
   part of it already; the naming conventions and ref-cell unwrapping still
   need doing.
-- **Generic frames.** The frame's type parameters need to map to F# typars.
-  For a generic class that needs a generic query *class*, which an F#
-  module can't be.
+- **Generic constraints.** Copy the constraints of the frame's type
+  parameters onto the typars.
 - **The rest of §6.6–6.8.** Format specifiers, assignment (including to
   user variables), side-effect flags and custom type info.
 - **Diagnostics.** Line and column numbers relative to the user's text rather

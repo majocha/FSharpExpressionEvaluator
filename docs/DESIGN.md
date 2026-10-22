@@ -1085,16 +1085,20 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;
 - tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
-  (8 passing).
+  (10 passing).
 
 **API (internal for now).**
 
-- `EvaluationSession.Create(references)` builds `TcGlobals`/`TcImports` once.
+- `EvaluationSession.Create(modules)` builds `TcGlobals`/`TcImports` once, from
+  the debuggee's modules **in memory**. Each module is either a full PE image,
+  or (as Concord exposes it) its metadata blob plus selected embedded
+  resources (the F# signature and optimization data) at their offsets.
 - `CompileExpression(frame, text, ?localsAsParameters)` returns the query
   assembly bytes, `<>x`/`<>m0`, and the F# result type (`int list`), or F#
   diagnostics (`FS0039 …`).
 - `FrameContext` carries:
   - the frame method (assembly name and token);
+  - its local-signature token (`GetLocalSignatureToken`);
   - the PDB opens;
   - the locals in scope (name and slot).
 
@@ -1135,6 +1139,32 @@ surgery than planned:
    func-eval-loaded queries). The debugger's IL interpreter ignores access
    anyway.
 
+10. **Reading the debuggee from memory.**
+    - **Wrapping.** A metadata-only module is wrapped in a minimal in-memory
+      PE (CLI header, metadata, and a resources directory with the given
+      resources at their original offsets; empty blobs for the others,
+      because the IL reader reads every embedded resource).
+    - **Project references.** Every module becomes an `IProjectReference`
+      whose contents are already available (`OpenILModuleReaderFromBytes` →
+      `RawFSharpAssemblyDataBackedByFileOnDisk`): the IDE's mechanism for
+      in-memory project outputs. No debuggee file needs to exist; the tests
+      use `Z:\debuggee\shared` and `Z:\debuggee\app` paths.
+    - **Local signature.** The frame's local signature is decoded from its
+      `StandAloneSig` token with System.Reflection.Metadata into AbstractIL
+      locals, so even the frame's module can be metadata-only. With a full
+      image, the method body is used as before.
+    - **Small FCS changes** let framework references come from such project
+      references:
+      - the primary-assembly reference keeps its project reference;
+      - the `System.Object` scan reads project-reference contents;
+      - `TcConfig.IsSystemAssemblyPath` classifies by path and name without
+        requiring the file;
+      - project references count as explicit primary/FSharp.Core
+        references.
+
+      The existing multi-project tests still pass. The only failure needs a
+      TestTP artifact that isn't built in this worktree.
+
 **Tested (in-process, the query invoked by reflection).**
 
 - constants;
@@ -1144,15 +1174,14 @@ surgery than planned:
   lambda capturing a parameter (`moduleValue |> List.map (fun i -> i * x)`);
 - private module values;
 - locals, both as parameters and in their frame slots (the query's local
-  signature starts with the frame's);
+  signature starts with the frame's), with the signature decoded from its
+  token;
+- a session whose modules all come from memory, metadata-only, under paths
+  that don't exist;
 - F# error diagnostics.
 
 **Next in M3**
 
-- **In-memory debuggee metadata.** Build imports from metadata blocks plus the
-  F# resources read from process memory (§6.2, §13), instead of file paths.
-  The local signature must then be decoded from its `StandAloneSig` token: it
-  currently comes from a second reader of the binary that includes bodies.
 - **Closures and state machines (§6.4).** Frames inside closures need
   `this.field` variables (§6.4). The rewrite-to-parameters scheme extends
   naturally: a capture becomes a field load from `this`.

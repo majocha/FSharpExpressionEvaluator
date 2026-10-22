@@ -8,7 +8,7 @@
 param(
     [ValidateSet('net10.0', 'net48')]
     [string] $Target = 'net10.0',
-    [string[]] $Expressions = @('xs', 'point', 'shape', 'opt', 'none', 'tuple', 'empty', 'nested', 'longList', 'moduleList', 'captured', 'counter', 'count', 'this'),
+    [string[]] $Expressions = @('point', 'shape', 'five', 'someShape', 'map', 'boxed', 'add', 'moduleList', 'captured', 'counter', 'count', 'this'),
     [int] $Breaks = 3,
     [string] $Log = (Join-Path $env:LOCALAPPDATA 'FSharpExpressionEvaluator\ee.log'),
     [switch] $KeepVsOpen,
@@ -173,7 +173,12 @@ function Show-Value($e, [string] $indent) {
             if (-not $e.IsValidValue -and $e.Value -match 'error CS0103|does not exist|is not defined') { continue }
             Show-Value $e '  '
             $children = @(Get-Items $e.DataMembers ([EnvDTE.Expressions]) | Select-Object -First 4)
-            foreach ($child in $children) { Show-Value $child '      ' }
+            foreach ($child in $children) {
+                Show-Value $child '      '
+                if ($child.Name -eq 'Raw View') {
+                    foreach ($raw in @(Get-Items $child.DataMembers ([EnvDTE.Expressions]) | Select-Object -First 3)) { Show-Value $raw '          ' }
+                }
+            }
         }
         $dte.Debugger.Go($false)
     }

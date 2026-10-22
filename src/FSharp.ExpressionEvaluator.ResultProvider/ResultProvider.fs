@@ -1,123 +1,192 @@
 namespace FSharp.ExpressionEvaluator
 
-open System
 open System.Collections.ObjectModel
-open System.Reflection
 open Microsoft.VisualStudio.Debugger
 open Microsoft.VisualStudio.Debugger.Clr
 open Microsoft.VisualStudio.Debugger.ComponentInterfaces
 open Microsoft.VisualStudio.Debugger.Evaluation
 open Microsoft.VisualStudio.Debugger.Evaluation.ClrCompilation
+open FSharp.ExpressionEvaluator.FSharpValues
 
-/// Attached to results this component created, so later GetChildren/GetClrValue calls
-/// can tell them apart from results created by the C# result provider.
+/// A row under an F# value: one of its F# children, or the Raw View delegated to C#.
+type internal Row =
+    | ChildRow of Child
+    | RawViewRow
+
+/// Attached to results this component created, so later calls can tell them from C# results.
 [<AllowNullLiteral>]
-type internal FSharpResultData(value: DkmClrValue, fullName: string) =
+type internal FSharpResultData(clrValue: DkmClrValue, value: IValue, declaredType: DkmClrType, fullName: string) =
     inherit DkmDataItem()
+    member _.ClrValue = clrValue
     member _.Value = value
+    member _.DeclaredType = declaredType
     member _.FullName = fullName
 
+/// The Raw View row: shown without a value (so no func-eval display), its children come from the
+/// C# provider with the `raw` specifier.
 [<AllowNullLiteral>]
-type internal ChildrenData(children: DkmEvaluationResult[]) =
+type internal RawViewData(parent: FSharpResultData) =
     inherit DkmDataItem()
-    member _.Children = children
+    member _.Parent = parent
 
-/// M0 spike (docs/DESIGN.md §5.1): renders F# lists itself and chains everything else
-/// to the next IDkmClrResultProvider (Roslyn's C# one), logging which path was taken.
+[<AllowNullLiteral>]
+type internal RowsData(parent: FSharpResultData, rows: Row[]) =
+    inherit DkmDataItem()
+    member _.Parent = parent
+    member _.Rows = rows
+
+/// F# result provider (docs/DESIGN.md §5.1): renders F# shapes from memory and chains every other
+/// value to the next IDkmClrResultProvider (Roslyn's C# one). Children of F# values are created
+/// through Concord again, so each lands with whichever provider owns its shape.
 type ResultProvider() =
 
     static let log = Log.write "RP"
     static do log "ResultProvider loaded"
 
+    static let options = FSharpValues.defaultOptions
     static let noFormatSpecifiers = ReadOnlyCollection<string>([||])
 
-    static let maxItems = 100
+    static let hasSpecifier (name: string) (specifiers: ReadOnlyCollection<string>) =
+        not (isNull specifiers) && specifiers.Contains name
 
-    static let field (ctx: DkmInspectionContext) name (value: DkmClrValue) =
-        value.GetMemberValue(name, int MemberTypes.Field, null, ctx)
+    static let lmrType (t: DkmClrType) =
+        if isNull t then None else Lmr.safe None (fun () -> Some(LmrType.Of(t.GetLmrType())))
 
-    static let isError (value: DkmClrValue) =
-        value.ValueFlags.HasFlag DkmClrValueFlags.Error
+    static let typeColumn (declared: IType option) (value: IValue) =
+        match declared with
+        | Some d when not value.IsNull && FSharpTypes.shape d = FSharpTypes.NotFSharp ->
+            // e.g. a list held in an `obj`: show both, as the C# provider does.
+            $"{FSharpTypes.typeName d} {{{FSharpTypes.typeName (FSharpTypes.displayType value.Type)}}}"
+        | _ -> FSharpValues.typeNameOf declared value
 
-    /// Items of an F# list, read from its fields (no func-eval).
-    static let listItems ctx (list: DkmClrValue) =
-        let rec loop (node: DkmClrValue) acc n =
-            let tail = field ctx "tail" node
+    static let tryCreate (clrValue: DkmClrValue) (declaredType: DkmClrType) context name fullName =
+        let value = ConcordValue(clrValue, context) :> IValue
+        let declared = lmrType declaredType
 
-            if isError tail || tail.IsNull || n = maxItems then
-                List.rev acc, not tail.IsNull
-            else
-                loop tail (field ctx "head" node :: acc) (n + 1)
+        FSharpValues.tryPreview options declared value
+        |> Option.map (fun preview ->
+            let flags =
+                DkmEvaluationResultFlags.ReadOnly
+                ||| (if FSharpValues.hasChildren value then DkmEvaluationResultFlags.Expandable else DkmEvaluationResultFlags.None)
 
-        loop list [] 0
+            DkmSuccessEvaluationResult.Create(
+                context,
+                clrValue.StackFrame,
+                name,
+                fullName,
+                flags,
+                preview,
+                null,
+                typeColumn declared value,
+                DkmEvaluationResultCategory.Data,
+                DkmEvaluationResultAccessType.None,
+                DkmEvaluationResultStorageType.None,
+                DkmEvaluationResultTypeModifierFlags.None,
+                clrValue.Address,
+                null,
+                null,
+                FSharpResultData(clrValue, value, declaredType, fullName)
+            ))
 
-    static let formatList ctx (items: DkmClrValue list) truncated =
-        let shown = items |> List.truncate 10 |> List.map (fun v -> v.GetValueString(ctx, noFormatSpecifiers))
-        let more = if truncated || items.Length > 10 then "; ..." else ""
-        "[" + String.Join("; ", shown) + more + "]"
+    static let rows (data: FSharpResultData) =
+        let fullName = Option.ofObj data.FullName
+        let children = FSharpValues.tryChildren options fullName data.Value |> Option.defaultValue []
+        let raw = if FSharpValues.hasRawView data.Value then [ RawViewRow ] else []
+        [| yield! children |> List.map ChildRow; yield! raw |]
 
-    static let tryCreateFSharpResult (value: DkmClrValue) ctx name fullName =
-        if isNull value || value.IsNull || isError value then
-            None
-        else
-            let lmrType = value.Type.GetLmrType()
+    static let clrType (appDomain: DkmClrAppDomain) (t: IType option) =
+        match t with
+        | Some t -> Lmr.safe null (fun () -> DkmClrType.Create(appDomain, t.Native :?> Microsoft.VisualStudio.Debugger.Metadata.Type))
+        | None -> null
 
-            if FSharpShapes.isFSharpList lmrType then
-                let items, truncated = listItems ctx value
+    static let rawFullName (parent: FSharpResultData) =
+        if isNull parent.FullName then null else parent.FullName + ", raw"
 
-                let flags =
-                    DkmEvaluationResultFlags.ReadOnly
-                    ||| (if items.IsEmpty then DkmEvaluationResultFlags.None else DkmEvaluationResultFlags.Expandable)
+    /// The same inspection context with ShowValueRaw: the C# provider then skips proxies and
+    /// DebuggerDisplay, and our GetResult steps aside (as for `x, raw`).
+    static let rawContext (c: DkmInspectionContext) =
+        DkmInspectionContext.Create(
+            c.InspectionSession,
+            c.RuntimeInstance,
+            c.Thread,
+            c.Timeout,
+            c.EvaluationFlags ||| DkmEvaluationFlags.ShowValueRaw,
+            c.FuncEvalFlags,
+            c.Radix,
+            c.Language,
+            c.ReturnValue,
+            c.AdditionalVisualizationData,
+            c.AdditionalVisualizationDataPriority,
+            c.ReturnValues,
+            c.SymbolsConnection
+        )
 
-                DkmSuccessEvaluationResult.Create(
-                    ctx,
-                    value.StackFrame,
-                    name,
-                    fullName,
-                    flags,
-                    formatList ctx items truncated,
-                    null,
-                    FSharpShapes.typeName lmrType,
-                    DkmEvaluationResultCategory.Data,
-                    DkmEvaluationResultAccessType.None,
-                    DkmEvaluationResultStorageType.None,
-                    DkmEvaluationResultTypeModifierFlags.None,
-                    value.Address,
-                    null,
-                    null,
-                    FSharpResultData(value, fullName)
-                )
-                |> Some
-            else
-                None
+    /// Children of a Raw View row: the C# provider's children of the value in a raw context.
+    static let rawViewChildren (raw: RawViewData) (workList: DkmWorkList) initialRequestSize context (k: DkmCompletionRoutine<DkmGetChildrenAsyncResult>) =
+        let parent = raw.Parent
+        let context = rawContext context
 
-    /// Gets results for several values one after another through Concord, then calls k.
-    static let getResultsSequentially
-        (workList: DkmWorkList)
-        ctx
-        (requests: (DkmClrValue * DkmClrType * string * string)[])
-        (k: DkmEvaluationResult[] -> unit)
-        =
-        let results = Array.zeroCreate requests.Length
+        let complete (r: DkmEvaluationAsyncResult) =
+            match r.Result with
+            | null -> k.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult(exn $"Raw View: error 0x{r.ErrorCode:X8}"))
+            | csharp -> csharp.GetChildren(workList, initialRequestSize, context, k)
+
+        parent.ClrValue.GetResult(
+            workList, parent.DeclaredType, null, context, noFormatSpecifiers, "Raw View", rawFullName parent, DkmCompletionRoutine<_>(complete))
+
+    /// Creates the results for some rows one after another through Concord, then calls k.
+    static let evaluateRows (workList: DkmWorkList) context (parent: FSharpResultData) (rows: Row[]) (k: DkmEvaluationResult[] -> unit) =
+        let results = Array.zeroCreate rows.Length
+        let frame = parent.ClrValue.StackFrame
+
+        let failed name fullName message =
+            DkmFailedEvaluationResult.Create(context, frame, name, fullName, message, DkmEvaluationResultFlags.None, null) :> DkmEvaluationResult
 
         let rec next i =
-            if i = requests.Length then
+            if i = rows.Length then
                 k results
             else
-                let value, declaredType, name, fullName = requests[i]
-
                 let complete (r: DkmEvaluationAsyncResult) =
                     results[i] <-
                         match r.Result with
-                        | null ->
-                            DkmFailedEvaluationResult.Create(ctx, value.StackFrame, name, fullName, $"error 0x{r.ErrorCode:X8}", DkmEvaluationResultFlags.None, null)
-                            :> DkmEvaluationResult
+                        | null -> failed "?" null $"error 0x{r.ErrorCode:X8}"
                         | result -> result
 
                     next (i + 1)
 
-                // Chains to the next result provider (C#); our own GetResult is not re-entered.
-                value.GetResult(workList, declaredType, null, ctx, noFormatSpecifiers, name, fullName, DkmCompletionRoutine<_>(complete))
+                match rows[i] with
+                | RawViewRow ->
+                    results[i] <-
+                        DkmSuccessEvaluationResult.Create(
+                            context,
+                            frame,
+                            "Raw View",
+                            rawFullName parent,
+                            DkmEvaluationResultFlags.ReadOnly ||| DkmEvaluationResultFlags.Expandable,
+                            "",
+                            null,
+                            "",
+                            DkmEvaluationResultCategory.Data,
+                            DkmEvaluationResultAccessType.None,
+                            DkmEvaluationResultStorageType.None,
+                            DkmEvaluationResultTypeModifierFlags.None,
+                            null,
+                            null,
+                            null,
+                            RawViewData parent
+                        )
+
+                    next (i + 1)
+                | ChildRow child ->
+                    let fullName = Option.toObj child.FullName
+
+                    match child.Value.Value with
+                    | :? ConcordValue as v ->
+                        let declared = clrType v.Value.Type.AppDomain child.DeclaredType
+                        v.Value.GetResult(workList, declared, null, context, noFormatSpecifiers, child.Name, fullName, DkmCompletionRoutine<_>(complete))
+                    | v ->
+                        results[i] <- failed child.Name fullName v.Error
+                        next (i + 1)
 
         next 0
 
@@ -127,63 +196,56 @@ type ResultProvider() =
             (clrValue, workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
             =
             let created =
-                try
-                    tryCreateFSharpResult clrValue inspectionContext resultName resultFullName
-                with e ->
-                    Log.exn "RP" $"GetResult '{resultName}'" e
+                if inspectionContext.EvaluationFlags.HasFlag DkmEvaluationFlags.ShowValueRaw
+                   || hasSpecifier "raw" formatSpecifiers
+                   || hasSpecifier "results" formatSpecifiers then
                     None
+                else
+                    try
+                        tryCreate clrValue declaredType inspectionContext resultName resultFullName
+                    with e ->
+                        Log.exn "RP" $"GetResult '{resultName}'" e
+                        None
 
             match created with
-            | Some result ->
-                log $"GetResult '{resultName}' -> F# result"
-                completionRoutine.Invoke(DkmEvaluationAsyncResult(result))
+            | Some result -> completionRoutine.Invoke(DkmEvaluationAsyncResult(result))
             | None ->
-                log $"GetResult '{resultName}' ({clrValue.Type.GetLmrType().FullName}) -> chained"
-
+                // Not an F# shape: the next provider (C#) renders it. This call does not come back here.
                 clrValue.GetResult(
-                    workList,
-                    declaredType,
-                    customTypeInfo,
-                    inspectionContext,
-                    formatSpecifiers,
-                    resultName,
-                    resultFullName,
-                    completionRoutine
-                )
+                    workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
 
         member _.GetChildren(result, workList, initialRequestSize, inspectionContext, completionRoutine) =
-            match result.GetDataItem<FSharpResultData>() with
-            | null ->
-                log $"GetChildren '{result.Name}' -> chained"
-                result.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
-            | data ->
-                log $"GetChildren '{result.Name}' -> F# list items"
-                let items, _ = listItems inspectionContext data.Value
-                let itemType = data.Value.Type.GenericArguments[0]
+            match result.GetDataItem<FSharpResultData>(), result.GetDataItem<RawViewData>() with
+            | null, null -> result.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
+            | null, raw -> rawViewChildren raw workList initialRequestSize inspectionContext completionRoutine
+            | data, _ ->
+                try
+                    let rows = rows data
+                    let enumContext = DkmEvaluationResultEnumContext.Create(rows.Length, result.StackFrame, inspectionContext, RowsData(data, rows))
+                    let initial = Array.truncate initialRequestSize rows
 
-                let requests =
-                    items
-                    |> List.mapi (fun i item -> item, itemType, $"[{i}]", $"{data.FullName}[{i}]")
-                    |> List.toArray
-
-                getResultsSequentially workList inspectionContext requests (fun children ->
-                    let initial = Array.truncate initialRequestSize children
-
-                    let enumContext =
-                        DkmEvaluationResultEnumContext.Create(children.Length, result.StackFrame, inspectionContext, ChildrenData children)
-
-                    completionRoutine.Invoke(DkmGetChildrenAsyncResult(initial, enumContext)))
+                    evaluateRows workList inspectionContext data initial (fun children ->
+                        completionRoutine.Invoke(DkmGetChildrenAsyncResult(children, enumContext)))
+                with e ->
+                    Log.exn "RP" $"GetChildren '{result.Name}'" e
+                    completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
 
         member _.GetItems(enumContext, workList, startIndex, count, completionRoutine) =
-            match enumContext.GetDataItem<ChildrenData>() with
+            match enumContext.GetDataItem<RowsData>() with
             | null -> enumContext.GetItems(workList, startIndex, count, completionRoutine)
             | data ->
-                let items = data.Children |> Array.skip (min startIndex data.Children.Length) |> Array.truncate count
-                completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items))
+                try
+                    let rows = data.Rows |> Array.skip (min startIndex data.Rows.Length) |> Array.truncate count
+
+                    evaluateRows workList enumContext.InspectionContext data.Parent rows (fun items ->
+                        completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items)))
+                with e ->
+                    Log.exn "RP" "GetItems" e
+                    completionRoutine.Invoke(DkmEvaluationEnumAsyncResult.CreateErrorResult e)
 
         member _.GetClrValue(successResult) =
             match successResult.GetDataItem<FSharpResultData>() with
             | null -> successResult.GetClrValue()
-            | data -> data.Value
+            | data -> data.ClrValue
 
         member _.GetUnderlyingString(result) = result.GetUnderlyingString()

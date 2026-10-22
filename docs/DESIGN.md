@@ -67,9 +67,10 @@ Two findings shape the result-provider design:
 2. **`sformat.fs` cannot be reused as is.** It walks *live* objects with
    `System.Reflection`/`FSharp.Reflection`. A result provider sees
    *remote* values (`DkmClrValue`) and *LMR* types
-   (`Microsoft.VisualStudio.Debugger.Metadata`). LMR types subclass
-   `System.Type`, but `FSharpType.IsUnion` and similar instantiate attributes,
-   which LMR cannot do. `DkmClrValue.HostObjectValue` holds a value only for
+   (`Microsoft.VisualStudio.Debugger.Metadata`). LMR is a hierarchy *parallel*
+   to System.Reflection (`Metadata.Type : Metadata.MemberInfo : Object`,
+   confirmed in M1), so `FSharpType.IsUnion` and friends cannot even be
+   called on it. `DkmClrValue.HostObjectValue` holds a value only for
    primitives and strings. We keep its *policy* (F# literal syntax, `[a; b]`,
    `{ X = 1 }`, `Some x`, limits on print length and depth) and drop the code.
    See §5.3.
@@ -800,7 +801,7 @@ Removed in M0: `ExpressionEvaluator.csproj`, `Properties/`, the root
 | # | Deliverable | Exit criteria |
 |---|---|---|
 | **M0** ✅ | Spikes: F#-only VSIX skeleton loads in VS 18 Exp; RP registered for F# that chains everything; decoder stub. Confirm every **(verify)** item: chaining, msvsmon loading, `GetSymReader` returning portable metadata, reading F# resources from debuggee memory. | Done 2026-10-22, see §13 |
-| **M1** | **Result Provider v1**: shapes from §5.2, values and types (§5.3), full names (§5.4), hiding rules, delegation; unit tests on the Concord mock. Expressions still evaluated by C#. | `TestDebuggee` Locals/Watch display matches the §3.1 table |
+| **M1** ✅ | **Result Provider v1**: shapes from §5.2, values and types (§5.3), full names (§5.4), hiding rules, delegation; unit tests against live values. Expressions still evaluated by C#. | Done 2026-10-22, see §14 |
 | **M2** | **Frame and instruction decoder** (§7) | Call stack and breakpoint names in F# form |
 | **M3** | **Compiler core in the FCS branch**: in-memory `TcImports` with sigdata; frame `TcEnv`; storage hooks; pre-seeded locals; query emit; accessor domain. Tested in-process, without VS. | Locals, params, `this`, module values, member access, calls, operators, lambdas compile and pass IL checks |
 | **M4** | **Concord integration**: metadata context and caching, retries, aliases, format specifiers, Locals query (`1714`), assignment, side-effect flags, C# fallback switch | Watch, Immediate, conditional breakpoints and tracepoints work in `TestDebuggee`; perf targets (§6.9) met |
@@ -886,4 +887,94 @@ corlib types (§6.2), and FSharp.Core compatibility of the private FCS (§8.2).
 - The engine name passed to `Process2.Attach2` must be a plain `string`. A
   pipeline-wrapped `PSObject` fails with `0x8971001E`.
 - Opening the exe as a debug-only project skips the start window.
+
+---
+
+## 14. M1 results (2026-10-22)
+
+The F# result provider renders F# shapes from memory and chains everything else
+to C#, on .NET 10 (devenv) and .NET Framework x86 (msvsmon).
+
+**What `TestDebuggee` shows now** (Locals window, previously §13)
+
+| Local | Value | Type |
+|---|---|---|
+| `point` | `{ X = 1; Y = 2 }` | `TestDebuggee.Program.Point` |
+| `shape` / `rect` | `Circle 2.0` / `Rect (1.0, 2.5)` | `TestDebuggee.Program.Shape` |
+| `five` (≥4 cases, `_tag`) | `S ("x", 2)` | `TestDebuggee.Program.Five` |
+| `structUnion` | `SB "b"` | `TestDebuggee.Program.StructUnion` |
+| `opt` / `none` | `Some 42` / `None` | `int option` |
+| `someShape` | `Some (Circle 1.5)` | `TestDebuggee.Program.Shape option` |
+| `result` | `Error "failed"` | `Result<int, string>` |
+| `tuple` / `structTuple` | `(1, "a")` / `struct (1.5, 'c')` | `int * string` / `struct (float * char)` |
+| `nested` / `longList` | `[[1; 2]; [3]]` / `[1; …; 10; ...]` | `int list list` / `int list` |
+| `array` | `[\|1.0; 2.5\|]` | `float array` |
+| `map` / `set` | `map [("one", 1); ("two", 2)]` / `set [1; 2; 3]` | `Map<string, int>` / `Set<int>` |
+| `anon` | `{\| Count = 3; Name = "anon" \|}` | `{\| Count: int; Name: string \|}` |
+| `cell` | `{ contents = 7 }` | `int ref` |
+| `error` | `MyError (404, "not found")` | `exn {TestDebuggee.Program.MyError}` |
+| `boxed` | `[1; 2]` | `obj {int list}` |
+| `add` | `<fun:add@53>` | `int -> int -> int` |
+| closure `this` | `<fun:f@66>`, expands to `captured`, `counter` | `int -> int` |
+
+None of these use func-eval: no `__DebugDisplay` calls, and no "unsafe abort"
+dialog.
+
+**How it is built** (`src/FSharp.ExpressionEvaluator.ResultProvider`)
+
+- `Model.fs`: `IType`/`IValue` abstractions.
+  - LMR is not System.Reflection, so the shape logic is written once against
+    these interfaces.
+  - `LmrAdapters.fs` implements them over LMR and `DkmClrValue`, reading
+    fields with `GetMemberValue(name, Field)`.
+  - The tests implement them over reflection and live objects.
+- `FSharpTypes.fs`: shapes from `CompilationMapping`. Each kind of value is
+  recognized as follows:
+  - **Unions:**
+    - cases come from the `NewX` / `get_X` members;
+    - fields come from properties tagged `(Field, case, index)`, read through
+      their backing fields (`_name`, `item`, `Name@`);
+    - the current case is found from `_tag` when present, otherwise from the
+      runtime case subclass;
+    - `UseNullAsTrueValue` makes `null` the nullary case.
+  - **Records, anonymous records, ref cells and F# exceptions:** properties
+    tagged `(Field, index)`.
+  - **Closures:** by their `FSharpFunc` base.
+  - **Map and Set:** an in-order walk of their AVL tree.
+
+  The same file produces F# type names (precedence-aware `*` / `->`, postfix
+  generics, abbreviations, module suffix, nested generics).
+- `FSharpValues.fs`: previews in `%A` style, with item, depth and length
+  limits, plus children and full names.
+- `ResultProvider.fs`, the Concord glue:
+  - Each child is created through `DkmClrValue.GetResult`, so it comes back to
+    us or goes to C# according to its shape.
+  - The **Raw View** row is ours and carries no value text. Its children come
+    from C# in a copy of the inspection context with
+    `DkmEvaluationFlags.ShowValueRaw`. That flag, not the `raw` format
+    specifier, is what turns off proxies in Roslyn. Our `GetResult` also
+    steps aside under that flag.
+- `tests/FSharp.ExpressionEvaluator.ResultProvider.Tests`: 28 tests over every
+  union representation, records, tuples (including 8+ with `Rest`), Map/Set,
+  closures, literals, type names and full names. They replace the vendored
+  Concord mock that §10 planned.
+
+**Decisions and known gaps**
+
+- **Full names use C# syntax for now** (`v.X`, `v[0]`,
+  `((Ns.Shape.Circle)v).radius`), because the C# compiler still evaluates
+  expressions. They switch to F# syntax with M4.
+  - Generic union case classes, Map entries and Set items have no full name
+    (no Add Watch).
+- **Primitives are still rendered by C#**, at top level and as children
+  (`radius = 2 : double`). Inside F# previews they use F# literals (`2.0`,
+  `1L`, `'c'`). Owning primitives means taking over hex display, editing and
+  string visualizers. That is a deliberate next step, not part of v1.
+- The Type column shows `declared {runtime}` when the declared type is not an
+  F# shape (`obj {int list}`, `exn {…MyError}`).
+- Not yet covered:
+  - `Lazy<_>`, `seq` (Results View is still C#'s), `bigint` literals and units
+    of measure (§6.8 custom type info);
+  - honouring the hex radix inside previews;
+  - a configurable preview length.
 

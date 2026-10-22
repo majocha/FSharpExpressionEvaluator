@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit tests for the result provider core. The core files are compiled in directly (they are
+    internal and Concord-free) and run against live F# values through a System.Reflection adapter.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>FSharp.ExpressionEvaluator.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\Model.fs" Link="Core\Model.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Core\FSharpTypes.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpValues.fs" Link="Core\FSharpValues.fs" />
+    <Compile Include="ReflectionAdapter.fs" />
+    <Compile Include="Samples.fs" />
+    <Compile Include="TypeNameTests.fs" />
+    <Compile Include="PreviewTests.fs" />
+    <Compile Include="ChildrenTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" VersionOverride="10.1.402" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

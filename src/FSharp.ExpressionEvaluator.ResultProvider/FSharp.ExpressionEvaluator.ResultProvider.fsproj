@@ -11,7 +11,10 @@
 
   <ItemGroup>
     <Compile Include="..\Shared\Log.fs" Link="Shared\Log.fs" />
-    <Compile Include="FSharpShapes.fs" />
+    <Compile Include="Model.fs" />
+    <Compile Include="FSharpTypes.fs" />
+    <Compile Include="FSharpValues.fs" />
+    <Compile Include="LmrAdapters.fs" />
     <Compile Include="ResultProvider.fs" />
   </ItemGroup>
 

@@ -5,6 +5,7 @@
     <Project Path="src/FSharp.ExpressionEvaluator.Vsix/FSharp.ExpressionEvaluator.Vsix.fsproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/FSharp.ExpressionEvaluator.ResultProvider.Tests/FSharp.ExpressionEvaluator.ResultProvider.Tests.fsproj" />
     <Project Path="tests/TestDebuggee/TestDebuggee.fsproj" />
   </Folder>
   <Folder Name="/docs/">

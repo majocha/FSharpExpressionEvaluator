@@ -2,8 +2,7 @@
 
 An F# expression evaluator for the Visual Studio debugger, shipped as a VSIX written
 entirely in F#. When you stop in F# code, it shows values, types and call stack names the
-way F# writes them. Later milestones add F# syntax in Watch, Immediate and breakpoint
-conditions.
+way F# writes them, and it compiles F# expressions in Watch, Immediate and DataTips.
 
 Today, Visual Studio has no F# evaluator. F# frames fall back to the C# one: C# syntax,
 C# type names, and F# values rendered by calling `sprintf "%A"` inside the debugged process.
@@ -50,8 +49,27 @@ Names show curried argument groups, tuple parameters, `()`, operators and source
 also show closures without `.Invoke`, the frame's actual generic arguments and, optionally,
 argument values.
 
-**Not yet:** expressions are still compiled by the C# expression compiler, so Watch and
-Immediate take C# syntax. The F# compiler core (M3) and its integration (M4) are next.
+**F# expressions in Watch, Immediate and DataTips** (M4, in progress). They are compiled by
+the F# compiler, from a `dotnet/fsharp` branch built privately into the VSIX:
+
+```
+xs |> List.sum                      6
+List.map (fun i -> i * 2) xs        [2; 4; 6]
+captured + x                        6        (in a closure)
+count + by                          14       (a class let field)
+this.Increment 0                    12
+name.Length, h                      0x00000004
+```
+
+The compiler sees what the debuggee has loaded, read from its memory. That includes
+FSharp.Core's inline functions, private members and module values, F# errors (`FS0039`),
+aliases (`$exception`), format specifiers and assignment. The Locals window still
+comes from the C# compiler.
+
+**Building.** The private compiler comes from the
+[expression-evaluator branch](https://github.com/majocha/fsharp/tree/expression-evaluator)
+of `dotnet/fsharp`. Build that checkout once, then run `eng\Build-Compiler.ps1`. It expects the
+checkout at `..\fsharp.worktrees\expression-evaluator`, or set `FSHARP_EE_FSHARP_REPO`.
 
 ## Roadmap
 
@@ -60,8 +78,8 @@ Immediate take C# syntax. The F# compiler core (M3) and its integration (M4) are
 | M0 | F#-only VSIX layout; spikes confirming the Concord assumptions | done |
 | M1 | Result provider: F# values and type names | done |
 | M2 | Frame and instruction decoder: F# call stack names | done |
-| M3 | F# expression compiler core, in a `dotnet/fsharp` branch | next |
-| M4 | Concord integration: Watch, Immediate, conditions, Locals, assignment | |
+| M3 | F# expression compiler core, in a `dotnet/fsharp` branch | done |
+| M4 | Concord integration: Watch, Immediate, conditions, Locals, assignment | in progress |
 | M5 | Closures, state machines and compiler temporaries in Locals; custom type info | |
 | M6 | Upstream PDB improvements in `dotnet/fsharp` | |
 

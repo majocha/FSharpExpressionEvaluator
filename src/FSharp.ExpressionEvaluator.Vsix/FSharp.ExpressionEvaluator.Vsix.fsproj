@@ -3,7 +3,8 @@
 
   <!--
     Packaging-only project (docs/DESIGN.md §10). Its own assembly is not shipped; the VSIX carries
-    the Concord components (dll + vsdconfig) and FSharp.Core for hosts without the F# workload.
+    the Concord components (dll + vsdconfig), the private F# compiler (eng/Build-Compiler.ps1) and
+    FSharp.Core for hosts without the F# workload.
   -->
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
@@ -50,6 +51,9 @@
 
   <ItemGroup>
     <Content Include="$(PkgFSharp_Core)\lib\netstandard2.0\FSharp.Core.dll" Link="FSharp.Core.dll">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+    <Content Include="..\..\artifacts\compiler\FSharp.ExpressionEvaluator.Compiler.dll" Link="FSharp.ExpressionEvaluator.Compiler.dll">
       <IncludeInVSIX>true</IncludeInVSIX>
     </Content>
   </ItemGroup>

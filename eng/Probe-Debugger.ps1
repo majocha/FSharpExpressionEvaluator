@@ -22,6 +22,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# powershell -File passes a list as one string: also accept expressions separated by ';;'.
+$Expressions = @($Expressions | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
+
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;

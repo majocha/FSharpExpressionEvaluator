@@ -1373,7 +1373,88 @@ surgery than planned:
   them), and ref-cell unwrapping.
 - **The rest of §6.6–6.8.** Assignment to record fields and user variables,
   and custom type info.
-- **Then M4.** Integrate into the VSIX: a privately named FCS build, the
-  session built from Concord's modules, and the C# chaining in
-  `ExpressionCompiler.fs` replaced.
+
+## 17. M4 progress (2026-10-24)
+
+The F# compiler now compiles Watch, Immediate and DataTip expressions and
+assignments in F# frames, live in VS.
+
+1. **The private compiler (§8.2).** `FSharp.Compiler.Service.fsproj` in the
+   branch has an opt-in build, `-p:FSharpExpressionEvaluatorBuild=true`, that
+   produces the compiler for this VSIX:
+   - **Identity.** The assembly is `FSharp.ExpressionEvaluator.Compiler`, so it
+     loads next to VS's FCS without a clash.
+   - **Signing.** It is unsigned, so the unsigned
+     `FSharp.ExpressionEvaluator.ExpressionCompiler` can be its friend; the
+     IVT is added in the branch.
+   - **Output.** It builds into its own `bin`/`obj` folders (`OutDirName`),
+     apart from the normal build. (Global properties would also reach the
+     project references, and Arcade's paths are fixed before the project
+     body, so it is set in the project's own `BUILDING_USING_DOTNET` block.)
+   - **Dependencies.** It references FSharp.Core 10.0.0.0, the same as our
+     pinned FSharp.Core 10.0.100; with the F# workload, VS redirects it to its
+     11.0.0.0. It also references System.Reflection.Metadata and
+     DiagnosticSource 10.0, within devenv's redirects.
+     `FSharp.DependencyManager.Nuget` is not referenced.
+
+   `eng/Build-Compiler.ps1` builds it from the branch checkout and copies it to
+   `artifacts/compiler`. It runs `dotnet` from the checkout, whose
+   `global.json` picks SDK 11. The ExpressionCompiler project references the
+   copy (the build fails with a pointer to the script if it is missing), and the
+   VSIX ships it (23 MB, Debug).
+2. **The session from Concord (`Debuggee.fs`, §6.2).**
+   - **Loaded modules.** Every module loaded in the frame's AppDomain is copied
+     out of the debuggee: its metadata blob, plus its F# resources read from
+     the loaded image. Only modules declaring F# resources need those, e.g.
+     about 400 KB for FSharp.Core.
+   - **Referenced modules.** Assemblies the loaded ones reference but that
+     aren't loaded come from `DkmClrAppDomain.GetMetaDataBytesPtr(name)`, one
+     level deep. The SDK's FSharp.Core targets netstandard2.0, and without the
+     `netstandard` facade, which a .NET app never loads, every FSharp.Core type
+     fails to resolve. They are named by a path that doesn't exist.
+   - **Caching.** The session is cached on the AppDomain (a `DkmDataItem`),
+     keyed by the loaded modules' MVIDs.
+   - **Cost.** TestDebuggee has 15 loaded and 72 referenced modules. Building
+     the session takes about 0.9 s the first time; a rebuild after more
+     modules load takes about 0.15 s.
+3. **The frame (`Debuggee.frame`).**
+   - The local signature token comes from `GetLocalSignatureToken`.
+   - The locals in scope at the IL offset come from the portable PDB, as do
+     the opens: the namespace imports of the innermost scope and its parents.
+   - The aliases come from `GetAliases`.
+   - The intrinsics assembly is identified from
+     `GetIntrinsicAssemblyMetaDataBytesPtr`.
+4. **Compiling (`ExpressionCompiler.fs`, §6.10).**
+   - **Queries.** `CompileExpression` and `CompileAssignment` compile with
+     F#. The query carries the format specifiers and the result flags, with
+     the F# `DkmCompilerId`.
+   - **Errors.** F# errors are reported as `error FS0039: …`, without falling
+     back to C#.
+   - **Fallback.** Only an internal failure falls back to C#, logged.
+     `FSHARP_EE_CSHARP=1` uses C# throughout.
+   - **Opens.** When an error falls outside the user's text, it comes from a
+     PDB open; the expression is compiled again without the opens.
+   - **Locals window.** `GetClrLocalVariableQuery` still chains to C#, with
+     FSharp.Core return values left out.
+5. **Frame values without an F# view.** Locals of anonymous record types made
+   the whole expression fail, so frame values whose type can't be imported
+   are now left out (locals, fields) or read as `obj` (parameters).
+
+**Verified live** (Probe-Debugger.ps1, TestDebuggee built by SDK 10):
+- `xs |> List.sum`, `List.map (fun i -> i * 2) xs` (a closure class in the
+  query) and `fst tuple`;
+- record fields, a closure's captured value and a class `let` field;
+- `this.Increment 0`, a generic frame's `value, pair` and a task frame's
+  `delay * 2`;
+- `name.Length, h` shown in hex;
+- F# errors for names not in scope.
+
+**Next in M4**
+
+- Conditional breakpoints and tracepoints (the `BoolResult` flag), and
+  assignment from the Locals and Watch windows, checked live.
+- The Locals window from the F# compiler (`GetClrLocalVariableQuery`, §6.5).
+- Performance (§6.9): warm-up on the first F# break, and a Release build of
+  the compiler.
+- Anonymous record types for frame values.
 

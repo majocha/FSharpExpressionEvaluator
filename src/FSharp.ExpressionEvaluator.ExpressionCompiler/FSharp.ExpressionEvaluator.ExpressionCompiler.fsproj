@@ -13,11 +13,11 @@
     <Compile Include="..\FSharp.ExpressionEvaluator.ResultProvider\Model.fs" Link="Shared\Model.fs" />
     <Compile Include="..\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Shared\FSharpTypes.fs" />
     <Compile Include="PeImage.fs" />
-    <Compile Include="Probes.fs" />
     <Compile Include="MetadataTypes.fs" />
     <Compile Include="MethodNames.fs" />
     <Compile Include="FrameDecoder.fs" />
     <Compile Include="ReturnValues.fs" />
+    <Compile Include="Debuggee.fs" />
     <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
 
@@ -35,5 +35,20 @@
     <PackageReference Include="System.Reflection.Metadata" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.DiaSymReader" ExcludeAssets="runtime" />
   </ItemGroup>
+
+  <!-- The private F# compiler (docs/DESIGN.md §8.2), built by eng/Build-Compiler.ps1. -->
+  <PropertyGroup>
+    <FSharpEECompiler>$(MSBuildThisFileDirectory)..\..\artifacts\compiler\FSharp.ExpressionEvaluator.Compiler.dll</FSharpEECompiler>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="FSharp.ExpressionEvaluator.Compiler">
+      <HintPath>$(FSharpEECompiler)</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="CheckFSharpEECompiler" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(FSharpEECompiler)')" Text="The private F# compiler is missing: run eng\Build-Compiler.ps1 (needs the dotnet/fsharp expression-evaluator branch)." />
+  </Target>
 
 </Project>

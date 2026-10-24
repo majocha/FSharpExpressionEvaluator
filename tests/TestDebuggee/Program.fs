@@ -92,6 +92,16 @@ let work (delay: int) =
         return delay
     }
 
+let twice x = x * 2
+
+/// Break 6: steps over an F# function and a BCL call (see their return values).
+let returns () =
+    let xs = [ 1; 2; 3 ]
+    Debugger.Break()
+    let n = twice (List.length xs)
+    let s = String.Concat("a", string n)
+    s
+
 [<EntryPoint>]
 let main argv =
     if Array.contains "--wait" argv then
@@ -105,4 +115,5 @@ let main argv =
     Counter(10).Increment 2 |> ignore
     generic [ 1; 2 ] (3, "c") |> ignore
     (work 1).Wait()
+    returns () |> ignore
     0

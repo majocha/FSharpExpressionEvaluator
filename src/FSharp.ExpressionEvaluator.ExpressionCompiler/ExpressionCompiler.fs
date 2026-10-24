@@ -20,4 +20,9 @@ type ExpressionCompiler() =
 
         member _.GetClrLocalVariableQuery(inspectionContext, instructionAddress, argumentsOnly) =
             Probes.run instructionAddress
-            inspectionContext.GetClrLocalVariableQuery(instructionAddress, argumentsOnly)
+            let query =
+                inspectionContext.GetClrLocalVariableQuery(instructionAddress, argumentsOnly)
+                |> ReturnValues.filterLocals
+
+            log $"GetClrLocalVariableQuery 0x{instructionAddress.MethodId.Token:X8}+IL_{instructionAddress.ILOffset:X4} argumentsOnly={argumentsOnly}: {if isNull query then [] else [ for l in query.LocalInfo -> l.VariableName ]}"
+            query

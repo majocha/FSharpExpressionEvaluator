@@ -10,6 +10,9 @@ param(
     [string] $Target = 'net10.0',
     [string[]] $Expressions = @('point', 'shape', 'someShape', 'map', 'captured', 'count'),
     [int] $Breaks = 5,
+    # At these breaks, step over $Steps times and list the locals after each step (return values show there).
+    [int[]] $StepAt = @(),
+    [int] $Steps = 4,
     [string] $Log = (Join-Path $env:LOCALAPPDATA 'FSharpExpressionEvaluator\ee.log'),
     [switch] $KeepVsOpen,
     # Inspect a debug session that is already stopped at a break (attached by hand or by an earlier run).
@@ -172,6 +175,17 @@ function Show-Value($e, [string] $indent) {
         foreach ($local in Get-Items $frame.Locals ([EnvDTE.Expressions])) {
             Show-Value $local '  '
         }
+        if ($StepAt -contains $i) {
+            for ($k = 1; $k -le $Steps; $k++) {
+                $dte.Debugger.StepOver($true)
+                Wait-Until { $dte.Debugger.CurrentMode -eq 2 } 30 "step $k"
+                Start-Sleep -Milliseconds 500
+                Write-Host "--- Locals after step $k in $($dte.Debugger.CurrentStackFrame.FunctionName)"
+                foreach ($local in Get-Items $dte.Debugger.CurrentStackFrame.Locals ([EnvDTE.Expressions])) {
+                    Show-Value $local '  '
+                }
+            }
+        }
         Write-Host '--- Watch'
         foreach ($text in $Expressions) {
             $e = $dte.Debugger.GetExpression($text, $true, 10000)
@@ -192,5 +206,9 @@ finally {
     Stop-Process -Id $watchdog.Id -Force -ErrorAction SilentlyContinue
     if ($dte.Debugger.CurrentMode -ne 1) { $dte.Debugger.TerminateAll() }
     if (-not $debuggee.HasExited) { Stop-Process -Id $debuggee.Id -Force }
-    if ($startedVs -and -not $KeepVsOpen) { $dte.Quit() }
+    if ($startedVs -and -not $KeepVsOpen) {
+        # The exe opened as a project makes a throwaway solution; close it unsaved, or Quit asks to save it.
+        try { $dte.Solution.Close($false) } catch { }
+        $dte.Quit()
+    }
 }

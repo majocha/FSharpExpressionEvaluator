@@ -17,6 +17,7 @@
     <Compile Include="MetadataTypes.fs" />
     <Compile Include="MethodNames.fs" />
     <Compile Include="FrameDecoder.fs" />
+    <Compile Include="ReturnValues.fs" />
     <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
 

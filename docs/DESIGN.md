@@ -548,6 +548,19 @@ come with:
 - in closures and state machines, the captured variables *flattened* to top
   level (as C# does for display classes);
 - aliases (`$exception`, `$ReturnValue`, object ids) prepended, as Roslyn does.
+- return values of FSharp.Core methods left out. They are mostly calls the
+  compiler emits for F# constructs: a list literal's `Empty` and `Cons`, for
+  example.
+  - **Where they come from.** The `$ReturnValueN` aliases come from the
+    locals query, whose display name (`… returned`) the debugger builds from
+    `DkmManagedReturnValueContext.Name`. That is a C#-style method name; no
+    method token is available.
+  - **How they're recognized.** FSharp.Core's types are all in
+    `Microsoft.FSharp.*`, so they are recognized by that prefix.
+  - **Done today.** This is already done on top of the C# query we chain to:
+    `ReturnValues.filterLocals`, verified live.
+  - **Not used.** `IDkmLanguageReturnValueEvaluator` is not called for these
+    rows.
 
 We also implement `…1714`, so that errors reach the user instead of becoming
 `BadImageFormatException`.

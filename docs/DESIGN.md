@@ -1099,7 +1099,7 @@ Return types show as `unit`, `int list * (int * string)` and so on.
 - `src/Compiler/Debugging/ExpressionEvaluation.fs(i)`, module
   `FSharp.Compiler.Debugging.ExpressionEvaluation`;
 - tests in `tests/FSharp.Compiler.Service.Tests/ExpressionEvaluationTests.fs`
-  (29 passing).
+  (31 passing).
 
 **API (internal for now).**
 
@@ -1236,7 +1236,7 @@ surgery than planned:
       (`PostTypeCheckSemanticChecks.CheckImplFile`) are then rerun on the
       rewritten tree, where any real escape is still reported.
     - **Limits.**
-      - Constraints of the frame's type parameters aren't copied yet.
+      - Constraints come from F# values only (item 21).
       - In a generic class, an expression that compiles to extra methods of
         `<>x` is refused, since those methods would need their type
         variables shifted.
@@ -1302,6 +1302,26 @@ surgery than planned:
       - Immediate-window variables (Roslyn writes them through
         `GetVariableAddress<T>`).
     - Code generation for queries no longer runs in parallel.
+20. **Diagnostic positions.** Each diagnostic carries a range in the user's
+    expression text: lines from 1, columns from 0, `None` outside it.
+    - **Mapping back.** The range is mapped back from the synthesized query
+      source, past the module, opens and wrapper lines, the indentation and
+      the backticks of quoted `$names`.
+    - **Assignments.** For an assignment the text is
+      `target <- (\nvalue\n)`.
+21. **Constraints of generic frames.** IL doesn't record F# constraints
+    (`comparison`, `equality`, member constraints), but the frame method's F#
+    value has them. That value is a module function, or a member, which is
+    found on its type.
+    - **Copied with their constraints.** When that value is found, the frame's
+      typars are copies of its typars, with the constraints remapped. A
+      member's typars are its class's and then its own, as IL numbers them.
+    - **Fallback.** Other frames (closures, state machines) keep
+      constraint-free typars.
+    - **Scope errors.** Copied typars are named, so their scope errors are
+      FS3187; these are deferred like FS3188.
+    - **Display.** Result types print without constraints, and so without
+      tuple parentheses: `'T * int`.
 
 **Tested (in-process, the query invoked by reflection).**
 
@@ -1341,16 +1361,19 @@ surgery than planned:
     reference;
   - to a parameter (`starg`) and to a local in its frame slot (`stloc`);
   - and frame values staying immutable in plain expressions;
+- diagnostic ranges in the expression text: on one line, on a second line,
+  and after a quoted `$1`;
+- constraints: `List.max xs` in a `'T: comparison` function, and `x = x` in
+  a member of an `equality`-constrained class;
 - F# error diagnostics.
 
 **Next in M3**
 
 - **The rest of §6.4.** Hoisted names that clash (if the compiler renames
   them), and ref-cell unwrapping.
-- **Generic constraints.** Copy the constraints of the frame's type
-  parameters onto the typars.
 - **The rest of §6.6–6.8.** Assignment to record fields and user variables,
   and custom type info.
-- **Diagnostics.** Line and column numbers relative to the user's text rather
-  than the synthesized wrapper.
+- **Then M4.** Integrate into the VSIX: a privately named FCS build, the
+  session built from Concord's modules, and the C# chaining in
+  `ExpressionCompiler.fs` replaced.
 

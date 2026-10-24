@@ -1434,8 +1434,8 @@ assignments in F# frames, live in VS.
      `FSHARP_EE_CSHARP=1` uses C# throughout.
    - **Opens.** When an error falls outside the user's text, it comes from a
      PDB open; the expression is compiled again without the opens.
-   - **Locals window.** `GetClrLocalVariableQuery` still chains to C#, with
-     FSharp.Core return values left out.
+   - **Locals window.** `GetClrLocalVariableQuery` chained to C# at first,
+     with FSharp.Core return values left out (item 8 replaces it).
 5. **Frame values without an F# view.** Locals of anonymous record types made
    the whole expression fail, so frame values whose type can't be imported
    are now left out (locals, fields) or read as `obj` (parameters).
@@ -1473,9 +1473,44 @@ assignments in F# frames, live in VS.
      a `for` loop over a `ResizeArray` (its struct enumerator), are affected
      the same way.
 
+8. **The Locals window from F# (§6.5).** `EvaluationSession.CompileLocals`
+   compiles one assembly with one query method per variable (`<>m0`,
+   `<>m1`, ...), each the variable's name compiled as an expression. The
+   variables are listed in this order:
+   1. the debugger's aliases;
+   2. `this`, where the user wrote it (a generated frame's hoisted `this`
+      field stands for it);
+   3. the parameters;
+   4. in a closure or a state machine, its own fields (captured values,
+      hoisted variables), flattened, while a class's fields stay under
+      `this`;
+   5. the locals in scope.
+
+   Compiler temporaries (§6.4) and the pieces of a tuple parameter
+   (`pair_0` next to `pair`) are left out. With `argumentsOnly`, only the
+   parameters are listed.
+   - **In the EE.** `GetClrLocalVariableQuery` builds the
+     `DkmCompiledClrLocalsQuery` from it. Return values keep the debugger's
+     names (`TestDebuggee.Program.twice returned`); FSharp.Core's are left
+     out. `$ReturnValue`, the last of the indexed ones, is not listed a
+     second time.
+   - **Fallback.** On an error or an internal failure it falls back to the
+     C# query, as before.
+   - **Opens under the frame's values.** A local named `set` showed
+     FSharp.Core's `set` function: the frame's opens (the enclosing modules,
+     the PDB's namespaces) were `open` lines in the query source, so they
+     shadowed the frame's values. They are now applied to the checking
+     environment before the frame's values are added. The access rights are
+     computed first, so opening the frame's module still brings its private
+     values.
+
+   **Verified live:** the Locals of a module function (23 values), a
+   closure, a class member, a generic frame, a task closure, and a return
+   value after stepping over `twice`. Editing a value from the Locals rows
+   (a captured value, a parameter) still sticks.
+
 **Next in M4**
 
-- The Locals window from the F# compiler (`GetClrLocalVariableQuery`, §6.5).
 - Performance (§6.9): warm-up on the first F# break, and a Release build of
   the compiler.
 - Anonymous record types for frame values.

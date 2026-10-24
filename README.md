@@ -63,8 +63,8 @@ name.Length, h                      0x00000004
 
 The compiler sees what the debuggee has loaded, read from its memory. That includes
 FSharp.Core's inline functions, private members and module values, F# errors (`FS0039`),
-aliases (`$exception`), format specifiers and assignment. The Locals window still
-comes from the C# compiler.
+aliases (`$exception`), format specifiers and assignment. The Locals window comes
+from the F# compiler too.
 
 **Building.** The private compiler comes from the
 [expression-evaluator branch](https://github.com/majocha/fsharp/tree/expression-evaluator)

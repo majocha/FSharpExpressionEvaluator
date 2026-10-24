@@ -558,7 +558,8 @@ come with:
   - **How they're recognized.** FSharp.Core's types are all in
     `Microsoft.FSharp.*`, so they are recognized by that prefix.
   - **Done today.** This is already done on top of the C# query we chain to:
-    `ReturnValues.filterLocals`, verified live.
+    `ReturnValues.filterLocals`, verified live. A user's F# functions keep
+    their rows; that was checked by hand in VS.
   - **Not used.** `IDkmLanguageReturnValueEvaluator` is not called for these
     rows.
 

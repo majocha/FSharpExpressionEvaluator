@@ -1449,10 +1449,32 @@ assignments in F# frames, live in VS.
 - `name.Length, h` shown in hex;
 - F# errors for names not in scope.
 
+6. **Breakpoint conditions, tracepoints, assignment.** All three were checked
+   live (`Probe-Debugger.ps1 -Condition / -Tracepoint / -Assign`, on the
+   TestDebuggee line marked `// probe: breakpoint`).
+   - **Conditions.** `i = 7` is F# equality (in C# it would be an
+     assignment). It is compiled once, as `bool`, and stops at the 7th
+     iteration.
+   - **Tracepoints.** `loop i={i} total={total} sum={List.sum [ 1 .. i ]}`
+     compiles each placeholder with F#.
+   - **Assignment.** Setting a closure's captured value, a parameter, a class
+     `let` field and a local in its frame slot all compile through
+     `CompileAssignment` and stick.
+7. **No collector structs in queries.** The debugger runs a query with an IL
+   interpreter, which passes a struct local to a call **by copy**. A list or
+   array expression lowered to a loop filling FSharp.Core's `ListCollector`
+   came out empty: `[ 1 .. 3 ] = []`, and the tracepoint's `sum` was always
+   0. (C# expressions can't declare locals, so the C# EE doesn't meet this.)
+   - **The fix.** `IlxGenOptions.lowerComputedCollections` is a new option,
+     on for the compiler as before. The EE generates its queries with it off,
+     so these expressions become calls into FSharp.Core over sequence
+     objects.
+   - **Still affected.** Other mutated struct locals in an expression, such as
+     a `for` loop over a `ResizeArray` (its struct enumerator), are affected
+     the same way.
+
 **Next in M4**
 
-- Conditional breakpoints and tracepoints (the `BoolResult` flag), and
-  assignment from the Locals and Watch windows, checked live.
 - The Locals window from the F# compiler (`GetClrLocalVariableQuery`, §6.5).
 - Performance (§6.9): warm-up on the first F# break, and a Release build of
   the compiler.

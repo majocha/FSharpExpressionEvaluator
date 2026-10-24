@@ -102,6 +102,16 @@ let returns () =
     let s = String.Concat("a", string n)
     s
 
+/// Break 7: no Debugger.Break here; Probe-Debugger.ps1 sets a conditional breakpoint or a tracepoint
+/// on the marked line.
+let loop () =
+    let mutable total = 0
+
+    for i in 1..10 do
+        total <- total + i // probe: breakpoint
+
+    total
+
 [<EntryPoint>]
 let main argv =
     if Array.contains "--wait" argv then
@@ -116,4 +126,5 @@ let main argv =
     generic [ 1; 2 ] (3, "c") |> ignore
     (work 1).Wait()
     returns () |> ignore
+    loop () |> ignore
     0

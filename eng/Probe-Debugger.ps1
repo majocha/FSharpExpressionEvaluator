@@ -13,6 +13,12 @@ param(
     # At these breaks, step over $Steps times and list the locals after each step (return values show there).
     [int[]] $StepAt = @(),
     [int] $Steps = 4,
+    # A breakpoint with this condition on the TestDebuggee line marked '// probe: breakpoint' (break 7)...
+    [string] $Condition,
+    # ...or a tracepoint there with this message; it doesn't break, its output is read from the Debug pane.
+    [string] $Tracepoint,
+    # At each break, assignments 'name=value' to the names that evaluate there, then read back.
+    [string[]] $Assign = @(),
     [string] $Log = (Join-Path $env:LOCALAPPDATA 'FSharpExpressionEvaluator\ee.log'),
     [switch] $KeepVsOpen,
     # Inspect a debug session that is already stopped at a break (attached by hand or by an earlier run).
@@ -24,6 +30,7 @@ Set-StrictMode -Version Latest
 
 # powershell -File passes a list as one string: also accept expressions separated by ';;'.
 $Expressions = @($Expressions | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
+$Assign = @($Assign | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 
 Add-Type -TypeDefinition @'
 using System;
@@ -132,6 +139,24 @@ if ($Reuse) {
     if ($dte.Debugger.CurrentMode -ne 1) { $dte.Debugger.TerminateAll() }
     Wait-Until { $dte.Debugger.CurrentMode -eq 1 } 30 'debugger to stop'
 
+    # Breakpoints for break 7, set before the debuggee runs: a condition or a tracepoint.
+    $source = Join-Path $root 'tests\TestDebuggee\Program.fs'
+    $line = (Select-String -Path $source -Pattern '// probe: breakpoint').LineNumber
+    if ($Condition -or $Tracepoint) {
+        foreach ($b in @(Get-Items $dte.Debugger.Breakpoints ([EnvDTE.Breakpoints]))) {
+            if ([EnvDTE.Breakpoint].GetProperty('FileLine').GetValue($b, $null) -eq $line) { [EnvDTE.Breakpoint].GetMethod('Delete').Invoke($b, @()) | Out-Null }
+        }
+        # Add(Function, File, Line, Column, Condition, ConditionType (1 = when true), Language, Data, DataCount, Address, HitCount, HitCountType (1 = none))
+        $added = $dte.Debugger.Breakpoints.Add('', $source, $line, 1, $(if ($Condition) { $Condition } else { '' }), 1, '', '', 0, '', 0, 1)
+        if ($Tracepoint) {
+            foreach ($b in @(Get-Items $added ([EnvDTE.Breakpoints]))) {
+                [EnvDTE80.Breakpoint2].GetProperty('Message').SetValue($b, $Tracepoint, $null)
+                [EnvDTE80.Breakpoint2].GetProperty('BreakWhenHit').SetValue($b, $false, $null)
+            }
+        }
+        Write-Host "Breakpoint at Program.fs:$line, condition '$Condition', tracepoint '$Tracepoint'"
+    }
+
     # Start the debuggee; it prints its PID once the runtime is up, then spins until a debugger attaches.
     $stdout = [IO.Path]::GetTempFileName()
     $debuggee = Start-Process $exe -ArgumentList '--wait' -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout
@@ -189,6 +214,18 @@ function Show-Value($e, [string] $indent) {
                 }
             }
         }
+        foreach ($assignment in $Assign) {
+            $name, $value = $assignment -split '=', 2
+            $e = $dte.Debugger.GetExpression($name, $true, 10000)
+            if (-not $e.IsValidValue) { continue }
+            try {
+                [EnvDTE.Expression].GetProperty('Value').SetValue($e, $value, $null)
+                $after = $dte.Debugger.GetExpression($name, $true, 10000)
+                Write-Host "--- Assigned $name = $value -> $($after.Value)"
+            } catch {
+                Write-Host "--- Assigning $name = $value failed: $($_.Exception.InnerException.Message)"
+            }
+        }
         Write-Host '--- Watch'
         foreach ($text in $Expressions) {
             $e = $dte.Debugger.GetExpression($text, $true, 10000)
@@ -204,9 +241,28 @@ function Show-Value($e, [string] $indent) {
         }
         $dte.Debugger.Go($false)
     }
+
+    if ($Tracepoint) {
+        # The debuggee runs to its end; then read the tracepoint's output from the Debug pane.
+        Wait-Until { $dte.Debugger.CurrentMode -eq 1 } 60 'the debuggee to finish'
+        $toolWindows = [EnvDTE80.DTE2].GetProperty('ToolWindows').GetValue($dte, $null)
+        $outputWindow = [EnvDTE80.ToolWindows].GetProperty('OutputWindow').GetValue($toolWindows, $null)
+        $panes = [EnvDTE.OutputWindow].GetProperty('OutputWindowPanes').GetValue($outputWindow, $null)
+        $pane = [EnvDTE.OutputWindowPanes].GetMethod('Item').Invoke($panes, @([object]'Debug'))
+        $document = [EnvDTE.OutputWindowPane].GetProperty('TextDocument').GetValue($pane, $null)
+        $text = $document.StartPoint.CreateEditPoint().GetText($document.EndPoint)
+        Write-Host '--- Tracepoint output'
+        $text -split "`r?`n" | Where-Object { $_ -match [regex]::Escape(($Tracepoint -split '\{')[0]) } | ForEach-Object { Write-Host "  $_" }
+    }
 }
 finally {
     Stop-Process -Id $watchdog.Id -Force -ErrorAction SilentlyContinue
+    # Leave no breakpoints of ours behind in the user's solution.
+    if ($Condition -or $Tracepoint) {
+        foreach ($b in @(Get-Items $dte.Debugger.Breakpoints ([EnvDTE.Breakpoints]))) {
+            if ([EnvDTE.Breakpoint].GetProperty('FileLine').GetValue($b, $null) -eq $line) { [EnvDTE.Breakpoint].GetMethod('Delete').Invoke($b, @()) | Out-Null }
+        }
+    }
     if ($dte.Debugger.CurrentMode -ne 1) { $dte.Debugger.TerminateAll() }
     if (-not $debuggee.HasExited) { Stop-Process -Id $debuggee.Id -Force }
     if ($startedVs -and -not $KeepVsOpen) {

@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <Compile Include="..\Shared\Log.fs" Link="Shared\Log.fs" />
+    <Compile Include="..\Shared\Settings.fs" Link="Shared\Settings.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="FSharpTypes.fs" />
     <Compile Include="FSharpValues.fs" />

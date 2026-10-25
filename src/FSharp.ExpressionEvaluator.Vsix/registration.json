@@ -1,0 +1,20 @@
+{
+  "categories": {
+    "debugging.fsharpExpressionEvaluator": {
+      "title": "F# Expression Evaluator",
+      "description": "F# values, expressions and call stack names in F# frames.",
+      "additionalKeywords": [ "F#", "fsharp", "expression evaluator", "watch", "locals" ]
+    }
+  },
+  "properties": {
+    "debugging.fsharpExpressionEvaluator.enabled": {
+      "type": "boolean",
+      "default": true,
+      "migration": { "roamingOnly": true },
+      "title": "Use the F# expression evaluator in F# frames",
+      "description": "When off, F# frames use the C# expression evaluator, as without this extension. Applies to the next evaluation, without restarting Visual Studio.",
+      "order": 0,
+      "additionalKeywords": [ "F#", "fsharp", "C#", "expression evaluator" ]
+    }
+  }
+}

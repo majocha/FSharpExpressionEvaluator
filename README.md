@@ -100,10 +100,16 @@ says F#; C# and VB frames are untouched.
 |---|---|---|
 | `FSharp.ExpressionEvaluator.ResultProvider` (`netstandard2.0`) | `IDkmClrResultProvider` | devenv, and msvsmon for remote or x86 targets |
 | `FSharp.ExpressionEvaluator.ExpressionCompiler` (`net48`) | `IDkmClrExpressionCompiler` (still passes everything to C#), `IDkmLanguageFrameDecoder`, `IDkmLanguageInstructionDecoder` | devenv |
-| `FSharp.ExpressionEvaluator.Vsix` | packaging only | |
+| `FSharp.ExpressionEvaluator.Vsix` | packaging, and a package for the on/off option | devenv |
 
 When a value is not an F# shape, or a frame can't be named, the call is passed to the next
 implementer: the C# evaluator.
+
+**Turning it off.** *Tools > Options > Debugging > F# Expression Evaluator > Use the F#
+expression evaluator in F# frames*. When off, F# frames get the C# evaluator, as without the
+extension. It applies from the next evaluation, without restarting Visual Studio (values
+already shown keep their F# display until they are evaluated again). `FSHARP_EE_CSHARP=1` in
+the environment also turns it off.
 
 ## Repository layout
 

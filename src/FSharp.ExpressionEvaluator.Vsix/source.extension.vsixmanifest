@@ -17,6 +17,7 @@
     <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[18.0,)" DisplayName="Visual Studio core editor" />
   </Prerequisites>
   <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />
     <Asset Type="DebuggerEngineExtension" d:Source="File" Path="FSharp.ExpressionEvaluator.ResultProvider.vsdconfig" />
     <Asset Type="DebuggerEngineExtension" d:Source="File" Path="FSharp.ExpressionEvaluator.ExpressionCompiler.vsdconfig" />
   </Assets>

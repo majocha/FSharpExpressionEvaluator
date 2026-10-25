@@ -1441,7 +1441,7 @@ assignments in F# frames, live in VS.
    - **Errors.** F# errors are reported as `error FS0039: …`, without falling
      back to C#.
    - **Fallback.** Only an internal failure falls back to C#, logged.
-     `FSHARP_EE_CSHARP=1` uses C# throughout.
+     `FSHARP_EE_CSHARP=1` uses C# throughout (now the off switch, §19).
    - **Opens.** When an error falls outside the user's text, it comes from a
      PDB open; the expression is compiled again without the opens.
    - **Locals window.** `GetClrLocalVariableQuery` chained to C# at first,
@@ -1793,3 +1793,36 @@ compiled assemblies: 53 modules and 187 types, mostly the typed tree
 `CheckDeclarations`, `NameResolution`), the build pipeline (`CompilerConfig`,
 `CompilerImports`, `ParseAndCheckInputs`, `OptimizeInputs`, `IlxGen`) and
 Abstract IL.
+
+---
+
+## 19. The on/off option (2026-10-25)
+
+*Tools > Options > Debugging > F# Expression Evaluator* has one option,
+`debugging.fsharpExpressionEvaluator.enabled` (Unified Settings,
+`src/FSharp.ExpressionEvaluator.Vsix/registration.json`). Off means "as if
+the VSIX were not installed": every F# entry point passes the call to the
+next implementer, C#.
+
+- **Where it is read.** The result provider also runs in msvsmon (x86 and
+  remote targets), which can't read VS's settings store. So the VSIX now has
+  a package (`Package.fs`, loaded in the background at startup) that mirrors
+  the option to a marker file, `%LOCALAPPDATA%\FSharpExpressionEvaluator\disabled`,
+  at load and on every change (`ISettingsReader.SubscribeToChanges`). Every
+  component checks it through `src/Shared/Settings.fs`, reading the file at
+  most every 500 ms. `FSHARP_EE_CSHARP=1` still forces it off.
+- **What it switches.** Expressions, assignments and the Locals query
+  (no F# compile, no FSharp.Core return-value filter); frame names, return
+  types, breakpoint names and the warm-up; and `GetResult`. Results the F#
+  provider already made still expand as F# (C# can't expand them); the
+  windows show C# from the next evaluation.
+- **Known gaps.** A change made while VS is closed (settings.json by hand,
+  settings sync) reaches the marker only when the package loads, which can
+  come after the first break of a debug session started right away. The
+  marker is per user, so Exp and the main instance share the last value set.
+  A remote msvsmon reads the remote machine's marker.
+
+**Verified** in the Exp instance, kept open throughout: on (F# values and
+`xs |> List.sum` = 6), off through the option (C# display, the F#
+expression fails), on again; and off for a net48 x86 debuggee, with the
+result provider in msvsmon.

@@ -37,7 +37,8 @@ type internal RowsData(parent: FSharpResultData, rows: Row[]) =
 
 /// F# result provider (docs/DESIGN.md §5.1): renders F# shapes from memory and chains every other
 /// value to the next IDkmClrResultProvider (Roslyn's C# one). Children of F# values are created
-/// through Concord again, so each lands with whichever provider owns its shape.
+/// through Concord again, so each lands with whichever provider owns its shape. While the F# EE is
+/// switched off (Settings.fs), new values all go to C#; results created before still expand as F#.
 type ResultProvider() =
 
     static let log = Log.write "RP"
@@ -196,7 +197,8 @@ type ResultProvider() =
             (clrValue, workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
             =
             let created =
-                if inspectionContext.EvaluationFlags.HasFlag DkmEvaluationFlags.ShowValueRaw
+                if not (Settings.enabled ())
+                   || inspectionContext.EvaluationFlags.HasFlag DkmEvaluationFlags.ShowValueRaw
                    || hasSpecifier "raw" formatSpecifiers
                    || hasSpecifier "results" formatSpecifiers then
                     None

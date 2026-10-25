@@ -20,5 +20,7 @@
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="Microsoft.VSSDK.BuildTools" Version="18.9.820" />
+    <!-- The VSIX package only (the option, §19); compile-time, VS provides the assemblies. -->
+    <PackageVersion Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" />
   </ItemGroup>
 </Project>

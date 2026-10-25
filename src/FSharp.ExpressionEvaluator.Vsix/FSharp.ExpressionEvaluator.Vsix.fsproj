@@ -2,15 +2,16 @@
   <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
 
   <!--
-    Packaging-only project (docs/DESIGN.md §10). Its own assembly is not shipped; the VSIX carries
-    the Concord components (dll + vsdconfig), the private F# compiler (eng/Build-Compiler.ps1) and
-    FSharp.Core for hosts without the F# workload.
+    Packaging project (docs/DESIGN.md §10). The VSIX carries the Concord components (dll + vsdconfig),
+    the private F# compiler (eng/Build-Compiler.ps1), FSharp.Core for hosts without the F# workload,
+    and this assembly: a package that registers the on/off option and mirrors it (§19).
   -->
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <AssemblyName>FSharp.ExpressionEvaluator.Vsix</AssemblyName>
-    <GeneratePkgDefFile>false</GeneratePkgDefFile>
-    <IncludeAssemblyInVSIXContainer>false</IncludeAssemblyInVSIXContainer>
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <UseCodebase>true</UseCodebase>
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <IncludeDebugSymbolsInLocalVSIXDeployment>false</IncludeDebugSymbolsInLocalVSIXDeployment>
     <VsixType>v3</VsixType>
@@ -23,18 +24,25 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Vsix.fs" />
+    <Compile Include="..\Shared\Log.fs" Link="Shared\Log.fs" />
+    <Compile Include="..\Shared\Settings.fs" Link="Shared\Settings.fs" />
+    <Compile Include="Package.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="source.extension.vsixmanifest">
       <SubType>Designer</SubType>
     </None>
+    <Content Include="registration.json">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="FSharp.Core" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.VisualStudio.SDK" ExcludeAssets="runtime" />
+    <Reference Include="System.Windows.Forms" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" PrivateAssets="all" />
   </ItemGroup>
 

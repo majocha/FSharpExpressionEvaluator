@@ -11,7 +11,8 @@ open FSharp.ExpressionEvaluator.Evaluation
 
 /// Registered for F# frames (docs/DESIGN.md §4, §6). Expressions, assignments and the Locals query
 /// are compiled by the F# compiler. Anything the F# compiler fails on internally falls back to the
-/// next implementer, Roslyn's C# compiler (§6.10). FSHARP_EE_CSHARP=1 uses C# throughout.
+/// next implementer, Roslyn's C# compiler (§6.10). With the F# EE switched off (Settings.fs), C#
+/// compiles everything, as if this component were not installed.
 type ExpressionCompiler() =
 
     static let log = Log.write "EC"
@@ -19,9 +20,6 @@ type ExpressionCompiler() =
 
     static let compilerId =
         DkmCompilerId(DkmVendorId.Microsoft, Guid "AB4F38C9-B6E6-43BA-BE3B-58080B2CCCE3")
-
-    static let csharpOnly =
-        Environment.GetEnvironmentVariable "FSHARP_EE_CSHARP" = "1"
 
     static let query (runtime: DkmClrRuntimeInstance) (compiled: CompiledExpression) =
         let flag condition value =
@@ -72,7 +70,7 @@ type ExpressionCompiler() =
         (inspectionContext: DkmInspectionContext)
         (run: EvaluationSession -> FrameContext -> Result<CompiledExpression, EvaluationDiagnostic list>)
         =
-        if csharpOnly then
+        if not (Settings.enabled ()) then
             None
         else
             try
@@ -113,7 +111,7 @@ type ExpressionCompiler() =
         (address: DkmClrInstructionAddress)
         (argumentsOnly: bool)
         =
-        if csharpOnly then
+        if not (Settings.enabled ()) then
             None
         else
             try
@@ -230,5 +228,9 @@ type ExpressionCompiler() =
             match compileLocals inspectionContext instructionAddress argumentsOnly with
             | Some query -> query
             | None ->
-                inspectionContext.GetClrLocalVariableQuery(instructionAddress, argumentsOnly)
-                |> ReturnValues.filterLocals
+                let query = inspectionContext.GetClrLocalVariableQuery(instructionAddress, argumentsOnly)
+
+                if Settings.enabled () then
+                    ReturnValues.filterLocals query
+                else
+                    query

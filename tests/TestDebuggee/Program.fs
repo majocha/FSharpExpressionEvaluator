@@ -120,6 +120,10 @@ let main argv =
         while not Debugger.IsAttached do
             Thread.Sleep 100
 
+    // Top-level code of the other files runs on the first use of their values: breaks S1 and S2 with --startup.
+    Startup.startupCheck |> ignore
+    TestDebuggee.Settings.Checks.ready |> ignore
+
     inspect [ 1; 2; 3 ] "test"
     closure () |> ignore
     Counter(10).Increment 2 |> ignore

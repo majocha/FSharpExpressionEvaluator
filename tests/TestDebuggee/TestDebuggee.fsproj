@@ -17,6 +17,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Startup.fs" />
+    <Compile Include="StartupNamespace.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

@@ -19,7 +19,11 @@ param(
     [string] $Tracepoint,
     # At each break, assignments 'name=value' to the names that evaluate there, then read back.
     [string[]] $Assign = @(),
-    [string] $Log = (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts\logs\ee.log'),
+    # Run TestDebuggee with --startup: two breaks in top-level code (Startup.fs, StartupNamespace.fs)
+    # come before break 1, so pass -Breaks 7 to reach break 5.
+    [switch] $Startup,
+    # Defaults to artifacts\logs\ee.log.
+    [string] $Log,
     [switch] $KeepVsOpen,
     # Inspect a debug session that is already stopped at a break (attached by hand or by an earlier run).
     [switch] $Reuse
@@ -31,6 +35,8 @@ Set-StrictMode -Version Latest
 # powershell -File passes a list as one string: also accept expressions separated by ';;'.
 $Expressions = @($Expressions | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $Assign = @($Assign | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
+# Not a parameter default: Windows PowerShell 5.1 leaves $PSScriptRoot empty there under CmdletBinding.
+if (-not $Log) { $Log = Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts\logs\ee.log' }
 
 Add-Type -TypeDefinition @'
 using System;
@@ -159,7 +165,7 @@ if ($Reuse) {
 
     # Start the debuggee; it prints its PID once the runtime is up, then spins until a debugger attaches.
     $stdout = [IO.Path]::GetTempFileName()
-    $debuggee = Start-Process $exe -ArgumentList '--wait' -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout
+    $debuggee = Start-Process $exe -ArgumentList $(if ($Startup) { '--wait --startup' } else { '--wait' }) -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout
     Wait-Until { (Get-Content $stdout -Raw -ErrorAction SilentlyContinue) -match 'PID' } 30 'debuggee start'
 
     $transports = Invoke-Com $dte.Debugger ([EnvDTE80.Debugger2]) 'Transports'

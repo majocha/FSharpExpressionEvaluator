@@ -1615,7 +1615,97 @@ assignments in F# frames, live in VS.
       parameters, a closure's captured value, and the Locals window.
     - **Still to do:** imported generic types show their .NET names in the
       Locals window (`List<{| … |}>`, as `List<int>` already did).
-    - **Not verified live yet.**
+
+    **Verified live** (item 11): at TestDebuggee's first break, `anon.Name`,
+    `anon.Count + 1` and `{| anon with Count = 4 |}` (a `{| Count: int;
+    Name: string |}` with its two fields), and the Locals row
+    `anon = {| Count = 3; Name = "anon" |}`, on .NET 10 and .NET Framework.
+
+11. **Live check of items 9 and 10 and of top-level code (2026-10-25).**
+    The Exp instance of VS 2026 (18.0), with the Release compiler.
+    - **Top-level code (§16, opens).** TestDebuggee has two more files whose
+      top-level code breaks when it runs with `--startup`
+      (`Probe-Debugger.ps1 -Startup`; breaks S1 and S2 come before break 1,
+      and the default breaks keep their numbers). An exe runs a file's
+      top-level code on the first use of one of its values, so `main` uses
+      one of each.
+      - **A module file** (`Startup.fs`): the frame is
+        `<StartupCode$TestDebuggee>.$TestDebuggee.Startup` (static
+        initializer). `startupCount` (mutable), `startupHidden` (private
+        mutable) and `startupCount + startupHidden` evaluate.
+      - **A namespace file** (`StartupNamespace.fs`): the frame is
+        `$StartupNamespace`. The values of the module it sets, `level` and
+        the private `label`, evaluate, as does `describe ()`.
+      - **Locals.** The Locals window lists only the frame's own locals
+        (`startupBreaks`), not the module's values.
+      - **Not checked:** the `main@` of an implicit entry point (TestDebuggee
+        has an explicit one).
+    - **Warm-up (item 9).** Live, Release, TestDebuggee net10.0, a fresh
+      devenv each time (4 runs; net48 in 3 runs):
+
+      | | net10.0 | net48 |
+      |---|---|---|
+      | Modules | 14 loaded, 71 referenced | 6 loaded, 27 referenced |
+      | Read the modules | 330–390 | 200–270 |
+      | `Create` | 950–1360 | 1140–1310 |
+      | `WarmUp` | 2600–3030 | 3140–3250 |
+      | Break to session ready | 3500–4200 | — |
+      | First Locals query (waits for the session) | 2540–3110 | 3080–3090 |
+      | First expression after it | 16–17 | — |
+      | Warm `CompileExpression` | 9–17 | 11–18 |
+      | Warm `CompileLocals` (24 variables) | 20–33 | 23–26 |
+      | First anonymous record queries | 65–210 | 75–300 |
+
+      The numbers match item 9's: ready about 4 s after the first break,
+      and about 10 ms per warm DataTip.
+    - **"Still loading" not triggered.** The Exp instance's Locals window
+      sends its query as soon as the frame is shown, before DTE reports
+      break mode, so it always waits out the warm-up (2.5–3.1 s, and then
+      compiles with F#; no C# fallback). An expression from DTE only comes
+      after it. Checking the 3 s expression timeout needs a DataTip faster
+      than that, by hand.
+    - **.NET Framework debuggees: two fixes.** Every F# query on net48
+      (TestDebuggee x86, through msvsmon) failed with "Internal error in the
+      expression evaluator"; only the C# fallback (`FSHARP_EE_CSHARP=1`)
+      worked. Items 1–10 had only been checked on .NET 10.
+      - **The core library.** The session's primary assembly was always
+        `System.Runtime`, so a query referenced `System.Object` there. A
+        .NET Framework process only has the `System.Runtime` facade among
+        its referenced assemblies and never loads it, so the query could not
+        run. The session now uses `mscorlib` when the debuggee has no
+        `System.Private.CoreLib` (`primaryAssemblyOf`).
+      - **Embedded attributes.** A query defining an anonymous record class
+        (`{| anon with Count = 4 |}`) failed with FS0073: the class carries
+        `DynamicDependencyAttribute`, which mscorlib lacks. FCS generates
+        such attributes into the assembly, and fsc adds them to the module
+        (`TcGlobals.tryRemoveEmbeddedILTypeDefs`); the query module now
+        does too.
+      - **Tested** on a session of the machine's .NET Framework assemblies
+        and the netstandard2.0 FSharp.Core: the query references mscorlib
+        and not System.Runtime, and defines `DynamicDependencyAttribute`.
+    - **Probe-Debugger.ps1.** Windows PowerShell 5.1 leaves `$PSScriptRoot`
+      empty in a parameter default under `CmdletBinding`, so the `-Log`
+      default failed before anything ran; it is set in the body now.
+
+    **Verified live** (Probe-Debugger.ps1):
+    - the default probe (5 breaks) on net10.0 and net48, with the same
+      output on both: the Locals of all five frames from F#, the Watch
+      values, and the anonymous record queries;
+    - `-Condition 'i = 7'` stops at `i = 7`, `total = 21`;
+    - `-Tracepoint 'loop i={i} total={total} sum={List.sum [ 1 .. i ]}'`
+      prints all ten lines with the right sums;
+    - `-Assign` of a parameter (`name`), a closure's captured value and
+      parameter (`captured`, `x`), a member's parameter (`by`) and a class
+      `let` field (`count`) all stick;
+    - top-level code of both files, on net10.0 and net48.
+
+    **Seen once:**
+    - In one of the net10.0 runs, the Raw View child of `someShape` showed
+      "Inspecting the state of an object in the debuggee of type
+      System.Reflection.MethodBase is not supported in this context", and
+      `Circle 1.5` in the other runs.
+    - One `-Condition` run failed before the debuggee started (the cause
+      was hidden by the script's cleanup); the rerun passed.
 
 **Next in M4**
 

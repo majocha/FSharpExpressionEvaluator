@@ -221,19 +221,45 @@ let private fsharpEntities (ccu: CcuThunk) (enclosing: ILTypeDef list) =
 
             types nsEntity (name :: (nested |> List.map _.Name)) []
 
-/// The module whose top-level code a frame is in: `main@` of an implicit entry point, or a static
+/// The modules whose top-level code a frame is in: `main@` of an implicit entry point, or a static
 /// initializer. That code is in `<StartupCode$Assembly>.$My.Program`, which is no F# entity, so the
-/// module's values (mutable ones are not locals there) would not be in scope. A file that starts
-/// with a namespace names the type after the file instead, and has no single module.
-let private startupCodeModule (ccu: CcuThunk) (enclosing: ILTypeDef list) =
+/// modules' values (mutable ones are not locals there) would not be in scope. A file that starts
+/// with a module names the type after it. A file that starts with a namespace names it after the
+/// file, and its modules are those whose values the code sets: the type has a field `name@line`
+/// for each of them, outer modules first.
+let private startupCodeModules (ccu: CcuThunk) (enclosing: ILTypeDef list) =
     match enclosing with
     | [ td ] when td.Name.StartsWith "<StartupCode$" ->
         match td.Name.IndexOf ">.$" with
-        | -1 -> None
+        | -1 -> []
         | i ->
-            tryModuleOrNamespace ccu.Contents (List.ofArray (td.Name.Substring(i + 3).Split '.'))
-            |> Option.filter _.IsModule
-    | _ -> None
+            match tryModuleOrNamespace ccu.Contents (List.ofArray (td.Name.Substring(i + 3).Split '.')) with
+            | Some modul when modul.IsModule -> [ modul ]
+            | _ ->
+                let fields =
+                    td.Fields.AsList()
+                    |> List.choose (fun f ->
+                        match f.Name.LastIndexOf '@' with
+                        | -1 -> None
+                        | at ->
+                            match Int32.TryParse(f.Name.Substring(at + 1)) with
+                            | true, line -> Some(f.Name.Substring(0, at), line)
+                            | _ -> None)
+                    |> set
+
+                let rec modules (parent: ModuleOrNamespace) =
+                    [
+                        for child in parent.ModuleOrNamespaceType.ModuleAndNamespaceDefinitions do
+                            if child.IsModule then
+                                child
+                            yield! modules child
+                    ]
+
+                modules ccu.Contents
+                |> List.filter (fun modul ->
+                    modul.ModuleOrNamespaceType.AllValsAndMembers
+                    |> Seq.exists (fun v -> fields.Contains(v.LogicalName, v.Range.StartLine)))
+    | _ -> []
 
 /// The path of a module or namespace as an `open` names it, e.g. `global.TestDebuggee.Program`.
 let private sourcePath (e: Entity) =
@@ -1434,7 +1460,7 @@ type EvaluationSession
             let entities = fsharpEntities ccu enclosing
 
             // The modules whose values the frame sees unqualified, and whose private ones it can access.
-            let scopeEntities = entities @ Option.toList (startupCodeModule ccu enclosing)
+            let scopeEntities = entities @ startupCodeModules ccu enclosing
 
             // Opens: enclosing namespace and modules (their values are in scope unqualified), then the PDB's.
             let opens =

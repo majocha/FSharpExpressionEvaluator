@@ -23,6 +23,7 @@
     <Compile Include="MethodNameTests.fs" />
     <Compile Include="EvaluationIntrinsics.fs" />
     <Compile Include="StartupFixture.fs" />
+    <Compile Include="NamespaceStartupFixture.fs" />
     <Compile Include="EvaluationTests.fs" />
   </ItemGroup>
 

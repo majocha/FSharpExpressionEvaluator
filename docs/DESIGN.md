@@ -1126,7 +1126,10 @@ surgery than planned:
 2. **Opens.** Its namespace and modules are opened (skipping
    `RequireQualifiedAccess`), followed by the PDB's opens. Top-level code
    (`main@`, static initializers) is in `<StartupCode$…>.$My.Program`, which
-   is no F# entity: the module it is named after is opened instead.
+   is no F# entity: the module it is named after is opened instead. A file
+   that starts with a namespace names the type after the file; there the
+   modules opened are those whose values it sets (its fields are
+   `name@line`, matched to the modules' values by name and line).
 3. **Variables.** `this`, the parameters and the in-scope locals become local
    `Val`s in the `TcEnv`, typed by importing their IL types. The locals' IL
    types come from the frame's local signature.

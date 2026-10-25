@@ -259,16 +259,28 @@ let ``mutable module values`` () =
     Assert.Equal((box 7, "int"), evaluate (methodOf fixtures "add") [ 0; 0 ] "moduleCounter")
     Assert.Equal((box 8, "int"), evaluate (methodOf fixtures "add") [ 0; 0 ] "privateCounter")
 
-/// The top-level code of `StartupFixture`, in its `<StartupCode$…>` type.
-let private startupFrame =
+/// The top-level code of a file, in the `<StartupCode$…>` type named `typeName`.
+let private startupFrame typeName =
     typeof<EvalFixtures.Counter>.Assembly.GetTypes()
-    |> Array.find (fun t -> t.FullName.EndsWith "$FSharp.ExpressionEvaluator.Tests.StartupFixture")
+    |> Array.find (fun t -> t.FullName.EndsWith("$" + typeName))
     |> _.TypeInitializer
 
 [<Fact>]
 let ``top-level code sees its module's mutable values`` () =
-    Assert.Equal((box 9, "int"), evaluate startupFrame [] "startupCounter")
-    Assert.Equal((box 10, "int"), evaluate startupFrame [] "hiddenCounter")
+    let frame = startupFrame "FSharp.ExpressionEvaluator.Tests.StartupFixture"
+    Assert.Equal((box 9, "int"), evaluate frame [] "startupCounter")
+    Assert.Equal((box 10, "int"), evaluate frame [] "hiddenCounter")
+
+[<Fact>]
+let ``top-level code of a namespace sees the mutable values of the modules it sets`` () =
+    let frame = startupFrame "NamespaceStartupFixture"
+    Assert.Equal((box 11, "int"), evaluate frame [] "firstCounter")
+    Assert.Equal((box 13, "int"), evaluate frame [] "nestedCounter")
+    Assert.Equal((box 12, "int"), evaluate frame [] "secondCounter")
+
+    match compile frame "helper ()" with
+    | Ok _ -> failwith "Helpers sets no values, so it should not be opened"
+    | Error _ -> ()
 
 [<Fact>]
 let ``this and parameters of an instance member`` () =

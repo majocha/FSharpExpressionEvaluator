@@ -69,6 +69,23 @@ let ``tuples`` () =
     shows "(1, 2, 3, 4, 5, 6, 7, ())" (1, 2, 3, 4, 5, 6, 7, ())
 
 [<Fact>]
+let ``null-represented values inside containers`` () =
+    shows "[(); ()]" [ (); () ]
+    shows "[None; Some 1]" [ None; Some 1 ]
+    shows "[|(); ()|]" [| (); () |]
+    shows "[|None|]" [| (None: int option) |]
+    shows "{ U = (); O = None; G = () }" { U = (); O = None; G = () }
+    shows "{ U = (); O = None; G = None }" { U = (); O = None; G = (None: string option) }
+    shows "{| A = (); B = None |}" {| A = (); B = (None: int option) |}
+    shows "Some ()" (Some())
+    shows "Ok ()" (Ok(): Result<unit, string>)
+    shows "GSome None" (GSome(None: int option))
+    shows "map [(1, ()); (2, ())]" (Map.ofList [ 1, (); 2, () ])
+    shows "set [None; Some 1]" (Set.ofList [ Some 1; None ])
+    shows "struct ((), None)" (struct ((), (None: int option)))
+    shows "[[(); ()]]" [ [ (); () ] ]
+
+[<Fact>]
 let ``unit, functions, maps and sets`` () =
     shows "()" ()
     Assert.StartsWith("<fun:", (preview (makeClosure ())).Value)

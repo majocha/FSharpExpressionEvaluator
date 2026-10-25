@@ -35,6 +35,9 @@ type Point = { X: int; Y: int }
 [<Struct>]
 type StructPoint = { SX: int; SY: int }
 
+/// Fields whose values are null at runtime: `()` and `None`, directly and through a type parameter.
+type Holder<'T> = { U: unit; O: int option; G: 'T }
+
 exception MyError of code: int * string
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]

@@ -52,6 +52,19 @@ let ``tuple items, flattening Rest`` () =
     Assert.Equal(("Item1", "v.Item1", "1"), items[0])
 
 [<Fact>]
+let ``null-represented children keep their declared type`` () =
+    Assert.Equal(Some [ "[0]", "v[0]", "()"; "[1]", "v[1]", "()" ], children [ (); () ])
+    Assert.Equal(Some [ "[0]", "v[0]", "None" ], children [| (None: int option) |])
+    Assert.Equal(Some [ "Item1", "v.Item1", "s"; "Item2", "v.Item2", "()" ], children ("s", ()))
+
+    Assert.Equal(
+        Some [ "U", "v.U", "()"; "O", "v.O", "None"; "G", "v.G", "()" ],
+        children { U = (); O = None; G = () }
+    )
+
+    Assert.Equal(Some [ "[1]", "", "()" ], children (Map.ofList [ 1, () ]))
+
+[<Fact>]
 let ``closure captures`` () =
     let items = children (makeClosure ()) |> Option.get |> List.map (fun (n, f, _) -> n, f)
     Assert.Contains(("captured", "v.captured"), items)

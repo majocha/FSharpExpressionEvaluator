@@ -620,8 +620,10 @@ exceptions. Every assignment sets `PotentialSideEffect`.
 - **Threading.** The component is `Synchronized="true"`. FCS thread statics
   (diagnostics logger, build phase) are set up per call.
 - **Cancellation.** Concord calls are synchronous, so long imports must not
-  block the UI. If warm-up is still running we wait with a timeout, then
-  return "F# EE is still loading; try again". We do not fall back to C# here.
+  block the UI. If warm-up is still running we wait with a timeout (3 s for
+  an expression, 10 s for the Locals query), then return "F# EE is still
+  loading; try again". We do not fall back to C# here; only the Locals query
+  does, as it has no error to show. See §17, item 9.
 
 ### 6.10 Fallback to C#
 
@@ -1516,10 +1518,76 @@ assignments in F# frames, live in VS.
    value after stepping over `twice`. Editing a value from the Locals rows
    (a captured value, a parameter) still sticks.
 
+9. **Performance (§6.9, 2026-10-25).**
+   - **Warm-up.** Naming an F# frame (`FrameDecoder.GetFrameName`) starts
+     the AppDomain's session (`Debuggee.warmUp`).
+     - **Reading, on the decoder's thread.** The modules are copied out of
+       the debuggee while it is stopped: the debugger's buffer of an
+       assembly that isn't loaded becomes invalid when the assembly loads.
+     - **Building, on a thread-pool thread.** `EvaluationSession.Create`,
+       then `WarmUp`, which compiles a throwaway expression
+       (`[ 0 ] |> List.map (fun i -> i + 1) |> List.sum`) and the Locals
+       query in the frame. That JIT-compiles most of the compiler and loads
+       the imports the frame needs.
+     - **Waiting.** The session item on the AppDomain now holds the task. An
+       expression waits up to 3 s for it, then fails with "F# EE is still
+       loading; try again" (no C# fallback). The Locals query waits up to
+       10 s, as it comes right after the first break, and falls back to C#
+       after that.
+     - **Failure.** A failed build is dropped, so the next evaluation builds
+       again and falls back to C#, as before.
+     - **Threads.** Only the build task runs beside the component's
+       synchronized calls, and an evaluation waits for the whole task, so a
+       session is never used by two threads at once. FCS keeps its
+       diagnostics logger and build phase in `AsyncLocal`s, and each query
+       sets them (`withDiagnostics`).
+   - **Release compiler.** `Build-Compiler.ps1` builds Release by default
+     (20.6 MB instead of 23 MB). Debug is still there for stepping into the
+     compiler.
+   - **Measured.** The unit tests come from
+     `` `timings of the session and of queries` `` (`FSHARP_EE_PERF=<file>`,
+     run alone; 174 modules, .NET 10). The live numbers are from `ee.log`
+     under `Probe-Debugger.ps1` (TestDebuggee net10.0, 14 loaded and 71
+     referenced modules, devenv on .NET Framework). Times are in ms; ranges
+     are 2–3 runs.
+
+     | | Tests, Debug | Tests, Release | Live, Debug | Live, Release |
+     |---|---|---|---|---|
+     | Read the modules | — | — | 290–350 | 310–330 |
+     | `Create` | 850–990 | 690–810 | 1030–1150 | 1010–1190 |
+     | First query, no warm-up | 1280–1440 | 1110–1160 | — | — |
+     | `WarmUp` | — | 1290–1380 | 2570–2580 | 2490–2880 |
+     | First query after warm-up | — | 12–15 | 10–11 | 10–12 |
+     | Warm `CompileExpression` | 15–33 | 10–16 | 8–12 | 8–12 |
+     | Warm `CompileLocals` (23 variables live) | 14–17 | 11–13 | 19–27 | 19–27 |
+     | Rebuild after modules load | 370–690 | 270–380 | 60–190 | 70–220 |
+
+   - **Against the targets.**
+     - **Met:** warm DataTips (about 10 ms; target 100) and the Locals query
+       (about 20 ms; target 50).
+     - **Not met cold:** the first evaluation in a devenv process is ready
+       about 4 s after the break (read, `Create`, `WarmUp`), against 2 s.
+       The first Locals query arrives about 1 s after the break, so it
+       waited 2.5–2.8 s instead of about 3.6 s.
+     - **Later debug sessions** in the same devenv are close to warm: build
+       72 ms and warm-up 126 ms, then the first Locals in 221 ms.
+   - **Why cold is slow.** It is the JIT. On .NET Framework every method is
+     compiled fully optimized, without tiers, so the same warm-up takes
+     about twice as long in devenv as in the tests on .NET 10. A Release
+     compiler makes no difference there (it helps by about 20% in the
+     tests). Reading takes about 300 ms in the first debug session, nearly
+     all of it the 71 referenced assemblies (about 4 ms each), and about
+     20 ms afterwards.
+   - **Rebuilds.** Every break after a module load (TestDebuggee loads 1–2
+     more between its breaks) starts a new build at the stack walk. It
+     usually finishes before the next evaluation.
+
 **Next in M4**
 
-- Performance (§6.9): warm-up on the first F# break, and a Release build of
-  the compiler.
+- Cold start (§6.9): NGen the private compiler, which VS does for
+  per-machine extensions (the VSIX asset's `Ngen` attributes; not measured:
+  that needs admin and a per-machine install), or JIT the compiler on more
+  threads while `Create` runs.
 - Anonymous record types for frame values.
 
 

@@ -799,3 +799,62 @@ let ``locals start with the debugger's aliases`` () =
     Assert.Equal("boom", (value :?> exn).Message)
     Assert.Equal("System.InvalidOperationException", ty)
 
+
+/// Timings for docs/DESIGN.md §6.9, written to the file FSHARP_EE_PERF names (nothing runs without
+/// it). Cold numbers need the test to run alone, in a process of its own:
+/// `dotnet test --filter "FullyQualifiedName~timings"`.
+[<Fact>]
+let ``timings of the session and of queries`` () =
+    match Environment.GetEnvironmentVariable "FSHARP_EE_PERF" with
+    | null
+    | "" -> ()
+    | path ->
+        let lines = ResizeArray<string>()
+
+        let time name f =
+            let sw = Diagnostics.Stopwatch.StartNew()
+            let value = f ()
+            lines.Add $"{name}: {sw.Elapsed.TotalMilliseconds:F1} ms"
+            value
+
+        let median name n f =
+            let times =
+                [
+                    for _ in 1..n ->
+                        let sw = Diagnostics.Stopwatch.StartNew()
+                        f () |> ignore
+                        sw.Elapsed.TotalMilliseconds
+                ]
+                |> List.sort
+
+            lines.Add $"{name}: median {times[n / 2]:F1} ms of {n} (min {List.head times:F1}, max {List.last times:F1})"
+
+        let ok name (r: Result<'T, EvaluationDiagnostic list>) =
+            match r with
+            | Ok _ -> ()
+            | Error d -> failwithf "%s: %A" name d
+
+        let modules = time "read modules" (fun () -> debuggeeModules false)
+        lines.Add $"modules: {modules.Length}"
+        let s = time "EvaluationSession.Create (cold)" (fun () -> EvaluationSession.Create modules)
+        let add = frameOf (methodOf fixtures "add")
+        let withLocals = frameOf (methodOf fixtures "withLocals")
+
+        // As the debugger's session is warmed up on the first break (FSHARP_EE_PERF_WARMUP=0 skips it).
+        if Environment.GetEnvironmentVariable "FSHARP_EE_PERF_WARMUP" <> "0" then
+            time "WarmUp" (fun () -> s.WarmUp(withLocals.AssemblyName, withLocals.MethodToken))
+
+        time "CompileExpression 'x + y' (first)" (fun () -> s.CompileExpression(add, "x + y")) |> ok "x + y"
+
+        time "CompileExpression 'List.sum moduleValue' (second)" (fun () -> s.CompileExpression(add, "List.sum moduleValue"))
+        |> ok "List.sum"
+
+        time "CompileLocals withLocals (first)" (fun () -> s.CompileLocals(withLocals, false)) |> ok "locals"
+        median "CompileExpression 'x + y' (warm)" 20 (fun () -> s.CompileExpression(add, "x + y"))
+        median "CompileExpression 'List.map (fun i -> i * 2) moduleValue' (warm)" 20 (fun () -> s.CompileExpression(add, "List.map (fun i -> i * 2) moduleValue"))
+        median "CompileLocals withLocals (warm)" 20 (fun () -> s.CompileLocals(withLocals, false))
+        (s :> IDisposable).Dispose()
+        let s2 = time "EvaluationSession.Create (again)" (fun () -> EvaluationSession.Create modules)
+        time "CompileExpression 'x + y' (first, new session)" (fun () -> s2.CompileExpression(add, "x + y")) |> ok "x + y"
+        (s2 :> IDisposable).Dispose()
+        File.AppendAllLines(path, lines)

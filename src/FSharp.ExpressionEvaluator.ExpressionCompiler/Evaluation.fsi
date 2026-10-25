@@ -184,3 +184,8 @@ type EvaluationSession =
     member CompileAssignment:
         frame: FrameContext * target: string * value: string * ?localsAsParameters: bool ->
             Result<CompiledExpression, EvaluationDiagnostic list>
+
+    /// Compiles queries in a frame of the given method and throws them away, so that the first
+    /// real ones find the imports they need loaded and the compiler's code compiled by the JIT
+    /// (docs/DESIGN.md §6.9). Errors are ignored.
+    member WarmUp: assemblyName: string * methodToken: int -> unit

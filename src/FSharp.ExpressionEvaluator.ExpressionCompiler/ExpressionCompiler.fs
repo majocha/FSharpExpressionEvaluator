@@ -48,6 +48,17 @@ type ExpressionCompiler() =
             CustomTypeInfo = null
         )
 
+    /// The error while the session is still being built (docs/DESIGN.md §6.9): no C# instead, as it
+    /// would read F# names differently.
+    static let stillLoading = "F# EE is still loading; try again"
+
+    /// How long an expression waits for a session still being built: a DataTip blocks the editor.
+    static let expressionTimeout = TimeSpan.FromSeconds 3.0
+
+    /// How long the Locals query waits: it comes right after the first break, and its C# fallback
+    /// would show the frame as C# sees it until the next one.
+    static let localsTimeout = TimeSpan.FromSeconds 10.0
+
     static let errorText (diagnostics: EvaluationDiagnostic list) =
         match diagnostics with
         | d :: _ -> $"error FS{d.Number:D4}: {d.Message}"
@@ -65,27 +76,31 @@ type ExpressionCompiler() =
             None
         else
             try
-                let session = Debuggee.session address
-                let frame = Debuggee.frame address inspectionContext
+                let sw = Diagnostics.Stopwatch.StartNew()
 
-                let result =
-                    match run session frame with
-                    // Errors outside the text come from the PDB's opens, which may name namespaces of
-                    // assemblies the debuggee has not loaded: try again without them.
-                    | Error diagnostics when
-                        not frame.Opens.IsEmpty && diagnostics |> List.exists (fun d -> d.Range.IsNone)
-                        ->
-                        run session { frame with Opens = [] }
-                    | result -> result
+                match Debuggee.session expressionTimeout address with
+                | None -> Some(Error stillLoading)
+                | Some session ->
+                    let frame = Debuggee.frame address inspectionContext
 
-                match result with
-                | Ok compiled ->
-                    log $"{what}: {compiled.ResultType}"
-                    Some(Ok(query address.RuntimeInstance compiled))
-                | Error diagnostics ->
-                    let text = errorText diagnostics
-                    log $"{what}: {text}"
-                    Some(Error text)
+                    let result =
+                        match run session frame with
+                        // Errors outside the text come from the PDB's opens, which may name namespaces of
+                        // assemblies the debuggee has not loaded: try again without them.
+                        | Error diagnostics when
+                            not frame.Opens.IsEmpty && diagnostics |> List.exists (fun d -> d.Range.IsNone)
+                            ->
+                            run session { frame with Opens = [] }
+                        | result -> result
+
+                    match result with
+                    | Ok compiled ->
+                        log $"{what}: {compiled.ResultType}, {sw.ElapsedMilliseconds} ms"
+                        Some(Ok(query address.RuntimeInstance compiled))
+                    | Error diagnostics ->
+                        let text = errorText diagnostics
+                        log $"{what}: {text}, {sw.ElapsedMilliseconds} ms"
+                        Some(Error text)
             with e ->
                 Log.exn "EC" what e
                 None
@@ -102,73 +117,78 @@ type ExpressionCompiler() =
             None
         else
             try
-                let runtime = address.RuntimeInstance
-                let session = Debuggee.session address
-                let frame = Debuggee.frame address inspectionContext
+                let sw = Diagnostics.Stopwatch.StartNew()
 
-                let displayNames =
-                    match runtime.GetAliases inspectionContext with
-                    | null -> Map.empty
-                    | aliases -> aliases |> Seq.map (fun a -> a.FullName, a.Name) |> Map.ofSeq
+                match Debuggee.session localsTimeout address with
+                // The C# query if it takes even longer.
+                | None -> None
+                | Some session ->
+                    let runtime = address.RuntimeInstance
+                    let frame = Debuggee.frame address inspectionContext
 
-                let displayName name =
-                    displayNames |> Map.tryFind name |> Option.defaultValue name
+                    let displayNames =
+                        match runtime.GetAliases inspectionContext with
+                        | null -> Map.empty
+                        | aliases -> aliases |> Seq.map (fun a -> a.FullName, a.Name) |> Map.ofSeq
 
-                let returnValues =
-                    frame.Aliases |> List.filter (fun a -> a.Kind = AliasKind.ReturnValue)
+                    let displayName name =
+                        displayNames |> Map.tryFind name |> Option.defaultValue name
 
-                let listed (a: Alias) =
-                    a.Kind <> AliasKind.ReturnValue
-                    || not (
-                        (displayName a.Name).StartsWith("Microsoft.FSharp.", StringComparison.Ordinal)
-                        || (a.Name = "$ReturnValue" && returnValues.Length > 1)
-                    )
+                    let returnValues =
+                        frame.Aliases |> List.filter (fun a -> a.Kind = AliasKind.ReturnValue)
 
-                let frame =
-                    { frame with
-                        Aliases = frame.Aliases |> List.filter listed
-                    }
-
-                let result =
-                    match session.CompileLocals(frame, argumentsOnly) with
-                    | Error diagnostics when not frame.Opens.IsEmpty && diagnostics |> List.exists (fun d -> d.Range.IsNone) ->
-                        session.CompileLocals({ frame with Opens = [] }, argumentsOnly)
-                    | result -> result
-
-                match result with
-                | Ok compiled ->
-                    log
-                        $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}"
-
-                    let infos =
-                        compiled.Locals
-                        |> List.map (fun local ->
-                            DkmClrLocalVariableInfo.Create(
-                                displayName local.Name,
-                                local.Name,
-                                local.MethodName,
-                                (if local.ReadOnlyResult then
-                                     DkmClrCompilationResultFlags.ReadOnlyResult
-                                 else
-                                     DkmClrCompilationResultFlags.None),
-                                DkmEvaluationResultCategory.Data,
-                                null
-                            ))
-                        |> ResizeArray
-
-                    Some(
-                        DkmCompiledClrLocalsQuery.Create(
-                            runtime,
-                            null,
-                            compilerId,
-                            ReadOnlyCollection compiled.Assembly,
-                            compiled.TypeName,
-                            ReadOnlyCollection infos
+                    let listed (a: Alias) =
+                        a.Kind <> AliasKind.ReturnValue
+                        || not (
+                            (displayName a.Name).StartsWith("Microsoft.FSharp.", StringComparison.Ordinal)
+                            || (a.Name = "$ReturnValue" && returnValues.Length > 1)
                         )
-                    )
-                | Error diagnostics ->
-                    log $"GetClrLocalVariableQuery: {errorText diagnostics}"
-                    None
+
+                    let frame =
+                        { frame with
+                            Aliases = frame.Aliases |> List.filter listed
+                        }
+
+                    let result =
+                        match session.CompileLocals(frame, argumentsOnly) with
+                        | Error diagnostics when not frame.Opens.IsEmpty && diagnostics |> List.exists (fun d -> d.Range.IsNone) ->
+                            session.CompileLocals({ frame with Opens = [] }, argumentsOnly)
+                        | result -> result
+
+                    match result with
+                    | Ok compiled ->
+                        log
+                            $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}, {sw.ElapsedMilliseconds} ms"
+
+                        let infos =
+                            compiled.Locals
+                            |> List.map (fun local ->
+                                DkmClrLocalVariableInfo.Create(
+                                    displayName local.Name,
+                                    local.Name,
+                                    local.MethodName,
+                                    (if local.ReadOnlyResult then
+                                         DkmClrCompilationResultFlags.ReadOnlyResult
+                                     else
+                                         DkmClrCompilationResultFlags.None),
+                                    DkmEvaluationResultCategory.Data,
+                                    null
+                                ))
+                            |> ResizeArray
+
+                        Some(
+                            DkmCompiledClrLocalsQuery.Create(
+                                runtime,
+                                null,
+                                compilerId,
+                                ReadOnlyCollection compiled.Assembly,
+                                compiled.TypeName,
+                                ReadOnlyCollection infos
+                            )
+                        )
+                    | Error diagnostics ->
+                        log $"GetClrLocalVariableQuery: {errorText diagnostics}"
+                        None
             with e ->
                 Log.exn "EC" "GetClrLocalVariableQuery" e
                 None

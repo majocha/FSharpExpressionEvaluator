@@ -10,11 +10,23 @@ open Microsoft.VisualStudio.Debugger.ComponentInterfaces
 open Microsoft.VisualStudio.Debugger.Evaluation
 open FSharp.ExpressionEvaluator.MethodNames
 
-/// F# call stack and breakpoint names (docs/DESIGN.md §7). Works from module metadata only, so it
-/// never loads the F# compiler. Anything it cannot name is passed on to the next decoder (C#).
+/// F# call stack and breakpoint names (docs/DESIGN.md §7). Works from module metadata only, and
+/// leaves the F# compiler to a thread-pool thread: naming an F# frame starts building the
+/// AppDomain's evaluation session there (§6.9). Anything it cannot name is passed on to the next
+/// decoder (C#).
 type FrameDecoder() =
 
     static let log = Log.write "FD"
+
+    static let warmUp =
+        Environment.GetEnvironmentVariable "FSHARP_EE_CSHARP" <> "1"
+
+    static let startSession (address: DkmClrInstructionAddress) =
+        if warmUp then
+            try
+                Debuggee.warmUp address
+            with e ->
+                Log.exn "FD" "warm-up" e
 
     static let metadata (m: DkmClrModuleInstance) =
         let mutable size = 0u
@@ -96,6 +108,8 @@ type FrameDecoder() =
         member _.GetFrameName(inspectionContext, workList, frame, argumentFlags, completionRoutine) =
             match frame.InstructionAddress with
             | :? DkmClrInstructionAddress as address ->
+                startSession address
+
                 try
                     let md = metadata address.ModuleInstance
                     let token = address.MethodId.Token

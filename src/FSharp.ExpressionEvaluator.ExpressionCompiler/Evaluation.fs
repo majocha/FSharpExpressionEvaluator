@@ -1415,6 +1415,27 @@ type EvaluationSession
                         })
             })
 
+    member this.WarmUp(assemblyName: string, methodToken: int) =
+        // The frame as far as it is known without the debugger: no locals, opens or aliases.
+        let frame =
+            {
+                AssemblyName = assemblyName
+                MethodToken = methodToken
+                LocalSignatureToken = 0
+                Opens = []
+                Locals = []
+                Aliases = []
+                IntrinsicsAssembly = ""
+            }
+
+        try
+            // A closure and FSharp.Core functions, so that optimization and code generation run
+            // through more of the compiler.
+            this.CompileExpression(frame, "[ 0 ] |> List.map (fun i -> i + 1) |> List.sum") |> ignore
+            this.CompileLocals(frame, false) |> ignore
+        with _ ->
+            ()
+
     member private _.Compile(frame: FrameContext, request: QueryRequest, localsAsParameters: bool, assigning: bool) =
         let g = tcGlobals
         let m = range0

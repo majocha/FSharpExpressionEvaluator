@@ -9,8 +9,10 @@ open System.IO
 open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
+open System.Runtime.ExceptionServices
 open System.Runtime.InteropServices
 open System.Text
+open System.Threading.Tasks
 open Microsoft.DiaSymReader
 open Microsoft.FSharp.NativeInterop
 open Microsoft.VisualStudio.Debugger
@@ -49,6 +51,13 @@ let private readImage (m: DkmClrModuleInstance) (offset: int) (size: int) =
         failwith $"read {read} of {size} bytes at +0x{offset:X}"
 
     buffer
+
+/// The simple name of a loaded module's assembly.
+let private assemblyName (m: DkmClrModuleInstance) =
+    let mutable size = 0u
+    use provider = metadataReader (copyBlob (m.GetMetaDataBytesPtr(&size)) size)
+    let md = provider.GetMetadataReader()
+    md.GetString(md.GetAssemblyDefinition().Name)
 
 /// The simple name of an assembly and the assemblies it references.
 let private assemblyAndReferences (md: MetadataReader) =
@@ -128,18 +137,26 @@ let private referencedModule (appDomain: DkmClrAppDomain) (reference: AssemblyNa
         log $"no metadata for {reference.FullName}: {e.GetType().Name}"
         None
 
-/// The evaluation session of an AppDomain, kept with it while its set of modules stays the same.
-/// Replacing it, or the AppDomain going away, releases the session.
+/// The evaluation session of an AppDomain, kept with it while its set of modules stays the same,
+/// built on a thread-pool thread (docs/DESIGN.md §6.9). Replacing it, or the AppDomain going away,
+/// releases the session, once built.
 [<AllowNullLiteral>]
-type private SessionItem(modules: string, session: EvaluationSession) =
+type private SessionItem(modules: string, session: Task<EvaluationSession>) =
     inherit DkmDataItem()
     member _.Modules = modules
     member _.Session = session
-    override _.OnClose() = (session :> IDisposable).Dispose()
 
-/// The evaluation session for the frame's AppDomain: imports built from every module loaded in it,
-/// rebuilt when modules are loaded or unloaded.
-let session (address: DkmClrInstructionAddress) =
+    override _.OnClose() =
+        session.ContinueWith(fun (t: Task<EvaluationSession>) ->
+            if t.Status = TaskStatus.RanToCompletion then
+                (t.Result :> IDisposable).Dispose())
+        |> ignore
+
+/// The session item of the frame's AppDomain for the modules loaded in it now. A new one copies the
+/// modules out of the debuggee here, while it is stopped (the debugger's buffers of referenced
+/// assemblies go away when they load), then builds the session and warms it up in the frame on a
+/// thread-pool thread.
+let private sessionItem (address: DkmClrInstructionAddress) =
     let appDomain = address.ModuleInstance.AppDomain
     let modules = modulesInAppDomain address
 
@@ -147,10 +164,11 @@ let session (address: DkmClrInstructionAddress) =
         modules |> Array.map (fun m -> string m.Mvid) |> Array.sort |> String.concat ","
 
     match appDomain.GetDataItem<SessionItem>() with
-    | item when not (isNull item) && item.Modules = key -> item.Session
+    | item when not (isNull item) && item.Modules = key -> item
     | _ ->
         let sw = Stopwatch.StartNew()
         let loaded = modules |> Array.choose debuggeeModule |> List.ofArray
+        let readLoaded = sw.ElapsedMilliseconds
         let loadedNames = loaded |> List.map (fun (_, name, _) -> name) |> set
 
         let referenced =
@@ -161,10 +179,49 @@ let session (address: DkmClrInstructionAddress) =
             |> List.choose (referencedModule appDomain)
 
         let debuggeeModules = (loaded |> List.map (fun (m, _, _) -> m)) @ referenced
-        let session = EvaluationSession.Create debuggeeModules
-        appDomain.SetDataItem(DkmDataCreationDisposition.CreateAlways, SessionItem(key, session))
-        log $"session for AppDomain {appDomain.Id}: {loaded.Length} loaded and {referenced.Length} referenced modules, {sw.ElapsedMilliseconds} ms"
-        session
+        let frameAssembly = assemblyName address.ModuleInstance
+        let methodToken = address.MethodId.Token
+        let read = sw.ElapsedMilliseconds
+
+        let build () =
+            let sw = Stopwatch.StartNew()
+            let session = EvaluationSession.Create debuggeeModules
+            let created = sw.ElapsedMilliseconds
+            session.WarmUp(frameAssembly, methodToken)
+
+            log
+                $"session for AppDomain {appDomain.Id}: {loaded.Length} loaded and {referenced.Length} referenced modules, read in {readLoaded} + {read - readLoaded} ms, built in {created} ms, warmed up in {sw.ElapsedMilliseconds - created} ms"
+
+            session
+
+        let item = SessionItem(key, Task.Run build)
+        appDomain.SetDataItem(DkmDataCreationDisposition.CreateAlways, item)
+        item
+
+/// Starts building the session of the frame's AppDomain, unless it is built or being built for the
+/// modules loaded now. The frame decoder calls it at every F# frame; only the first one of a break
+/// after modules changed does more than look.
+let warmUp (address: DkmClrInstructionAddress) = sessionItem address |> ignore
+
+/// The evaluation session for the frame's AppDomain: imports built from every module loaded in it,
+/// rebuilt when modules are loaded or unloaded. None if it is still being built after `timeout`.
+let session (timeout: TimeSpan) (address: DkmClrInstructionAddress) =
+    let item = sessionItem address
+
+    let built =
+        try
+            item.Session.Wait timeout
+        with :? AggregateException as e ->
+            // Built again for the next evaluation.
+            address.ModuleInstance.AppDomain.RemoveDataItem<SessionItem>() |> ignore
+            ExceptionDispatchInfo.Capture(e.InnerException).Throw()
+            false
+
+    if built then
+        Some item.Session.Result
+    else
+        log $"session for AppDomain {address.ModuleInstance.AppDomain.Id}: still building after {timeout.TotalSeconds} s"
+        None
 
 /// The frame's locals in scope at its IL offset and the namespaces open there, from the portable PDB.
 let private pdbScope (address: DkmClrInstructionAddress) =
@@ -241,10 +298,6 @@ let private intrinsicsAssembly (runtime: DkmClrRuntimeInstance) =
 let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionContext) =
     let m = address.ModuleInstance
     let runtime = address.RuntimeInstance
-    let mutable size = 0u
-    use provider = metadataReader (copyBlob (m.GetMetaDataBytesPtr(&size)) size)
-    let md = provider.GetMetadataReader()
-    let assemblyName = md.GetString(md.GetAssemblyDefinition().Name)
 
     let localSignatureToken =
         try
@@ -276,7 +329,7 @@ let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionC
             ]
 
     {
-        AssemblyName = assemblyName
+        AssemblyName = assemblyName m
         MethodToken = address.MethodId.Token
         LocalSignatureToken = localSignatureToken
         Opens = opens

@@ -2,10 +2,12 @@
 param(
     # A dotnet/fsharp checkout to build instead of the pinned commit (eng\fsharp.commit), e.g. to try
     # a newer one. It needs no changes for the expression evaluator, and must have been built once
-    # (`.\build.cmd -c Debug`). Defaults to FSHARP_EE_FSHARP_REPO.
+    # in the same configuration (`.\build.cmd -c Release`). Defaults to FSHARP_EE_FSHARP_REPO.
     [string] $FSharpRepo = $env:FSHARP_EE_FSHARP_REPO,
+    # Release by default, as the VSIX ships it: warm queries are about 20% faster than with a Debug
+    # build (docs/DESIGN.md §17). Debug is for stepping into the compiler.
     [ValidateSet('Debug', 'Release')]
-    [string] $Configuration = 'Debug'
+    [string] $Configuration = 'Release'
 )
 
 # Builds the expression evaluator's private F# compiler (docs/DESIGN.md §8.2): FSharp.Compiler.Service

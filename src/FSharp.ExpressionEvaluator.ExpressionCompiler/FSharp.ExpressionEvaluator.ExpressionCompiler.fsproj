@@ -15,11 +15,11 @@
     <Compile Include="PeImage.fs" />
     <Compile Include="MetadataTypes.fs" />
     <Compile Include="MethodNames.fs" />
-    <Compile Include="FrameDecoder.fs" />
     <Compile Include="ReturnValues.fs" />
     <Compile Include="Evaluation.fsi" />
     <Compile Include="Evaluation.fs" />
     <Compile Include="Debuggee.fs" />
+    <Compile Include="FrameDecoder.fs" />
     <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
 
@@ -50,7 +50,7 @@
   </ItemGroup>
 
   <Target Name="CheckFSharpEECompiler" BeforeTargets="ResolveAssemblyReferences">
-    <Error Condition="!Exists('$(FSharpEECompiler)')" Text="The private F# compiler is missing: run eng\Build-Compiler.ps1 (needs the dotnet/fsharp expression-evaluator branch)." />
+    <Error Condition="!Exists('$(FSharpEECompiler)')" Text="The private F# compiler is missing: run eng\Build-Compiler.ps1." />
   </Target>
 
 </Project>

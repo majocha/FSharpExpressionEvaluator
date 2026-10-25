@@ -29,6 +29,13 @@ type internal RawViewData(parent: FSharpResultData) =
     inherit DkmDataItem()
     member _.Parent = parent
 
+/// Attached to a copy of a C# result that only changes its Type column to F# names; children,
+/// the CLR value and the underlying string come from the C# original.
+[<AllowNullLiteral>]
+type internal RetypedData(original: DkmEvaluationResult) =
+    inherit DkmDataItem()
+    member _.Original = original
+
 [<AllowNullLiteral>]
 type internal RowsData(parent: FSharpResultData, rows: Row[]) =
     inherit DkmDataItem()
@@ -88,6 +95,37 @@ type ResultProvider() =
                 null,
                 FSharpResultData(clrValue, value, declaredType, fullName)
             ))
+
+    /// C#'s result for a value we do not render, with F# names in the Type column when its type
+    /// mentions FSharp.Core (`System.Threading.Tasks.Task<unit>`).
+    static let retype (clrValue: DkmClrValue) (declaredType: DkmClrType) context (result: DkmEvaluationResult) =
+        match result with
+        | :? DkmSuccessEvaluationResult as s ->
+            let value = ConcordValue(clrValue, context) :> IValue
+
+            match FSharpValues.csharpTypeColumn (lmrType declaredType) value with
+            | Some typeName when typeName <> s.Type ->
+                DkmSuccessEvaluationResult.Create(
+                    s.InspectionContext,
+                    s.StackFrame,
+                    s.Name,
+                    s.FullName,
+                    s.Flags,
+                    s.Value,
+                    s.EditableValue,
+                    typeName,
+                    s.Category,
+                    s.Access,
+                    s.StorageType,
+                    s.TypeModifierFlags,
+                    s.Address,
+                    s.CustomUIVisualizers,
+                    s.ExternalModules,
+                    RetypedData s
+                )
+                :> DkmEvaluationResult
+            | _ -> result
+        | _ -> result
 
     static let rows (data: FSharpResultData) =
         let fullName = Option.ofObj data.FullName
@@ -196,11 +234,14 @@ type ResultProvider() =
         member _.GetResult
             (clrValue, workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
             =
+            let fsharp =
+                Settings.enabled ()
+                && not (inspectionContext.EvaluationFlags.HasFlag DkmEvaluationFlags.ShowValueRaw)
+                && not (hasSpecifier "raw" formatSpecifiers)
+                && not (hasSpecifier "results" formatSpecifiers)
+
             let created =
-                if not (Settings.enabled ())
-                   || inspectionContext.EvaluationFlags.HasFlag DkmEvaluationFlags.ShowValueRaw
-                   || hasSpecifier "raw" formatSpecifiers
-                   || hasSpecifier "results" formatSpecifiers then
+                if not fsharp then
                     None
                 else
                     try
@@ -213,12 +254,35 @@ type ResultProvider() =
             | Some result -> completionRoutine.Invoke(DkmEvaluationAsyncResult(result))
             | None ->
                 // Not an F# shape: the next provider (C#) renders it. This call does not come back here.
+                let completionRoutine =
+                    if not fsharp then
+                        completionRoutine
+                    else
+                        DkmCompletionRoutine<DkmEvaluationAsyncResult>(fun r ->
+                            let retyped =
+                                match r.Result with
+                                | null -> r
+                                | result ->
+                                    try
+                                        DkmEvaluationAsyncResult(retype clrValue declaredType inspectionContext result)
+                                    with e ->
+                                        Log.exn "RP" $"Type column of '{resultName}'" e
+                                        r
+
+                            completionRoutine.Invoke retyped)
+
                 clrValue.GetResult(
                     workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
 
         member _.GetChildren(result, workList, initialRequestSize, inspectionContext, completionRoutine) =
             match result.GetDataItem<FSharpResultData>(), result.GetDataItem<RawViewData>() with
-            | null, null -> result.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
+            | null, null ->
+                let result =
+                    match result.GetDataItem<RetypedData>() with
+                    | null -> result
+                    | retyped -> retyped.Original
+
+                result.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
             | null, raw -> rawViewChildren raw workList initialRequestSize inspectionContext completionRoutine
             | data, _ ->
                 try
@@ -246,8 +310,12 @@ type ResultProvider() =
                     completionRoutine.Invoke(DkmEvaluationEnumAsyncResult.CreateErrorResult e)
 
         member _.GetClrValue(successResult) =
-            match successResult.GetDataItem<FSharpResultData>() with
-            | null -> successResult.GetClrValue()
-            | data -> data.ClrValue
+            match successResult.GetDataItem<FSharpResultData>(), successResult.GetDataItem<RetypedData>() with
+            | null, null -> successResult.GetClrValue()
+            | null, retyped -> (retyped.Original :?> DkmSuccessEvaluationResult).GetClrValue()
+            | data, _ -> data.ClrValue
 
-        member _.GetUnderlyingString(result) = result.GetUnderlyingString()
+        member _.GetUnderlyingString(result) =
+            match result.GetDataItem<RetypedData>() with
+            | null -> result.GetUnderlyingString()
+            | retyped -> retyped.Original.GetUnderlyingString()

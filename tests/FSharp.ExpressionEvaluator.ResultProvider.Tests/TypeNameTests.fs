@@ -76,3 +76,16 @@ let ``module suffix is dropped`` () =
 [<Fact>]
 let ``anonymous records`` () =
     Assert.Equal("{| A: int; B: string |}", name (live {| A = 1; B = "x" |}).Type)
+
+let private column<'T> (value: obj) = FSharpValues.csharpTypeColumn (Some typeOf<'T>) (live value)
+
+[<Fact>]
+let ``type column of values C# renders names FSharp.Core types in F#`` () =
+    Assert.Equal(Some "System.Threading.Tasks.Task<unit>", column<System.Threading.Tasks.Task<unit>> (System.Threading.Tasks.Task.FromResult()))
+    Assert.Equal(Some "System.Threading.Tasks.Task<unit>", column<System.Threading.Tasks.Task<unit>> null)
+    Assert.Equal(Some "System.Collections.Generic.List<int option>", column<List<int option>> (List<int option>()))
+    Assert.Equal(Some "Async<int> array", column<Async<int>[]> [| async { return 1 } |])
+    Assert.Equal(Some "obj {System.Threading.Tasks.Task<unit>}", column<obj> (System.Threading.Tasks.Task.FromResult()))
+    // Types without FSharp.Core in them keep C#'s names.
+    Assert.Equal(None, column<List<int>> (List<int>()))
+    Assert.Equal(None, column<obj> "s")

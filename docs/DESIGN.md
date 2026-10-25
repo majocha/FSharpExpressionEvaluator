@@ -1725,6 +1725,17 @@ assignments in F# frames, live in VS.
     from the result provider (§5.4), which already showed `int list`;
     `ResultType` is what the compiler logs and its tests read.
 
+13. **F# names in C#'s Type column (2026-10-25).** Values that are not F#
+    shapes go to the C# provider, which named their FSharp.Core type
+    arguments its way: `System.Threading.Tasks.Task<Microsoft.FSharp.Core.Unit>`.
+    When a value's declared or runtime type mentions an FSharp.Core type, the
+    result provider now copies C#'s result with an F# Type column
+    (`System.Threading.Tasks.Task<unit>`, `obj {System.Threading.Tasks.Task<unit>}`)
+    and forwards children, the CLR value and the underlying string to the
+    original. Other types keep C#'s names (`int[]`, `int?`). Children that C#
+    creates itself (members of a `Task<unit>`) never come back to us and keep
+    C# names. Verified live with watches at TestDebuggee's first break.
+
 
 **Next in M4**
 

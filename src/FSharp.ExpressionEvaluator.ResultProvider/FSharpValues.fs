@@ -266,6 +266,29 @@ let typeNameOf (declared: IType option) (v: IValue) =
     | Some d -> typeName d
     | None -> typeName (displayType v.Type)
 
+let rec private mentionsFSharpCore (t: IType) =
+    if t.IsGenericParameter then false
+    elif t.IsArray then mentionsFSharpCore t.ElementType
+    else
+        (not (isNull t.Namespace) && t.Namespace.StartsWith "Microsoft.FSharp")
+        || List.exists mentionsFSharpCore t.GenericArguments
+
+/// F# Type column for a value the C# provider renders, when its type mentions FSharp.Core types,
+/// which C# spells `Task<Microsoft.FSharp.Core.Unit>`. Laid out as C# does: the declared type, then
+/// the runtime type in braces when it differs (never for `Nullable`, whose values box as the inner type).
+let csharpTypeColumn (declared: IType option) (v: IValue) =
+    let runtime = if v.IsNull then None else Some v.Type
+
+    match declared, runtime with
+    | Some d, Some r when mentionsFSharpCore d || mentionsFSharpCore r ->
+        if d.Native.Equals r.Native || d.DefinitionName = "System.Nullable`1" then
+            Some(typeName d)
+        else
+            Some $"{typeName d} {{{typeName r}}}"
+    | Some d, None when mentionsFSharpCore d -> Some(typeName d)
+    | None, Some r when mentionsFSharpCore r -> Some(typeName r)
+    | _ -> None
+
 // ---------------------------------------------------------------------------------------------
 // Children and full names
 

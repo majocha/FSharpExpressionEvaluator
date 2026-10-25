@@ -1,8 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Unit tests for the expression compiler component's Concord-free core (frame names for now).
-    Fixtures are F# code in this assembly, read back through System.Reflection.Metadata.
+    Unit tests for the expression compiler component's Concord-free core: frame names, and
+    expressions compiled by the private F# compiler. Fixtures are F# code in this assembly, read
+    back through System.Reflection.Metadata; for expressions, this assembly is the debuggee.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -16,8 +17,32 @@
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Core\FSharpTypes.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MetadataTypes.fs" Link="Core\MetadataTypes.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MethodNames.fs" Link="Core\MethodNames.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\Evaluation.fsi" Link="Core\Evaluation.fsi" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\Evaluation.fs" Link="Core\Evaluation.fs" />
     <Compile Include="Fixtures.fs" />
     <Compile Include="MethodNameTests.fs" />
+    <Compile Include="EvaluationIntrinsics.fs" />
+    <Compile Include="EvaluationTests.fs" />
+  </ItemGroup>
+
+  <!--
+    This assembly is compiled by the fsc of the private compiler's checkout (eng/Build-Compiler.ps1):
+    its fixtures need task state machines lowered, which released SDKs skip in Debug builds.
+  -->
+  <PropertyGroup>
+    <FSharpEEFsc>$(MSBuildThisFileDirectory)..\..\artifacts\fsc\fsc.dll</FSharpEEFsc>
+    <DotnetFscCompilerPath>"$(FSharpEEFsc)"</DotnetFscCompilerPath>
+  </PropertyGroup>
+
+  <Target Name="CheckFSharpEEFsc" BeforeTargets="CoreCompile">
+    <Error Condition="!Exists('$(FSharpEEFsc)')" Text="The checkout's fsc is missing: run eng\Build-Compiler.ps1." />
+  </Target>
+
+  <!-- The private F# compiler, built by eng/Build-Compiler.ps1; it makes this assembly a friend. -->
+  <ItemGroup>
+    <Reference Include="FSharp.ExpressionEvaluator.Compiler">
+      <HintPath>$(MSBuildThisFileDirectory)..\..\artifacts\compiler\FSharp.ExpressionEvaluator.Compiler.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

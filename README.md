@@ -50,7 +50,7 @@ also show closures without `.Invoke`, the frame's actual generic arguments and, 
 argument values.
 
 **F# expressions in Watch, Immediate and DataTips** (M4, in progress). They are compiled by
-the F# compiler, from a `dotnet/fsharp` branch built privately into the VSIX:
+the F# compiler, an unmodified `dotnet/fsharp` built privately into the VSIX:
 
 ```
 xs |> List.sum                      6
@@ -66,10 +66,14 @@ FSharp.Core's inline functions, private members and module values, F# errors (`F
 aliases (`$exception`), format specifiers and assignment. The Locals window comes
 from the F# compiler too.
 
-**Building.** The private compiler comes from the
-[expression-evaluator branch](https://github.com/majocha/fsharp/tree/expression-evaluator)
-of `dotnet/fsharp`. Build that checkout once, then run `eng\Build-Compiler.ps1`. It expects the
-checkout at `..\fsharp.worktrees\expression-evaluator`, or set `FSHARP_EE_FSHARP_REPO`.
+**Building.** The private compiler is FSharp.Compiler.Service from a `dotnet/fsharp` checkout,
+with no changes to it: the evaluator's code that needs the compiler's internals lives here
+(`Evaluation.fs`). Build the checkout once (`.\build.cmd -c Debug`), then run
+`eng\Build-Compiler.ps1 -FSharpRepo <checkout>`. It builds the compiler under its own name and
+with this repo's assemblies as friends (`eng\PrivateCompiler.targets`), and copies it to
+`artifacts\compiler`. It also copies the checkout's `fsc` to `artifacts\fsc`, which compiles the
+tests' fixtures. Without `-FSharpRepo` it uses `FSHARP_EE_FSHARP_REPO`, else
+`..\fsharp.worktrees\expression-evaluator`.
 
 ## Roadmap
 
@@ -78,7 +82,7 @@ checkout at `..\fsharp.worktrees\expression-evaluator`, or set `FSHARP_EE_FSHARP
 | M0 | F#-only VSIX layout; spikes confirming the Concord assumptions | done |
 | M1 | Result provider: F# values and type names | done |
 | M2 | Frame and instruction decoder: F# call stack names | done |
-| M3 | F# expression compiler core, in a `dotnet/fsharp` branch | done |
+| M3 | F# expression compiler core (first in a `dotnet/fsharp` branch, now in this repo) | done |
 | M4 | Concord integration: Watch, Immediate, conditions, Locals, assignment | in progress |
 | M5 | Closures, state machines and compiler temporaries in Locals; custom type info | |
 | M6 | Upstream PDB improvements in `dotnet/fsharp` | |
@@ -105,12 +109,12 @@ implementer: the C# evaluator.
 | Path | What |
 |---|---|
 | `src/FSharp.ExpressionEvaluator.ResultProvider` | Value display |
-| `src/FSharp.ExpressionEvaluator.ExpressionCompiler` | Frame names now; the expression compiler later |
+| `src/FSharp.ExpressionEvaluator.ExpressionCompiler` | Frame names, and the expression compiler (`Evaluation.fs`, on the private F# compiler) |
 | `src/FSharp.ExpressionEvaluator.Vsix` | The VSIX |
 | `tests/FSharp.ExpressionEvaluator.ResultProvider.Tests` | Value display against live F# values |
-| `tests/FSharp.ExpressionEvaluator.ExpressionCompiler.Tests` | Frame names from F# fixtures read back through System.Reflection.Metadata |
+| `tests/FSharp.ExpressionEvaluator.ExpressionCompiler.Tests` | Frame names from F# fixtures read back through System.Reflection.Metadata; expressions compiled against this assembly as the debuggee |
 | `tests/TestDebuggee` | F# app that stops in a module function, a closure, a member, a generic function and a task; net10.0 (x64) and net48 (x86) |
-| `eng/` | Install into the Exp instance; drive it through DTE |
+| `eng/` | Build the private compiler; install into the Exp instance; drive it through DTE |
 | `docs/DESIGN.md` | Design and milestone results |
 
 ## Build, test, try

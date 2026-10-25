@@ -17,6 +17,8 @@
     <Compile Include="MethodNames.fs" />
     <Compile Include="FrameDecoder.fs" />
     <Compile Include="ReturnValues.fs" />
+    <Compile Include="Evaluation.fsi" />
+    <Compile Include="Evaluation.fs" />
     <Compile Include="Debuggee.fs" />
     <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>

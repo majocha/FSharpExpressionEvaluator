@@ -7,7 +7,7 @@ open Microsoft.VisualStudio.Debugger.Clr
 open Microsoft.VisualStudio.Debugger.ComponentInterfaces
 open Microsoft.VisualStudio.Debugger.Evaluation
 open Microsoft.VisualStudio.Debugger.Evaluation.ClrCompilation
-open FSharp.Compiler.Debugging.ExpressionEvaluation
+open FSharp.ExpressionEvaluator.Evaluation
 
 /// Registered for F# frames (docs/DESIGN.md §4, §6). Expressions, assignments and the Locals query
 /// are compiled by the F# compiler. Anything the F# compiler fails on internally falls back to the

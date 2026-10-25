@@ -1,0 +1,29 @@
+<Project>
+
+  <!--
+    Turns a dotnet/fsharp checkout's FSharp.Compiler.Service build into the expression evaluator's
+    private compiler (docs/DESIGN.md §8.2), without changes to the checkout. eng/Build-Compiler.ps1
+    passes this file as CustomBeforeMicrosoftCommonTargets: it is imported after the project body
+    and before the properties derived from AssemblyName and OutputPath. The global property reaches
+    the project references too, so everything here applies to FSharp.Compiler.Service only.
+  -->
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'FSharp.Compiler.Service'">
+    <!-- Its own identity, so it loads next to Visual Studio's FCS; unsigned, so the evaluator
+         (unsigned too) can be a friend. -->
+    <AssemblyName>FSharp.ExpressionEvaluator.Compiler</AssemblyName>
+    <SignAssembly>false</SignAssembly>
+    <PublicSign>false</PublicSign>
+    <DelaySign>false</DelaySign>
+
+    <!-- Its own folders, apart from the checkout's normal build. The SDK has already appended the
+         target framework to the project's own paths by now, so these name it. -->
+    <OutputPath>$(ArtifactsDir)bin/FSharp.ExpressionEvaluator.Compiler/$(Configuration)/$(TargetFramework)/</OutputPath>
+    <IntermediateOutputPath>$(ArtifactsDir)obj/FSharp.ExpressionEvaluator.Compiler/$(Configuration)/$(TargetFramework)/</IntermediateOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'FSharp.Compiler.Service'">
+    <InternalsVisibleTo Include="FSharp.ExpressionEvaluator.ExpressionCompiler" />
+    <InternalsVisibleTo Include="FSharp.ExpressionEvaluator.ExpressionCompiler.Tests" />
+  </ItemGroup>
+
+</Project>

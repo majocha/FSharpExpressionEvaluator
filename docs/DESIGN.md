@@ -701,7 +701,9 @@ resolver binds.
   carries the EE support, **under its own assembly identity**
   (`FSharp.ExpressionEvaluator.Compiler.dll`). That avoids identity clashes
   with VS's FCS in the same AppDomain, and lets us grant IVT to our EE
-  assembly.
+  assembly. **Since §18 the branch carries nothing:** the EE support lives
+  in this repo, and the private FCS is an unmodified checkout built with
+  `eng/PrivateCompiler.targets`.
   - Its FSharp.Core dependency is still unified to VS's (§8.1). Build it
     against a compatible FSharp.Core, or check in CI that it only binds APIs
     present in that version **(verify, M3)**.
@@ -1515,3 +1517,43 @@ assignments in F# frames, live in VS.
   the compiler.
 - Anonymous record types for frame values.
 
+
+---
+
+## 18. No changes to the F# compiler (2026-10-25)
+
+The evaluator now runs on an **unmodified** `dotnet/fsharp`: the
+expression-evaluator branch's compiler changes are gone or moved here. The
+core (`src/Compiler/Debugging/ExpressionEvaluation.fs`) is
+`FSharp.ExpressionEvaluator.ExpressionCompiler/Evaluation.fs`, and its tests
+are in `FSharp.ExpressionEvaluator.ExpressionCompiler.Tests`. Internal
+access is enough: the code compiled unchanged outside FCS, through
+`InternalsVisibleTo`.
+
+| Was in the branch | Now |
+|---|---|
+| `FSharp.Compiler.Service.fsproj`: own name, unsigned, own folders, the EE as a friend | `eng/PrivateCompiler.targets`, passed by `Build-Compiler.ps1` as `CustomBeforeMicrosoftCommonTargets` (imported after the project body, before the properties derived from `AssemblyName`); it applies to `FSharp.Compiler.Service` only, and adds the tests as a friend too |
+| `CompilerConfig`/`CompilerImports`: project references whose file doesn't exist | The debuggee's modules are files of FCS's `FileSystem` (public and settable; this compiler copy has it to itself), served from memory under a directory per session; disposing the session (`SessionItem.OnClose`) releases them |
+| `IlxGenOptions.lowerComputedCollections` | After optimization, `Seq.toList`/`Seq.toArray` become `List.ofSeq`/`Array.ofSeq`, which IlxGen doesn't lower to collector structs (same signatures, so the same link key under another module) |
+| `AccessibilityLogic`: no error for a field of a type outside the F# view | Fields of compiler-generated classes (closures, state machines) are read and written through placeholder calls `<>x::<>ldfld{n}`/`<>stfld{n}` while F# checks and optimizes the query; after code generation they become the `ldfld`/`stfld` |
+
+Two consequences:
+
+- **The frame's method body.** FCS reads referenced assemblies
+  metadata-only, so with `LocalSignatureToken = 0` the local signature's
+  token is read from the PE image's method body (System.Reflection.Metadata)
+  and decoded like the debugger's.
+- **The tests' compiler.** Their fixtures need task state machines lowered,
+  which released SDKs skip in Debug (§16, item 15). `Build-Compiler.ps1`
+  copies the checkout's `fsc` to `artifacts/fsc`, and the test project
+  compiles with it (`DotnetFscCompilerPath`).
+
+A change of FCS internals now shows up as a build error here when moving to
+a newer `dotnet/fsharp` commit. Upstreaming (§8.2) stays open: the core
+would move back as it is.
+
+**Verified:** 52 compiler tests (39 moved from the branch) and 28 result
+provider tests pass on `dotnet/fsharp` at `a63c579738` with no changes. Live
+in VS (net10.0): all five TestDebuggee breaks, including a closure's
+captured value, a class `let` field, `[ 1 .. 3 ]` and an array
+comprehension in Watch.

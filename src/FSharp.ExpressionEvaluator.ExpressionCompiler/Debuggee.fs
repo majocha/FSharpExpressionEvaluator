@@ -16,7 +16,7 @@ open Microsoft.FSharp.NativeInterop
 open Microsoft.VisualStudio.Debugger
 open Microsoft.VisualStudio.Debugger.Clr
 open Microsoft.VisualStudio.Debugger.Evaluation
-open FSharp.Compiler.Debugging.ExpressionEvaluation
+open FSharp.ExpressionEvaluator.Evaluation
 
 let private log = Log.write "EE"
 
@@ -129,11 +129,13 @@ let private referencedModule (appDomain: DkmClrAppDomain) (reference: AssemblyNa
         None
 
 /// The evaluation session of an AppDomain, kept with it while its set of modules stays the same.
+/// Replacing it, or the AppDomain going away, releases the session.
 [<AllowNullLiteral>]
 type private SessionItem(modules: string, session: EvaluationSession) =
     inherit DkmDataItem()
     member _.Modules = modules
     member _.Session = session
+    override _.OnClose() = (session :> IDisposable).Dispose()
 
 /// The evaluation session for the frame's AppDomain: imports built from every module loaded in it,
 /// rebuilt when modules are loaded or unloaded.

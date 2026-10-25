@@ -191,6 +191,15 @@ let private tryFindMethod (ilModule: ILModuleDef) (token: int) =
 
     search [] (ilModule.TypeDefs.AsList())
 
+/// The module or namespace at a path of names, e.g. `["TestDebuggee"; "Program"]`.
+let rec private tryModuleOrNamespace (modul: ModuleOrNamespace) path =
+    match path with
+    | [] -> Some modul
+    | part :: rest ->
+        match modul.ModuleOrNamespaceType.ModulesAndNamespacesByDemangledName.TryFind part with
+        | Some child -> tryModuleOrNamespace child rest
+        | None -> None
+
 /// The F# entities corresponding to a chain of IL type definitions, outermost first, as far as
 /// they exist in the F# view of the assembly (closures and other generated types do not).
 let private fsharpEntities (ccu: CcuThunk) (enclosing: ILTypeDef list) =
@@ -199,15 +208,7 @@ let private fsharpEntities (ccu: CcuThunk) (enclosing: ILTypeDef list) =
     | outer :: nested ->
         let ns, name = splitILTypeName outer.Name
 
-        let rec namespaceEntity (modul: ModuleOrNamespace) path =
-            match path with
-            | [] -> Some modul
-            | part :: rest ->
-                match modul.ModuleOrNamespaceType.ModulesAndNamespacesByDemangledName.TryFind part with
-                | Some child -> namespaceEntity child rest
-                | None -> None
-
-        match namespaceEntity ccu.Contents ns with
+        match tryModuleOrNamespace ccu.Contents ns with
         | None -> []
         | Some nsEntity ->
             let rec types (parent: Entity) (names: string list) acc =
@@ -219,6 +220,20 @@ let private fsharpEntities (ccu: CcuThunk) (enclosing: ILTypeDef list) =
                     | None -> List.rev acc
 
             types nsEntity (name :: (nested |> List.map _.Name)) []
+
+/// The module whose top-level code a frame is in: `main@` of an implicit entry point, or a static
+/// initializer. That code is in `<StartupCode$Assembly>.$My.Program`, which is no F# entity, so the
+/// module's values (mutable ones are not locals there) would not be in scope. A file that starts
+/// with a namespace names the type after the file instead, and has no single module.
+let private startupCodeModule (ccu: CcuThunk) (enclosing: ILTypeDef list) =
+    match enclosing with
+    | [ td ] when td.Name.StartsWith "<StartupCode$" ->
+        match td.Name.IndexOf ">.$" with
+        | -1 -> None
+        | i ->
+            tryModuleOrNamespace ccu.Contents (List.ofArray (td.Name.Substring(i + 3).Split '.'))
+            |> Option.filter _.IsModule
+    | _ -> None
 
 /// The path of a module or namespace as an `open` names it, e.g. `global.TestDebuggee.Program`.
 let private sourcePath (e: Entity) =
@@ -1418,10 +1433,13 @@ type EvaluationSession
 
             let entities = fsharpEntities ccu enclosing
 
+            // The modules whose values the frame sees unqualified, and whose private ones it can access.
+            let scopeEntities = entities @ Option.toList (startupCodeModule ccu enclosing)
+
             // Opens: enclosing namespace and modules (their values are in scope unqualified), then the PDB's.
             let opens =
                 [
-                    for e in entities do
+                    for e in scopeEntities do
                         if
                             e.IsModuleOrNamespace
                             && not (EntityHasWellKnownAttribute g WellKnownEntityAttributes.RequireQualifiedAccessAttribute e)
@@ -1828,7 +1846,7 @@ type EvaluationSession
             let accessPaths =
                 [
                     yield CompPath(dllInfo.ILScopeRef, SyntaxAccess.Unknown, [])
-                    for e in entities -> e.CompilationPath.NestedCompPath e.LogicalName (ModuleOrType)
+                    for e in scopeEntities -> e.CompilationPath.NestedCompPath e.LogicalName (ModuleOrType)
                 ]
 
             // In a generic frame the checker sees the frame's typars as free in `<>m0` until

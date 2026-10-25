@@ -18,6 +18,10 @@ module EvalFixtures =
 
     let private secret = 42
 
+    let mutable moduleCounter = 7
+
+    let mutable private privateCounter = 8
+
     let add (x: int) (y: int) = x + y
 
     let greet (name: string) = "hello " + name
@@ -249,6 +253,22 @@ let ``module values and FSharp.Core functions`` () =
 [<Fact>]
 let ``private module values are accessible from the frame's module`` () =
     Assert.Equal((box 42, "int"), evaluate (methodOf fixtures "add") [ 0; 0 ] "secret")
+
+[<Fact>]
+let ``mutable module values`` () =
+    Assert.Equal((box 7, "int"), evaluate (methodOf fixtures "add") [ 0; 0 ] "moduleCounter")
+    Assert.Equal((box 8, "int"), evaluate (methodOf fixtures "add") [ 0; 0 ] "privateCounter")
+
+/// The top-level code of `StartupFixture`, in its `<StartupCode$…>` type.
+let private startupFrame =
+    typeof<EvalFixtures.Counter>.Assembly.GetTypes()
+    |> Array.find (fun t -> t.FullName.EndsWith "$FSharp.ExpressionEvaluator.Tests.StartupFixture")
+    |> _.TypeInitializer
+
+[<Fact>]
+let ``top-level code sees its module's mutable values`` () =
+    Assert.Equal((box 9, "int"), evaluate startupFrame [] "startupCounter")
+    Assert.Equal((box 10, "int"), evaluate startupFrame [] "hiddenCounter")
 
 [<Fact>]
 let ``this and parameters of an instance member`` () =

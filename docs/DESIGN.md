@@ -1124,7 +1124,9 @@ surgery than planned:
 1. **Frame.** The frame's method is found by token. The F# entities enclosing
    it are looked up in the debuggee CCU.
 2. **Opens.** Its namespace and modules are opened (skipping
-   `RequireQualifiedAccess`), followed by the PDB's opens.
+   `RequireQualifiedAccess`), followed by the PDB's opens. Top-level code
+   (`main@`, static initializers) is in `<StartupCode$…>.$My.Program`, which
+   is no F# entity: the module it is named after is opened instead.
 3. **Variables.** `this`, the parameters and the in-scope locals become local
    `Val`s in the `TcEnv`, typed by importing their IL types. The locals' IL
    types come from the frame's local signature.

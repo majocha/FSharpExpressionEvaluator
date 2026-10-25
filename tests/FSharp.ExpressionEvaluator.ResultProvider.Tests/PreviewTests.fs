@@ -64,6 +64,9 @@ let ``tuples`` () =
     shows "(1, \"a\")" (1, "a")
     shows "struct (1, \"a\")" (struct (1, "a"))
     shows "(1, 2, 3, 4, 5, 6, 7, 8, 9)" (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    shows "(\"string\", ())" ("string", ())
+    shows "(None, 1)" ((None: int option), 1)
+    shows "(1, 2, 3, 4, 5, 6, 7, ())" (1, 2, 3, 4, 5, 6, 7, ())
 
 [<Fact>]
 let ``unit, functions, maps and sets`` () =

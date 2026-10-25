@@ -200,7 +200,9 @@ let rec private preview (options: Options) depth (declared: IType option) (v: IV
             let items = [ for i in 0 .. shown - 1 -> recurse (Some element) (v.Element i) ]
             "[|" + join "; " (withMore (v.ArrayLength > shown) items) + "|]"
         | TupleShape isStruct ->
-            let elements = tupleItems v |> List.map (recurse None) |> join ", "
+            // Element types tell a null `()` or `None` from a null reference.
+            let types = tupleTypes v.Type
+            let elements = tupleItems v |> List.mapi (fun i item -> recurse (List.tryItem i types) item) |> join ", "
             if isStruct then $"struct ({elements})" else $"({elements})"
         | UnionShape u ->
             match unionCase u v with

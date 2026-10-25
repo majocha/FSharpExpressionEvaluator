@@ -298,6 +298,80 @@ let ``top-level code of a namespace sees the mutable values of the modules it se
     | Ok _ -> failwith "Helpers sets no values, so it should not be opened"
     | Error _ -> ()
 
+/// The assemblies a query references, by name, and the types it defines.
+let private referencesAndTypes (assembly: byte[]) =
+    use pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(assembly))
+    let md = pe.GetMetadataReader()
+
+    [ for h in md.AssemblyReferences -> md.GetString (md.GetAssemblyReference h).Name ],
+    [ for h in md.TypeDefinitions -> md.GetString (md.GetTypeDefinition h).Name ]
+
+/// A .NET Framework process: mscorlib, with the System.Runtime and netstandard facades only
+/// referenced, and the netstandard2.0 FSharp.Core. Its frame is List.length in FSharp.Core.
+let private netfxSession =
+    lazy
+        (let framework =
+            Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.Windows, @"Microsoft.NET\Framework64\v4.0.30319")
+
+         let fsharpCore = Path.Combine(AppContext.BaseDirectory, "netfx", "FSharp.Core.dll")
+
+         let modules =
+             [
+                 for name in [ "mscorlib"; "System"; "System.Core"; "System.Numerics"; "System.Runtime"; "netstandard" ] do
+                     Path.Combine(framework, name + ".dll"), @"Z:\debuggee\framework"
+
+                 fsharpCore, @"Z:\debuggee\app"
+             ]
+             |> List.map (fun (path, dir) ->
+                 {
+                     FileName = Path.Combine(dir, Path.GetFileName path)
+                     Image = metadataOnly path
+                 })
+
+         let lengthToken =
+             use pe = new System.Reflection.PortableExecutable.PEReader(File.OpenRead fsharpCore)
+             let md = pe.GetMetadataReader()
+
+             md.TypeDefinitions
+             |> Seq.map md.GetTypeDefinition
+             |> Seq.filter (fun t -> md.GetString t.Name = "ListModule")
+             |> Seq.collect _.GetMethods()
+             |> Seq.find (fun h -> md.GetString (md.GetMethodDefinition h).Name = "Length")
+             |> fun h -> MetadataTokens.GetToken(MethodDefinitionHandle.op_Implicit h: EntityHandle)
+
+         let frame =
+             {
+                 AssemblyName = "FSharp.Core"
+                 MethodToken = lengthToken
+                 LocalSignatureToken = 0
+                 Opens = []
+                 Locals = []
+                 Aliases = []
+                 IntrinsicsAssembly = ""
+             }
+
+         EvaluationSession.Create modules, frame)
+
+let private compileNetfx text =
+    let session, frame = netfxSession.Value
+
+    match session.CompileExpression(frame, text) with
+    | Ok compiled -> referencesAndTypes compiled.Assembly
+    | Error diagnostics -> failwithf "%s: %A" text diagnostics
+
+[<Fact>]
+let ``queries in a .NET Framework debuggee reference mscorlib, not System.Runtime`` () =
+    // The query couldn't run there if it referenced System.Runtime, which such a process never loads.
+    let references, _ = compileNetfx "[ 1; 2 ] |> List.map string |> String.concat \",\""
+    Assert.Contains("mscorlib", references)
+    Assert.DoesNotContain("System.Runtime", references)
+
+[<Fact>]
+let ``queries define the attributes .NET Framework lacks`` () =
+    // An anonymous record's class carries DynamicDependencyAttribute, which mscorlib doesn't have.
+    let _, types = compileNetfx "{| Name = \"a\"; Count = 1 |}"
+    Assert.Contains("DynamicDependencyAttribute", types)
+
 [<Fact>]
 let ``this and parameters of an instance member`` () =
     let increment = methodOf typeof<EvalFixtures.Counter> "Increment"

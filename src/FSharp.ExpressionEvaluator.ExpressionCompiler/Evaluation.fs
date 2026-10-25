@@ -1217,6 +1217,19 @@ let private metadataOf (image: DebuggeeImage) =
         let content = pe.GetMetadata().GetContent()
         Array.init content.Length (fun i -> content[i])
 
+/// The core library the queries reference, as the debuggee's runtime has it: System.Runtime on .NET
+/// (Core), mscorlib on .NET Framework. A .NET Framework process doesn't load the System.Runtime facade,
+/// so a query referencing it can't run there.
+let private primaryAssemblyOf (modules: DebuggeeModule list) =
+    let has name =
+        modules
+        |> List.exists (fun m -> String.Equals(Path.GetFileName m.FileName, name, StringComparison.OrdinalIgnoreCase))
+
+    if not (has "System.Private.CoreLib.dll") && has "mscorlib.dll" then
+        PrimaryAssembly.Mscorlib
+    else
+        PrimaryAssembly.System_Runtime
+
 /// The debuggee's modules as files for the compiler, served from memory. The compiler reads every
 /// assembly through its FileSystem, which this compiler copy has to itself. Each session's modules
 /// are files under a directory of their own, as sessions may see different contents at one path;
@@ -1327,7 +1340,7 @@ type EvaluationSession
         tcConfigB.implicitlyReferenceDotNetAssemblies <- false
         tcConfigB.implicitlyResolveAssemblies <- false
         tcConfigB.SetUseSdkRefs false
-        tcConfigB.primaryAssembly <- PrimaryAssembly.System_Runtime
+        tcConfigB.primaryAssembly <- primaryAssemblyOf modules
         tcConfigB.target <- CompilerTarget.Dll
         tcConfigB.debuginfo <- false
         tcConfigB.emitTailcalls <- false
@@ -2226,6 +2239,10 @@ type EvaluationSession
                                         )
                                 ))
 
+                    // Attributes the runtime lacks, generated into the query as fsc does (e.g.
+                    // DynamicDependencyAttribute for an anonymous record's class on .NET Framework).
+                    let embeddedTypeDefs = g.tryRemoveEmbeddedILTypeDefs ()
+
                     let ilModule =
                         let ignoresAccessChecks = ignoresAccessChecksTo g [ frame.AssemblyName ]
 
@@ -2235,7 +2252,7 @@ type EvaluationSession
                             true
                             (4, 0)
                             false
-                            (mkILTypeDefs (fst ignoresAccessChecks :: queryTypeDefs))
+                            (mkILTypeDefs (fst ignoresAccessChecks :: queryTypeDefs @ embeddedTypeDefs))
                             None
                             None
                             0x0

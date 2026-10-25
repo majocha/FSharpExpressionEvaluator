@@ -1543,11 +1543,96 @@ type EvaluationSession
             let classTypars = List.take declaringType.GenericParams.Length frameTypars
             let frameTinst = frameTypars |> List.map mkTyparTy
 
-            let importType ty =
-                Import.ImportILType amap m frameTinst ty
+            // Anonymous record types are classes the compiler generates in each assembly that uses
+            // them (`<>f__AnonymousType<hash>`1`, generic over the field types in field-name order),
+            // not entities of its signature, so `ImportILType` can't import them. They become
+            // `{| … |}` types again: the field names are the properties typed by each type
+            // parameter, and the assembly is the CCU defining the class. IlxGen derives the class's
+            // name from the CCU's name and the field names, which must give back this class, so
+            // that queries name the frame's class (IlxGen only generates one for the query's own CCU).
+            let tryAnonRecdInfo (tref: ILTypeRef) =
+                // The frame's own module names its types with a local scope.
+                let tref = rescopeILTypeRef dllInfo.ILScopeRef tref
 
-            // Some types of frame values have no F# view: anonymous record types, for example, are
-            // not entities of their assembly's signature.
+                if not (tref.Name.StartsWith "<>f__AnonymousType") || not tref.Enclosing.IsEmpty then
+                    None
+                else
+                    let typeDefsOf (binary: ImportedBinary) =
+                        binary.RawMetadata.TryGetILModuleDef() |> Option.map _.TypeDefs
+
+                    let typeDefs =
+                        if tref.Scope = dllInfo.ILScopeRef then
+                            Some ilModule.TypeDefs
+                        else
+                            match tref.Scope with
+                            | ILScopeRef.Assembly aref ->
+                                tcImports.TryFindDllInfo(ctok, m, aref.Name, lookupOnly = true)
+                                |> Option.bind typeDefsOf
+                            | _ -> None
+
+                    let ccu =
+                        tcImports.GetImportedAssemblies()
+                        |> List.tryFind (fun a -> a.ILScopeRef = tref.Scope)
+                        |> Option.map _.FSharpViewOfMetadata
+
+                    match typeDefs, ccu with
+                    | Some typeDefs, Some ccu ->
+                        match (if typeDefs.ExistsByName tref.Name then Some(typeDefs.FindByName tref.Name) else None) with
+                        | Some td ->
+                            let names =
+                                td.GenericParams
+                                |> List.mapi (fun i _ ->
+                                    td.Properties.AsList()
+                                    |> List.tryFind (fun p -> p.PropertyType = ILType.TypeVar(uint16 i))
+                                    |> Option.map _.Name)
+
+                            if names |> List.forall Option.isSome then
+                                let ids = names |> List.map (fun n -> Ident(n.Value, m)) |> Array.ofList
+                                let info = AnonRecdTypeInfo.Create(ccu, TupInfo.Const td.IsStruct, ids)
+
+                                if info.ILTypeRef.Name = tref.Name && info.ILTypeRef.Scope = tref.Scope then
+                                    Some info
+                                else
+                                    None
+                            else
+                                None
+                        | None -> None
+                    | _ -> None
+
+            let rec containsAnonRecd (ty: ILType) =
+                match ty with
+                | ILType.Boxed tspec
+                | ILType.Value tspec ->
+                    (tryAnonRecdInfo tspec.TypeRef).IsSome
+                    || tspec.GenericArgs |> List.exists containsAnonRecd
+                | ILType.Array(_, ty)
+                | ILType.Byref ty
+                | ILType.Modified(_, _, ty) -> containsAnonRecd ty
+                | _ -> false
+
+            // `ImportILType`, but for types with anonymous records in them.
+            let rec importType ty =
+                if not (containsAnonRecd ty) then
+                    Import.ImportILType amap m frameTinst ty
+                else
+                    match ty with
+                    | ILType.Boxed tspec
+                    | ILType.Value tspec ->
+                        let args = tspec.GenericArgs |> List.map importType
+
+                        match tryAnonRecdInfo tspec.TypeRef with
+                        | Some info -> TType_anon(info, args)
+                        | None ->
+                            let tcref = Import.ImportILTypeRef amap m tspec.TypeRef
+                            g.improveType tcref args (Nullness.Known NullnessInfo.AmbivalentToNull)
+                    | ILType.Array(bounds, ty) ->
+                        mkArrayTy g bounds.Rank (Nullness.Known NullnessInfo.AmbivalentToNull) (importType ty) m
+                    | ILType.Byref ty -> mkByrefTy g (importType ty)
+                    | ILType.Modified(_, _, ty) -> importType ty
+                    | _ -> Import.ImportILType amap m frameTinst ty
+
+            // Some types of frame values have no F# view (an anonymous record class whose name doesn't
+            // match its fields, for example).
             let tryImportType ty =
                 let logger = CapturingDiagnosticsLogger("ExpressionEvaluation")
                 use _ = UseDiagnosticsLogger logger

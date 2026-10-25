@@ -1447,7 +1447,8 @@ assignments in F# frames, live in VS.
      with FSharp.Core return values left out (item 8 replaces it).
 5. **Frame values without an F# view.** Locals of anonymous record types made
    the whole expression fail, so frame values whose type can't be imported
-   are now left out (locals, fields) or read as `obj` (parameters).
+   are now left out (locals, fields) or read as `obj` (parameters). Anonymous
+   record types themselves are imported since item 10.
 
 **Verified live** (Probe-Debugger.ps1, TestDebuggee built by SDK 10):
 - `xs |> List.sum`, `List.map (fun i -> i * 2) xs` (a closure class in the
@@ -1582,13 +1583,48 @@ assignments in F# frames, live in VS.
      more between its breaks) starts a new build at the stack walk. It
      usually finishes before the next evaluation.
 
+10. **Anonymous record types for frame values (2026-10-25).** A local,
+    field or parameter of type `{| Name: string; Count: int |}` is now typed
+    as that, so `anon.Name` works in Watch and the Locals window.
+    - **Why import failed.** The compiler generates a class for each
+      anonymous record type an assembly uses (`<>f__AnonymousType<hash>`1`,
+      generic over the field types in field-name order). It is not an entity
+      of the assembly's F# signature, and `ImportILType` only imports
+      entities.
+    - **The import (`Evaluation.fs`, `importType`).** A type with such a
+      class anywhere in it (`list<_>`, an array, a field type) is imported
+      by our own recursion; others still go to `ImportILType`. The class
+      becomes `TType_anon` with an `AnonRecdTypeInfo` created from:
+      - the field names: the properties typed by each type parameter;
+      - the structness: whether the class is a struct;
+      - the assembly: the CCU whose scope defines the class (the frame's, or
+        another F# assembly's).
+    - **The same class in IL.** IlxGen names an anonymous record's class from
+      the CCU's assembly name and the field names, and only generates the
+      class for the query's own CCU. The import checks that the info's
+      `ILTypeRef` is the class it came from, so the query calls the frame's
+      constructor and getters; a class that doesn't match keeps the old
+      fallback.
+    - **Copy and update.** `{| anon with Count = 4 |}` follows F#: with no
+      type to aim at, the copy has the query's own anonymous record type (a
+      class generated in the query), as in any other assembly; passed to a
+      function taking the frame's type it is of that type.
+    - **Tested:** fields, arithmetic, passing to a function, equality with a
+      literal, copy and update, anonymous records in a list, an option and
+      an array, `struct {| … |}`, an anonymous record as a field type,
+      parameters, a closure's captured value, and the Locals window.
+    - **Still to do:** imported generic types show their .NET names in the
+      Locals window (`List<{| … |}>`, as `List<int>` already did).
+    - **Not verified live yet.**
+
 **Next in M4**
 
 - Cold start (§6.9): NGen the private compiler, which VS does for
   per-machine extensions (the VSIX asset's `Ngen` attributes; not measured:
   that needs admin and a per-machine install), or JIT the compiler on more
   threads while `Create` runs.
-- Anonymous record types for frame values.
+- F# names for imported generic types in the Locals window (`int list`,
+  not `List<int>`).
 
 
 ---

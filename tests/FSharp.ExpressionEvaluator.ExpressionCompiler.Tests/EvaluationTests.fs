@@ -69,6 +69,22 @@ module EvalFixtures =
         let r = {| A = x |}
         r.A + 1
 
+    let countOf (r: {| Name: string; Count: int |}) = r.Count
+
+    let withAnonymousRecords (x: int) =
+        let r = {| Name = "anon"; Count = x |}
+        let inList = [ r ]
+        let inOption = Some r
+        let s = struct {| A = x; B = "b" |}
+        let nested = {| Inner = r; Tag = 'n' |}
+        r.Count + inList.Length + s.A + nested.Inner.Count + Option.count inOption
+
+    let anonymousRecordParameter (r: {| Name: string; Count: int |}) (pairs: {| Key: int |} array) = r.Count + pairs.Length
+
+    let makeAnonymousRecordClosure () =
+        let captured = {| Name = "captured"; Count = 5 |}
+        fun (x: int) -> captured.Count + x
+
     type Bag<'T when 'T: equality>(items: 'T list) =
         member _.Has(x: 'T) = List.contains x items
 
@@ -677,15 +693,52 @@ let ``F# constraints of generic frames`` () =
     )
 
 [<Fact>]
-let ``frame values whose type has no F# view are left out`` () =
-    // `r` is of an anonymous record type, which is not an entity of the assembly's signature.
+let ``anonymous record locals`` () =
     let frameMethod = methodOf fixtures "withAnonymousRecord"
-    Assert.Equal<string list>([ "r" ], (frameOf frameMethod).Locals |> List.map _.Name)
-    Assert.Equal((box 2, "int"), evaluate frameMethod [ 1 ] "x + 1")
+    Assert.Equal((box 2, "int"), evaluate frameMethod [ 1; {| A = 1 |} ] "r.A + 1")
 
-    match compile frameMethod "r" with
-    | Ok _ -> failwith "expected r not to be in scope"
-    | Error diagnostics -> Assert.Contains(diagnostics, fun d -> d.Number = 39)
+    let frameMethod = methodOf fixtures "withAnonymousRecords"
+    let r = {| Name = "anon"; Count = 3 |}
+
+    let args =
+        [ box 3; box r; box [ r ]; box (Some r); box (struct {| A = 3; B = "b" |}); box {| Inner = r; Tag = 'n' |} ]
+
+    let eval text = evaluate frameMethod args text
+
+    Assert.Equal((box "anon", "string"), eval "r.Name")
+    Assert.Equal((box 4, "int"), eval "r.Count + 1")
+    Assert.Equal((box 3, "int"), eval "countOf r")
+    // Copy and update: with no type to aim at, the copy is of the query's own anonymous record type
+    // (as in any other assembly), otherwise of the frame's.
+    let copy, copyType = eval "{| r with Count = 4 |}"
+    Assert.Equal(("{| Count: int; Name: string |}", string {| Name = "anon"; Count = 4 |}), (copyType, string copy))
+    Assert.Equal((box 4, "int"), eval "countOf {| r with Count = 4 |}")
+    Assert.Equal((box 5, "int"), eval "countOf {| Name = r.Name; Count = 5 |}")
+    Assert.Equal((box true, "bool"), eval "r = {| Name = \"anon\"; Count = 3 |}")
+    Assert.Equal((box r, "{| Count: int; Name: string |}"), eval "r")
+
+    // Inside generic types, struct anonymous records, anonymous records as field types
+    Assert.Equal((box "anon", "string"), eval "inList.Head.Name")
+    Assert.Equal((box 3, "int"), eval "inOption.Value.Count")
+    Assert.Equal((box "b3", "string"), eval "s.B + string s.A")
+    Assert.Equal((box "anon", "string"), eval "nested.Inner.Name")
+    Assert.Equal((box 'n', "char"), eval "nested.Tag")
+    Assert.Equal((box [ 3 ], "int list"), eval "inList |> List.map (fun a -> a.Count)")
+
+    // An anonymous record the frame's assembly has no class for is generated in the query
+    Assert.Equal((box "anon!", "string"), eval "{| Shout = r.Name + \"!\" |}.Shout")
+
+[<Fact>]
+let ``anonymous record parameters and captured values`` () =
+    let frameMethod = methodOf fixtures "anonymousRecordParameter"
+    let r = {| Name = "p"; Count = 2 |}
+    Assert.Equal((box "p2", "string"), evaluate frameMethod [ r; [| {| Key = 7 |} |] ] "r.Name + string r.Count")
+    Assert.Equal((box 7, "int"), evaluate frameMethod [ r; [| {| Key = 7 |} |] ] "pairs[0].Key")
+
+    let closure = EvalFixtures.makeAnonymousRecordClosure ()
+    let invoke = closure.GetType().GetMethod("Invoke", [| typeof<int> |])
+    Assert.Equal((box "captured", "string"), evaluate invoke [ closure; 1 ] "captured.Name")
+    Assert.Equal((box 6, "int"), evaluate invoke [ closure; 1 ] "captured.Count + x")
 
 [<Fact>]
 let ``list and array expressions don't use collector structs`` () =
@@ -858,3 +911,26 @@ let ``timings of the session and of queries`` () =
         time "CompileExpression 'x + y' (first, new session)" (fun () -> s2.CompileExpression(add, "x + y")) |> ok "x + y"
         (s2 :> IDisposable).Dispose()
         File.AppendAllLines(path, lines)
+
+[<Fact>]
+let ``locals of anonymous record types`` () =
+    let frameMethod = methodOf fixtures "withAnonymousRecords"
+    let r = {| Name = "anon"; Count = 3 |}
+
+    let args =
+        [ box 3; box r; box [ r ]; box (Some r); box (struct {| A = 3; B = "b" |}); box {| Inner = r; Tag = 'n' |} ]
+
+    Assert.Equal<(string * string) list>(
+        [
+            "x", "int"
+            "r", "{| Count: int; Name: string |}"
+            // Imported generic types show their own names, as for any frame value
+            "inList", "List<{| Count: int; Name: string |}>"
+            "inOption", "Option<{| Count: int; Name: string |}>"
+            "s", "struct {| A: int; B: string |}"
+            "nested", "{| Inner: {| Count: int; Name: string |}; Tag: char |}"
+        ],
+        localsOf (frameOf frameMethod) frameMethod args false
+        |> List.map (fun (name, _, ty, _) -> name, ty)
+    )
+

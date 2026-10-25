@@ -66,14 +66,15 @@ FSharp.Core's inline functions, private members and module values, F# errors (`F
 aliases (`$exception`), format specifiers and assignment. The Locals window comes
 from the F# compiler too.
 
-**Building.** The private compiler is FSharp.Compiler.Service from a `dotnet/fsharp` checkout,
-with no changes to it: the evaluator's code that needs the compiler's internals lives here
-(`Evaluation.fs`). Build the checkout once (`.\build.cmd -c Debug`), then run
-`eng\Build-Compiler.ps1 -FSharpRepo <checkout>`. It builds the compiler under its own name and
-with this repo's assemblies as friends (`eng\PrivateCompiler.targets`), and copies it to
-`artifacts\compiler`. It also copies the checkout's `fsc` to `artifacts\fsc`, which compiles the
-tests' fixtures. Without `-FSharpRepo` it uses `FSHARP_EE_FSHARP_REPO`, else
-`..\fsharp.worktrees\expression-evaluator`.
+**Building.** The private compiler is FSharp.Compiler.Service from `dotnet/fsharp`, with no
+changes to it: the evaluator's code that needs the compiler's internals lives here
+(`Evaluation.fs`; [docs/FCS-INTERNALS.md](docs/FCS-INTERNALS.md) lists what it uses). Run
+`eng\Build-Compiler.ps1` before the first build. It fetches the commit pinned in
+`eng\fsharp.commit` and builds it once, about 4 minutes, into `%LOCALAPPDATA%\fsharp-ee`, which
+every clone and worktree shares. Then it copies the compiler to `artifacts\compiler`, built under its
+own name and with this repo's assemblies as friends (`eng\PrivateCompiler.targets`), and the same
+commit's `fsc` to `artifacts\fsc`, which compiles the tests' fixtures. To try another checkout,
+pass `-FSharpRepo <checkout>` (built once with `.\build.cmd -c Debug`).
 
 ## Roadmap
 

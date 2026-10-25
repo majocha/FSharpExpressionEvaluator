@@ -1,0 +1,6 @@
+# The dotnet/fsharp commit the private compiler is built from (eng/Build-Compiler.ps1): the remote,
+# then the commit. The evaluator uses the compiler's internals, so moving to another commit may need
+# changes to Evaluation.fs (docs/FCS-INTERNALS.md lists what it uses; regenerate it with
+# eng/List-CompilerInternals.fsx).
+https://github.com/dotnet/fsharp
+fe180deb551cc47a57de788c936e2fd4d778a909

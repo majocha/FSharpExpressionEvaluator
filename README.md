@@ -70,8 +70,8 @@ from the F# compiler too.
 changes to it: the evaluator's code that needs the compiler's internals lives here
 (`Evaluation.fs`; [docs/FCS-INTERNALS.md](docs/FCS-INTERNALS.md) lists what it uses). Run
 `eng\Build-Compiler.ps1` before the first build. It fetches the commit pinned in
-`eng\fsharp.commit` and builds it once, about 4 minutes, into `%LOCALAPPDATA%\fsharp-ee`, which
-every clone and worktree shares. Then it copies the compiler to `artifacts\compiler`, built under its
+`eng\fsharp.commit` and builds it once, about 4 minutes, into `artifacts\fsharp-ee` (untracked, like the rest of
+`artifacts\`; `FSHARP_EE_CACHE` moves it). Then it copies the compiler to `artifacts\compiler`, built under its
 own name and with this repo's assemblies as friends (`eng\PrivateCompiler.targets`), and the same
 commit's `fsc` to `artifacts\fsc`, which compiles the tests' fixtures. To try another checkout,
 pass `-FSharpRepo <checkout>` (built once with `.\build.cmd -c Debug`).
@@ -139,5 +139,6 @@ break it prints the call stack, the locals and some watch values. Use `-Target n
 x86 process debugged through msvsmon. Run the scripts with Windows PowerShell 5.1. You can
 also open `tests\TestDebuggee` in the Exp instance and debug it by hand.
 
-The components log to `%LOCALAPPDATA%\FSharpExpressionEvaluator\ee.log`, or to
-`%FSHARP_EE_LOG%` if set.
+The components log to `%FSHARP_EE_LOG%` if set, otherwise to
+`%LOCALAPPDATA%\FSharpExpressionEvaluator\ee.log`. `Probe-Debugger.ps1` sets
+`FSHARP_EE_LOG` to `artifacts\logs\ee.log` (its `-Log` parameter changes that).

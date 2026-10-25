@@ -19,7 +19,7 @@ param(
     [string] $Tracepoint,
     # At each break, assignments 'name=value' to the names that evaluate there, then read back.
     [string[]] $Assign = @(),
-    [string] $Log = (Join-Path $env:LOCALAPPDATA 'FSharpExpressionEvaluator\ee.log'),
+    [string] $Log = (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts\logs\ee.log'),
     [switch] $KeepVsOpen,
     # Inspect a debug session that is already stopped at a break (attached by hand or by an earlier run).
     [switch] $Reuse

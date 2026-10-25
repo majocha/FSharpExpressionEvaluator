@@ -15,8 +15,8 @@ param(
 # fsc to artifacts\fsc, which compiles the tests' fixtures.
 #
 # By default the commit is the one pinned in eng\fsharp.commit. It is fetched (shallow) and built once
-# into a cache shared by every clone and worktree of this repo: FSHARP_EE_CACHE, else
-# %LOCALAPPDATA%\fsharp-ee, in a folder named by the commit's first 12 characters.
+# into artifacts\fsharp-ee, in a folder named by the commit's first 12 characters: untracked, inside
+# this checkout, so that it stays with the repo's other build output. FSHARP_EE_CACHE overrides it.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -71,7 +71,7 @@ if ($FSharpRepo) {
     $pin = @(Get-Content (Join-Path $PSScriptRoot 'fsharp.commit') | Where-Object { $_ -and -not $_.StartsWith('#') })
     $remote, $sha = $pin[0].Trim(), $pin[1].Trim()
     # A short path: the repo's deepest files and build outputs would pass Windows' 260 characters.
-    $cache = if ($env:FSHARP_EE_CACHE) { $env:FSHARP_EE_CACHE } else { Join-Path $env:LOCALAPPDATA 'fsharp-ee' }
+    $cache = if ($env:FSHARP_EE_CACHE) { $env:FSHARP_EE_CACHE } else { Join-Path $root 'artifacts\fsharp-ee' }
     $checkout = Join-Path $cache $sha.Substring(0, 12)
     $built = Join-Path $checkout ".ee-built-$Configuration"
 

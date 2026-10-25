@@ -1616,8 +1616,9 @@ assignments in F# frames, live in VS.
       literal, copy and update, anonymous records in a list, an option and
       an array, `struct {| … |}`, an anonymous record as a field type,
       parameters, a closure's captured value, and the Locals window.
-    - **Still to do:** imported generic types show their .NET names in the
-      Locals window (`List<{| … |}>`, as `List<int>` already did).
+    - **FSharp.Core abbreviations.** Imported types used to keep the names
+      of the types they abbreviate (`List<{| … |}>`, `Option<int>`); see
+      item 12.
 
     **Verified live** (item 11): at TestDebuggee's first break, `anon.Name`,
     `anon.Count + 1` and `{| anon with Count = 4 |}` (a `{| Count: int;
@@ -1710,14 +1711,27 @@ assignments in F# frames, live in VS.
     - One `-Condition` run failed before the debuggee started (the cause
       was hidden by the script's cleanup); the rerun passed.
 
+12. **F# names for imported types (2026-10-25).** Frame values (locals,
+    parameters, fields, aliases) are typed by importing their IL types, which
+    gives FSharp.Core's types under their own names: `List<int>`,
+    `Option<string>`, `Unit`. The checker writes the abbreviations instead
+    (`TcGlobals.mkListTy` uses `list`), so a query's `ResultType` read
+    `List<int>` for a local and `int list` for `[ 1 ]`. Imported types now
+    take the abbreviations `list`, `option`, `voption`, `ref` and `unit`,
+    at any depth (`(int * char option) list`, `int list -> string option`,
+    `{| … |} list`); `seq`, the primitive types and tuples already came
+    back as F# writes them (`TcGlobals.improveType`). Only names change: an
+    abbreviation is the same type. The Locals window's type column comes
+    from the result provider (§5.4), which already showed `int list`;
+    `ResultType` is what the compiler logs and its tests read.
+
+
 **Next in M4**
 
 - Cold start (§6.9): NGen the private compiler, which VS does for
   per-machine extensions (the VSIX asset's `Ngen` attributes; not measured:
   that needs admin and a per-machine install), or JIT the compiler on more
   threads while `Create` runs.
-- F# names for imported generic types in the Locals window (`int list`,
-  not `List<int>`).
 
 
 ---

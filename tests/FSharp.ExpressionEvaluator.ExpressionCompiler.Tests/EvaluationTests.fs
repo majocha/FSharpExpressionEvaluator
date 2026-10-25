@@ -79,6 +79,14 @@ module EvalFixtures =
         let nested = {| Inner = r; Tag = 'n' |}
         r.Count + inList.Length + s.A + nested.Inner.Count + Option.count inOption
 
+    let withFSharpTypes (xs: int list) (f: int list -> string option) =
+        let names = Some [ "a" ]
+        let counts = ValueSome xs
+        let total = ref 0
+        let units = [ () ]
+        let pairs = [ (1, Some 'c') ]
+        total.Value + xs.Length + names.Value.Length + counts.Value.Length + units.Length + pairs.Length + (f xs).Value.Length
+
     let anonymousRecordParameter (r: {| Name: string; Count: int |}) (pairs: {| Key: int |} array) = r.Count + pairs.Length
 
     let makeAnonymousRecordClosure () =
@@ -987,6 +995,28 @@ let ``timings of the session and of queries`` () =
         File.AppendAllLines(path, lines)
 
 [<Fact>]
+let ``locals of FSharp.Core types show F# names`` () =
+    let frameMethod = methodOf fixtures "withFSharpTypes"
+    let f = fun (xs: int list) -> Some(string xs.Length)
+
+    let args =
+        [ box [ 1 ]; box f; box (Some [ "a" ]); box (ValueSome [ 1 ]); box (ref 0); box [ () ]; box [ (1, Some 'c') ] ]
+
+    Assert.Equal<(string * string) list>(
+        [
+            "xs", "int list"
+            "f", "int list -> string option"
+            "names", "string list option"
+            "counts", "int list voption"
+            "total", "int ref"
+            "units", "unit list"
+            "pairs", "(int * char option) list"
+        ],
+        localsOf (frameOf frameMethod) frameMethod args false
+        |> List.map (fun (name, _, ty, _) -> name, ty)
+    )
+
+[<Fact>]
 let ``locals of anonymous record types`` () =
     let frameMethod = methodOf fixtures "withAnonymousRecords"
     let r = {| Name = "anon"; Count = 3 |}
@@ -998,9 +1028,8 @@ let ``locals of anonymous record types`` () =
         [
             "x", "int"
             "r", "{| Count: int; Name: string |}"
-            // Imported generic types show their own names, as for any frame value
-            "inList", "List<{| Count: int; Name: string |}>"
-            "inOption", "Option<{| Count: int; Name: string |}>"
+            "inList", "{| Count: int; Name: string |} list"
+            "inOption", "{| Count: int; Name: string |} option"
             "s", "struct {| A: int; B: string |}"
             "nested", "{| Inner: {| Count: int; Name: string |}; Tag: char |}"
         ],

@@ -528,6 +528,40 @@ let private parseClrTypeName (s: string) =
 
     parse false
 
+/// An imported type with FSharp.Core's abbreviations, as the checker writes them (`int list`, not
+/// `List<int>`): importing gives the types they abbreviate. Only names change; the types are the same.
+let private niceType (g: TcGlobals.TcGlobals) ty =
+    // `TcGlobals` only has `unit` as a type.
+    let unitAbbreviation =
+        match g.unit_ty with
+        | TType_app(tcref, _, _) -> [ g.unit_tcr_canon, tcref ]
+        | _ -> []
+
+    let abbreviations =
+        unitAbbreviation
+        @ [
+            g.list_tcr_canon, g.list_tcr_nice
+            g.option_tcr_canon, g.option_tcr_nice
+            g.valueoption_tcr_canon, g.valueoption_tcr_nice
+            g.refcell_tcr_canon, g.refcell_tcr_nice
+        ]
+
+    let rec nice ty =
+        match ty with
+        | TType_app(tcref, args, nullness) ->
+            let tcref =
+                abbreviations
+                |> List.tryPick (fun (canon, abbreviation) -> if tyconRefEq g tcref canon then Some abbreviation else None)
+                |> Option.defaultValue tcref
+
+            TType_app(tcref, List.map nice args, nullness)
+        | TType_fun(domain, range, nullness) -> TType_fun(nice domain, nice range, nullness)
+        | TType_tuple(info, elements) -> TType_tuple(info, List.map nice elements)
+        | TType_anon(info, args) -> TType_anon(info, List.map nice args)
+        | _ -> ty
+
+    nice ty
+
 /// The F# type for a CLR type name, looked up in the given assembly when it names one the
 /// session imports, otherwise in every imported assembly.
 let private resolveClrType
@@ -572,7 +606,7 @@ let private resolveClrType
         | _ -> None
 
     try
-        resolve (parseClrTypeName typeName)
+        resolve (parseClrTypeName typeName) |> Option.map (niceType g)
     with _ ->
         None
     |> Option.defaultValue g.obj_ty_ambivalent
@@ -1624,14 +1658,14 @@ type EvaluationSession
                 | _ -> false
 
             // `ImportILType`, but for types with anonymous records in them.
-            let rec importType ty =
+            let rec importILType ty =
                 if not (containsAnonRecd ty) then
                     Import.ImportILType amap m frameTinst ty
                 else
                     match ty with
                     | ILType.Boxed tspec
                     | ILType.Value tspec ->
-                        let args = tspec.GenericArgs |> List.map importType
+                        let args = tspec.GenericArgs |> List.map importILType
 
                         match tryAnonRecdInfo tspec.TypeRef with
                         | Some info -> TType_anon(info, args)
@@ -1639,10 +1673,12 @@ type EvaluationSession
                             let tcref = Import.ImportILTypeRef amap m tspec.TypeRef
                             g.improveType tcref args (Nullness.Known NullnessInfo.AmbivalentToNull)
                     | ILType.Array(bounds, ty) ->
-                        mkArrayTy g bounds.Rank (Nullness.Known NullnessInfo.AmbivalentToNull) (importType ty) m
-                    | ILType.Byref ty -> mkByrefTy g (importType ty)
-                    | ILType.Modified(_, _, ty) -> importType ty
+                        mkArrayTy g bounds.Rank (Nullness.Known NullnessInfo.AmbivalentToNull) (importILType ty) m
+                    | ILType.Byref ty -> mkByrefTy g (importILType ty)
+                    | ILType.Modified(_, _, ty) -> importILType ty
                     | _ -> Import.ImportILType amap m frameTinst ty
+
+            let importType ty = niceType g (importILType ty)
 
             // Some types of frame values have no F# view (an anonymous record class whose name doesn't
             // match its fields, for example).

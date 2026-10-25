@@ -139,6 +139,17 @@ break it prints the call stack, the locals and some watch values. Use `-Target n
 x86 process debugged through msvsmon. Run the scripts with Windows PowerShell 5.1. You can
 also open `tests\TestDebuggee` in the Exp instance and debug it by hand.
 
+To check the deployed evaluator in the live debugger:
+
+```powershell
+powershell -File eng\Test-Debugger.ps1 -Target net10.0
+```
+
+`Test-Debugger.ps1` runs `Probe-Debugger.ps1` three times, with expected values. It checks
+watch values, assignments, a conditional breakpoint and a tracepoint, and exits with 1 when
+a check fails. `Probe-Debugger.ps1` takes the same checks: `-Expect 'break: expression => value'`,
+`-ExpectTrace` and `-ExpectEnd`.
+
 The components log to `%FSHARP_EE_LOG%` if set, otherwise to
 `%LOCALAPPDATA%\FSharpExpressionEvaluator\ee.log`. `Probe-Debugger.ps1` sets
 `FSHARP_EE_LOG` to `artifacts\logs\ee.log` (its `-Log` parameter changes that).

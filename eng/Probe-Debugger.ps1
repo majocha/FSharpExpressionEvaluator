@@ -2,6 +2,8 @@
 .SYNOPSIS
   Drives the Exp instance of VS 2026 or later through DTE: attaches to tests\TestDebuggee, and at every
   Debugger.Break() reports the frame name, locals and a set of watch expressions.
+  With -Expect, -ExpectTrace or -ExpectEnd it also checks what it sees, and exits with 1 when a check
+  fails; so does an assignment that fails or doesn't read back. eng\Test-Debugger.ps1 runs the checks.
   Run with Windows PowerShell 5.1 (powershell.exe): it needs STA COM and Marshal-free ROT access.
 #>
 [CmdletBinding()]
@@ -19,12 +21,21 @@ param(
     [string] $Tracepoint,
     # At each break, assignments 'name=value' to the names that evaluate there, then read back.
     [string[]] $Assign = @(),
+    # Checks 'break: expression => value': the expression's value at that break, before any assignment,
+    # as the Watch window shows it. The value '!error' expects the expression not to evaluate.
+    [string[]] $Expect = @(),
+    # Lines the tracepoint must have written to the Debug pane.
+    [string[]] $ExpectTrace = @(),
+    # After the last break, the debuggee must run to its end without breaking again.
+    [switch] $ExpectEnd,
     # Run TestDebuggee with --startup: two breaks in top-level code (Startup.fs, StartupNamespace.fs)
     # come before break 1, so pass -Breaks 7 to reach break 5.
     [switch] $Startup,
     # Defaults to artifacts\logs\ee.log.
     [string] $Log,
     [switch] $KeepVsOpen,
+    # Quit the Exp instance at the end even when it was already running.
+    [switch] $QuitVs,
     # Inspect a debug session that is already stopped at a break (attached by hand or by an earlier run).
     [switch] $Reuse
 )
@@ -35,6 +46,13 @@ Set-StrictMode -Version Latest
 # powershell -File passes a list as one string: also accept expressions separated by ';;'.
 $Expressions = @($Expressions | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $Assign = @($Assign | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
+$expectations = @($Expect | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-Expect '$_' is not 'break: expression => value'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Value = $Matches[3] }
+})
+$ExpectTrace = @($ExpectTrace | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
+$failures = New-Object System.Collections.Generic.List[string]
+$checks = 0
 # Not a parameter default: Windows PowerShell 5.1 leaves $PSScriptRoot empty there under CmdletBinding.
 if (-not $Log) { $Log = Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts\logs\ee.log' }
 
@@ -196,6 +214,14 @@ function Show-Value($e, [string] $indent) {
     Write-Host "$indent$(& $p 'Name') = $(& $p 'Value') : $(& $p 'Type')$valid"
 }
 
+function Test-Check([string] $what, [bool] $passed, [string] $actual) {
+    $script:checks++
+    if ($passed) { Write-Host "  PASS $what" }
+    else { Write-Host "  FAIL $what, got: $actual"; $script:failures.Add("$what, got: $actual") }
+}
+
+$assigned = @{}
+
     for ($i = 1; $i -le $Breaks; $i++) {
         Wait-Until { $dte.Debugger.CurrentMode -eq 2 } 60 "break $i"
         $frame = $dte.Debugger.CurrentStackFrame
@@ -220,16 +246,29 @@ function Show-Value($e, [string] $indent) {
                 }
             }
         }
+        $here = @($expectations | Where-Object { $_.Break -eq $i })
+        if ($here) { Write-Host '--- Checks' }
+        foreach ($check in $here) {
+            $e = $dte.Debugger.GetExpression($check.Text, $true, 10000)
+            if ($check.Value -eq '!error') {
+                Test-Check "break $i : $($check.Text) => !error" (-not $e.IsValidValue) $e.Value
+            } else {
+                Test-Check "break $i : $($check.Text) => $($check.Value)" ($e.IsValidValue -and $e.Value -ceq $check.Value) $e.Value
+            }
+        }
         foreach ($assignment in $Assign) {
             $name, $value = $assignment -split '=', 2
             $e = $dte.Debugger.GetExpression($name, $true, 10000)
             if (-not $e.IsValidValue) { continue }
+            $assigned[$assignment] = $true
             try {
                 [EnvDTE.Expression].GetProperty('Value').SetValue($e, $value, $null)
                 $after = $dte.Debugger.GetExpression($name, $true, 10000)
                 Write-Host "--- Assigned $name = $value -> $($after.Value)"
+                Test-Check "break $i : $name = $value reads back" ($after.IsValidValue -and $after.Value -ceq $value) $after.Value
             } catch {
-                Write-Host "--- Assigning $name = $value failed: $($_.Exception.InnerException.Message)"
+                Write-Host "--- Assigning $name = $value failed"
+                Test-Check "break $i : $name = $value" $false $_.Exception.InnerException.Message
             }
         }
         Write-Host '--- Watch'
@@ -245,7 +284,22 @@ function Show-Value($e, [string] $indent) {
                 }
             }
         }
-        $dte.Debugger.Go($false)
+        # After the last break, wait for the next break or the end when they are checked: right after
+        # Go($false) the debugger can still report break mode.
+        $dte.Debugger.Go($i -eq $Breaks -and ($ExpectEnd -or $Tracepoint))
+    }
+
+    foreach ($assignment in $Assign) {
+        if (-not $assigned[$assignment]) { Test-Check "$assignment at some break" $false 'the name evaluated at none' }
+    }
+
+    if ($ExpectEnd -or $Tracepoint) {
+        # The last Go waited for the next break or the end (or the debugger is still settling).
+        Wait-Until { $dte.Debugger.CurrentMode -ne 3 } 60 'the debuggee to finish or break'
+        if ($ExpectEnd) {
+            $broke = if ($dte.Debugger.CurrentMode -eq 2) { "a break in $($dte.Debugger.CurrentStackFrame.FunctionName)" } else { 'the end' }
+            Test-Check 'the debuggee runs to its end after the last break' ($dte.Debugger.CurrentMode -eq 1) $broke
+        }
     }
 
     if ($Tracepoint) {
@@ -258,7 +312,11 @@ function Show-Value($e, [string] $indent) {
         $document = [EnvDTE.OutputWindowPane].GetProperty('TextDocument').GetValue($pane, $null)
         $text = $document.StartPoint.CreateEditPoint().GetText($document.EndPoint)
         Write-Host '--- Tracepoint output'
-        $text -split "`r?`n" | Where-Object { $_ -match [regex]::Escape(($Tracepoint -split '\{')[0]) } | ForEach-Object { Write-Host "  $_" }
+        $traced = @($text -split "`r?`n" | Where-Object { $_ -match [regex]::Escape(($Tracepoint -split '\{')[0]) })
+        $traced | ForEach-Object { Write-Host "  $_" }
+        foreach ($expected in $ExpectTrace) {
+            Test-Check "tracepoint wrote '$expected'" (@($traced | Where-Object { $_.Trim() -ceq $expected }).Count -gt 0) "$($traced.Count) other lines"
+        }
     }
 }
 finally {
@@ -271,9 +329,19 @@ finally {
     }
     if ($dte.Debugger.CurrentMode -ne 1) { $dte.Debugger.TerminateAll() }
     if (-not $debuggee.HasExited) { Stop-Process -Id $debuggee.Id -Force }
-    if ($startedVs -and -not $KeepVsOpen) {
+    if (($startedVs -or $QuitVs) -and -not $KeepVsOpen) {
         # The exe opened as a project makes a throwaway solution; close it unsaved, or Quit asks to save it.
         try { $dte.Solution.Close($false) } catch { }
         $dte.Quit()
     }
+}
+
+if ($checks) {
+    Write-Host ''
+    if ($failures.Count) {
+        Write-Host "$($failures.Count) of $checks checks failed:"
+        $failures | ForEach-Object { Write-Host "  $_" }
+        exit 1
+    }
+    Write-Host "All $checks checks passed."
 }

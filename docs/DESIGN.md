@@ -820,7 +820,8 @@ src/
   FSharp.ExpressionEvaluator.Vsix/   net48, VSSDK packaging only; DebuggerEngineExtension assets
 eng/
   Deploy-Experimental.ps1            builds the VSIX and installs it into the VS 18 Exp instance
-  Probe-Debugger.ps1                 drives Exp through DTE: attach to TestDebuggee, dump frames/locals/watches
+  Probe-Debugger.ps1                 drives Exp through DTE: attach to TestDebuggee, dump frames/locals/watches, check expected values
+  Test-Debugger.ps1                  live checks of watch, assignment, a breakpoint condition and a tracepoint
   DialogWatchdog.ps1                 dismisses the modal "unsafe abort" func-eval dialog that blocks DTE
   build-fcs.ps1                      (M3) builds the private FCS from a dotnet/fsharp branch
 tests/
@@ -1470,6 +1471,8 @@ assignments in F# frames, live in VS.
    - **Assignment.** Setting a closure's captured value, a parameter, a class
      `let` field and a local in its frame slot all compile through
      `CompileAssignment` and stick.
+   - `eng/Test-Debugger.ps1` repeats these checks with expected values and
+     fails on a mismatch. It passes on net10.0 and net48.
 7. **No collector structs in queries.** The debugger runs a query with an IL
    interpreter, which passes a struct local to a call **by copy**. A list or
    array expression lowered to a loop filling FSharp.Core's `ListCollector`

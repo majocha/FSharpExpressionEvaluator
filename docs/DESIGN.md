@@ -526,7 +526,7 @@ one module and are tested against compiler output:
 | `task { }` resumable state machine (`MoveNext` on a generated struct) | `IAsyncStateMachine` + F# naming | user fields of the state-machine data; `ResumptionPoint`, `MethodBuilder` etc. hidden |
 | `seq { }` (`GenerateNext`) | `GeneratedSequenceBase<T>` subclass | user fields; `pc`, `current` hidden |
 | `async { }` | closures chained through `AsyncActivation` | as for closures |
-| mutable local captured by a closure | local of type `FSharpRef<T>` | bound as `x.contents`, both reading and writing **(heuristic: indistinguishable from `let x = ref …` without the CDI in §9)** |
+| mutable local captured by a closure | local or field of type `FSharpRef<T>` | bound as `x.contents`, both reading and writing **(heuristic: indistinguishable from `let x = ref …` without the CDI in §9; an expression that doesn't check is compiled again with the ref cell as it is; §17, item 15)** |
 
 Hidden by default in Locals: names matching
 `PrettyNaming.IsCompilerGeneratedName` (contain `@`), plus the F# temporaries
@@ -1780,8 +1780,43 @@ assignments in F# frames, live in VS.
     - **Seen once.** Right after the Exp instance was reset, a probe run
       stayed about 150 s at its first break after every query had been
       logged, and VS looked frozen in the debugger. Runs after it, with the
-      warm-up on and off, took 9–10 s. Not explained.
+      warm-up on and off, took 9–10 s.
+    - **The hang, from a dump (item 15's first live run).** The probe stayed
+      at break 2 for over 7 minutes after its last evaluation. devenv's UI
+      thread was in the DTE call `Debugger.Go`, in
+      `sdm::CDebugProcess::Execute` → `CAsyncOperationMonitor::CancelAllOperations`:
+      before continuing, the debugger waits for its pending async operations,
+      and one of them never completed. No thread was in F# EE code; the
+      debugger engine's threads were idle; none of the result provider's
+      completion closures was alive. Copilot's `DebugAssistant` had async
+      initialization pending, not shown to be the cause. The next run of the
+      same checks passed. Not ours as far as the dump shows; intermittent.
 
+
+15. **Captured mutable locals as their contents (§6.4, 2026-10-27).** A
+    `let mutable` that a closure captures becomes a ref cell of the same name
+    (`LowerLocalMutables`), both as the declaring function's local and as the
+    closure's field, so `counter` used to show `{ contents = 1 }` and
+    `counter + 1` didn't check.
+    - **Binding.** A frame local or a field of `this` of type `FSharpRef<T>`
+      now binds as a variable of type `T`, read and written through the
+      cell's `contents`. Watch, the Locals window, assignment (including
+      editing a Locals row) and conditions all see `counter = 1 : int`.
+    - **The ambiguity.** `let cell = ref 7` compiles the same way (the PDB
+      local, the field and its name are identical; there is no CDI, §9), so
+      it shows as `7 : int` too. An expression that doesn't check that way
+      (`cell.Value`, `!cell`, `cell := 8`) is compiled again with ref cells as
+      they are; the errors reported are the first compile's. Only text
+      queries retry; a failing expression costs a second compile (about
+      10 ms warm).
+    - **Tests.** `a captured mutable local reads and writes as its contents`
+      (the closure and the declaring function: reading, `.Value`, assigning,
+      the Locals rows); the Locals test of `withFSharpTypes` now expects
+      `total: int` for its `ref 0`.
+    - **Verified live** at TestDebuggee's break 2: `counter = 1` in Locals,
+      `counter + x = 2`, and `counter.Value = 1` through the retry; break 1's
+      `cell` shows `7 : int`. `Test-Debugger.ps1` passes all 3 runs (net10.0;
+      the first attempt hung in VS after break 2, see item 14).
 
 **Next in M4**
 

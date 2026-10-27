@@ -32,7 +32,10 @@ $runs = @(
                 '1: anon.Name => "anon"'
                 '1: undefinedName => !error'
                 '2: captured + x => 6'
-                '2: counter => { contents = 1 }'
+                # A captured mutable local is a ref cell; it reads as its contents.
+                '2: counter => 1'
+                '2: counter + x => 2'
+                '2: counter.Value => 1'
                 '3: count => 12'
                 '3: this.Increment 0 => 12'
                 '3: by * 2 => 4'

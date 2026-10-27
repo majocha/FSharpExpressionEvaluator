@@ -57,6 +57,16 @@ module EvalFixtures =
         let captured = 5
         fun (x: int) -> captured + x
 
+    /// A mutable local captured by a closure: a ref cell named `count`, in the frame and in the closure.
+    let makeCounter (start: int) =
+        let mutable count = start
+
+        let bump (by: int) =
+            count <- count + by
+            count
+
+        bump
+
     let pairUp (x: 'a) (n: int) = (x, n)
 
     let largest (xs: 'T list) = List.max xs
@@ -912,6 +922,38 @@ let ``locals of a closure and a state machine are flattened`` () =
     Assert.Equal<string list>([ "this"; "amount" ], List.truncate 2 names)
 
 [<Fact>]
+let ``a captured mutable local reads and writes as its contents`` () =
+    // In the closure: its field `count`
+    let bump = EvalFixtures.makeCounter 10
+    let invoke = bump.GetType().GetMethod("Invoke", [| typeof<int> |])
+    Assert.Equal((box 11, "int"), evaluate invoke [ bump; 1 ] "count + by")
+    // As a ref cell when it doesn't check as its contents
+    Assert.Equal((box 10, "int"), evaluate invoke [ bump; 1 ] "count.Value")
+    (queryMethod (assign true invoke "count" "by * 42")).Invoke(null, [| box bump; box 1 |]) |> ignore
+    Assert.Equal(42, bump 0)
+
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "by", box 1, "int", false; "count", box 42, "int", false ],
+        localsOf (frameOf invoke) invoke [ bump; 1 ] false
+    )
+
+    // In the function that declares it: its local `count`
+    let makeCounter = methodOf fixtures "makeCounter"
+    Assert.Equal<string list>([ "count"; "bump" ], (frameOf makeCounter).Locals |> List.map _.Name)
+    let args = [ box 10; box (ref 7); null ]
+    Assert.Equal((box 8, "int"), evaluate makeCounter args "count + 1")
+    Assert.Equal((box (ref 7), "int ref"), evaluate makeCounter args "ref count")
+
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "start", box 10, "int", false; "count", box 7, "int", false ],
+        localsOf (frameOf makeCounter) makeCounter args false |> List.truncate 2
+    )
+
+    let cell = ref 7
+    (queryMethod (assign true makeCounter "count" "start + 1")).Invoke(null, [| box 10; box cell; null |]) |> ignore
+    Assert.Equal(11, cell.Value)
+
+[<Fact>]
 let ``locals start with the debugger's aliases`` () =
     IntrinsicMethods.Exception <- InvalidOperationException "boom"
     let add = methodOf fixtures "add"
@@ -1032,7 +1074,8 @@ let ``locals of FSharp.Core types show F# names`` () =
             "f", "int list -> string option"
             "names", "string list option"
             "counts", "int list voption"
-            "total", "int ref"
+            // `let total = ref 0` reads as a captured mutable local would (docs/DESIGN.md §6.4)
+            "total", "int"
             "units", "unit list"
             "pairs", "(int * char option) list"
         ],

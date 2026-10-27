@@ -1409,10 +1409,20 @@ type EvaluationSession
             files
         )
 
+    /// Compiles the user's text with ref cells read as their contents, or else as ref cells
+    /// (`cell.Value`, `!cell`); the errors are those of the first.
+    member private this.CompileText(frame: FrameContext, text: string, localsAsParameters: bool, assigning: bool) =
+        match this.Compile(frame, QueryRequest.Expression text, localsAsParameters, assigning, true) with
+        | Error _ as asContents ->
+            match this.Compile(frame, QueryRequest.Expression text, localsAsParameters, assigning, false) with
+            | Ok _ as asCells -> asCells
+            | Error _ -> asContents
+        | result -> result
+
     member this.CompileExpression(frame: FrameContext, text: string, ?localsAsParameters: bool) =
         let text, formatSpecifiers = splitFormatSpecifiers text
 
-        this.Compile(frame, QueryRequest.Expression text, defaultArg localsAsParameters false, false)
+        this.CompileText(frame, text, defaultArg localsAsParameters false, false)
         |> Result.map (fun (assembly, queries) ->
             let query = List.exactlyOne queries
 
@@ -1430,7 +1440,7 @@ type EvaluationSession
     member this.CompileAssignment(frame: FrameContext, target: string, value: string, ?localsAsParameters: bool) =
         let text = $"{target} <- (\n{value}\n)"
 
-        this.Compile(frame, QueryRequest.Expression text, defaultArg localsAsParameters false, true)
+        this.CompileText(frame, text, defaultArg localsAsParameters false, true)
         |> Result.map (fun (assembly, queries) ->
             let query = List.exactlyOne queries
 
@@ -1446,7 +1456,7 @@ type EvaluationSession
             })
 
     member this.CompileLocals(frame: FrameContext, argumentsOnly: bool, ?localsAsParameters: bool) =
-        this.Compile(frame, QueryRequest.Locals argumentsOnly, defaultArg localsAsParameters false, false)
+        this.Compile(frame, QueryRequest.Locals argumentsOnly, defaultArg localsAsParameters false, false, true)
         |> Result.map (fun (assembly, queries) ->
             {
                 Assembly = assembly
@@ -1575,7 +1585,9 @@ type EvaluationSession
         use session = EvaluationSession.Create modules
         modules.Length, session.WarmUp("FSharp.Core", token)
 
-    member private _.Compile(frame: FrameContext, request: QueryRequest, localsAsParameters: bool, assigning: bool) =
+    member private _.Compile
+        (frame: FrameContext, request: QueryRequest, localsAsParameters: bool, assigning: bool, refCellsAsContents: bool)
+        =
         let g = tcGlobals
         let m = range0
 
@@ -1830,6 +1842,16 @@ type EvaluationSession
             let mkVariable name ty =
                 fst (mkLocalAux m name ty (if assigning then Mutable else Immutable) false)
 
+            // A `let mutable` that a closure captures becomes a ref cell of the same name
+            // (LowerLocalMutables), as a local and as the closure's field, so it reads and writes as
+            // its contents, as in source (docs/DESIGN.md §6.4). `let x = ref …` looks the same, so the
+            // expression is compiled again with ref cells as they are when it doesn't check this way.
+            let contentsTypeOf ty =
+                if refCellsAsContents && isRefCellTy g ty then
+                    Some(destRefCellTy g ty)
+                else
+                    None
+
             // A type definition of the frame's assembly.
             let tryFindTypeDef (tref: ILTypeRef) =
                 if tref.Scope <> dllInfo.ILScopeRef then
@@ -1929,7 +1951,13 @@ type EvaluationSession
                         | _ -> []
 
                     (ofOriginalThis @ own)
-                    |> List.map (fun (name, _, ty, read, write) -> mkVariable name ty, read, write),
+                    |> List.map (fun (name, _, ty, read, write) ->
+                        match contentsTypeOf ty with
+                        | Some ty ->
+                            mkVariable name ty,
+                            (fun m -> mkRefCellGet g m ty (read m)),
+                            (fun m value -> mkRefCellSet g m ty (read m) value)
+                        | None -> mkVariable name ty, read, write),
                     own |> List.map (fun (name, _, _, _, _) -> name)
                 | _ -> [], []
 
@@ -2031,6 +2059,25 @@ type EvaluationSession
 
             let localSlots = typedLocals |> List.map (fun (l, _) -> l.Slot)
 
+            // Ref cell locals as their contents: the names bind to these, read and written through
+            // the frame's locals.
+            let contentsVariables =
+                localVals
+                |> List.choose (fun cell ->
+                    contentsTypeOf cell.Type
+                    |> Option.map (fun ty ->
+                        cell,
+                        mkVariable cell.LogicalName ty,
+                        (fun m -> mkRefCellGet g m ty (exprForVal m cell)),
+                        (fun m value -> mkRefCellSet g m ty (exprForVal m cell) value)))
+
+            let scopedLocals =
+                localVals
+                |> List.map (fun v ->
+                    contentsVariables
+                    |> List.tryPick (fun (cell, contents, _, _) -> if valEq cell v then Some contents else None)
+                    |> Option.defaultValue v)
+
             let frameVals = thisVal @ parameterVals @ localVals
 
             // Assignments to frame values store to the query's arguments, which the frame's values
@@ -2046,7 +2093,7 @@ type EvaluationSession
                 thisVal
                 @ (fieldVariables |> List.map (fun (v, _, _) -> v))
                 @ parameterVals
-                @ localVals
+                @ scopedLocals
                 @ (aliasVariables |> List.map fst)
 
             // The query module's expressions, each with what it stands for: the user's expression,
@@ -2195,8 +2242,12 @@ type EvaluationSession
                         g
                         frameTypars
                         frameVals
-                        ((fieldVariables |> List.map (fun (v, read, _) -> v, read)) @ aliasVariables)
-                        ((fieldVariables |> List.map (fun (v, _, write) -> v, write)) @ frameValueWrites)
+                        ((fieldVariables |> List.map (fun (v, read, _) -> v, read))
+                         @ (contentsVariables |> List.map (fun (_, v, read, _) -> v, read))
+                         @ aliasVariables)
+                        ((fieldVariables |> List.map (fun (v, _, write) -> v, write))
+                         @ (contentsVariables |> List.map (fun (_, v, _, write) -> v, write))
+                         @ frameValueWrites)
                         contents
 
                 CheckedImplFile(
@@ -2238,6 +2289,7 @@ type EvaluationSession
                 [
                     yield! frameVals
                     yield! fieldVariables |> List.map (fun (v, _, _) -> v)
+                    yield! contentsVariables |> List.map (fun (_, v, _, _) -> v)
                     for alias, (v, _) in List.zip frame.Aliases aliasVariables do
                         if alias.Kind = AliasKind.Variable then
                             v

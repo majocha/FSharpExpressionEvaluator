@@ -21,6 +21,7 @@
     <Compile Include="Evaluation.fs" />
     <Compile Include="Debuggee.fs" />
     <Compile Include="FrameDecoder.fs" />
+    <Compile Include="CompilerWarmUp.fs" />
     <Compile Include="ExpressionCompiler.fs" />
   </ItemGroup>
 

@@ -1478,10 +1478,102 @@ type EvaluationSession
         try
             // A closure and FSharp.Core functions, so that optimization and code generation run
             // through more of the compiler.
-            this.CompileExpression(frame, "[ 0 ] |> List.map (fun i -> i + 1) |> List.sum") |> ignore
-            this.CompileLocals(frame, false) |> ignore
+            let expression =
+                this.CompileExpression(frame, "[ 0 ] |> List.map (fun i -> i + 1) |> List.sum")
+
+            let locals = this.CompileLocals(frame, false)
+            Result.isOk expression && Result.isOk locals
         with _ ->
-            ()
+            false
+
+    static member WarmUpCompiler() =
+        let fsharpCore = typeof<unit>.Assembly.Location
+        let runtimeDir = Path.GetDirectoryName(typeof<obj>.Assembly.Location)
+
+        let metadata (image: byte[]) =
+            (new PEReader(ImmutableArray.Create<byte>(image))).GetMetadataReader()
+
+        // The runtime's assemblies by simple name, each with its type forwarders.
+        let runtime = Collections.Generic.Dictionary<string, (string * byte[] * Map<string * string, string>) option>()
+
+        let runtimeAssembly name =
+            match runtime.TryGetValue name with
+            | true, a -> a
+            | _ ->
+                let path = Path.Combine(runtimeDir, name + ".dll")
+
+                let a =
+                    if File.Exists path then
+                        let image = File.ReadAllBytes path
+                        let md = metadata image
+
+                        let forwarders =
+                            Map.ofList
+                                [
+                                    for h in md.ExportedTypes do
+                                        let t = md.GetExportedType h
+
+                                        if t.IsForwarder && t.Implementation.Kind = HandleKind.AssemblyReference then
+                                            let target = md.GetAssemblyReference(AssemblyReferenceHandle.op_Explicit t.Implementation)
+                                            (md.GetString t.Namespace, md.GetString t.Name), md.GetString target.Name
+                                ]
+
+                        Some(path, image, forwarders)
+                    else
+                        None
+
+                runtime[name] <- a
+                a
+
+        // The assemblies FSharp.Core's types are in: those it references, and the ones they forward
+        // its types to (netstandard to mscorlib, System, System.Numerics on .NET Framework;
+        // netstandard to System.Runtime and others, then System.Private.CoreLib, on .NET). Not the
+        // whole runtime, whose imports would take as long as the debuggee's.
+        let needed = Collections.Generic.HashSet<string>()
+
+        let rec resolve name typeName =
+            match runtimeAssembly name with
+            | Some(_, _, forwarders) ->
+                needed.Add name |> ignore
+
+                match forwarders.TryFind typeName with
+                | Some target -> resolve target typeName
+                | None -> ()
+            | None -> ()
+
+        let fsharpCoreImage = File.ReadAllBytes fsharpCore
+        let md = metadata fsharpCoreImage
+
+        for h in md.TypeReferences do
+            let t = md.GetTypeReference h
+
+            if t.ResolutionScope.Kind = HandleKind.AssemblyReference then
+                let scope = md.GetAssemblyReference(AssemblyReferenceHandle.op_Explicit t.ResolutionScope)
+                resolve (md.GetString scope.Name) (md.GetString t.Namespace, md.GetString t.Name)
+
+        let modules =
+            {
+                FileName = fsharpCore
+                Image = DebuggeeImage.PE fsharpCoreImage
+            }
+            :: [
+                for name in needed do
+                    match runtime[name] with
+                    | Some(path, image, _) -> { FileName = path; Image = DebuggeeImage.PE image }
+                    | None -> ()
+            ]
+
+        // A frame of `String.length`: a module function with a parameter, not generic.
+        let token =
+            md.MethodDefinitions
+            |> Seq.find (fun h ->
+                let method = md.GetMethodDefinition h
+                let declaring = md.GetTypeDefinition(method.GetDeclaringType())
+                md.GetString method.Name = "Length" && md.GetString declaring.Name = "StringModule")
+            |> fun h -> MetadataTokens.GetToken(EntityHandle.op_Implicit h)
+
+        use session = EvaluationSession.Create modules
+        modules.Length, session.WarmUp("FSharp.Core", token)
 
     member private _.Compile(frame: FrameContext, request: QueryRequest, localsAsParameters: bool, assigning: bool) =
         let g = tcGlobals

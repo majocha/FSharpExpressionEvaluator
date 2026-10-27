@@ -36,5 +36,16 @@
       </Implements>
     </Class>
 
+    <Class Name="FSharp.ExpressionEvaluator.CompilerWarmUp">
+      <Implements>
+        <InterfaceGroup>
+          <Filter>
+            <RuntimeId RequiredValue="DkmRuntimeId.Clr"/>
+          </Filter>
+          <Interface Name="IDkmModuleInstanceLoadNotification"/>
+        </InterfaceGroup>
+      </Implements>
+    </Class>
+
   </ManagedComponent>
 </Configuration>

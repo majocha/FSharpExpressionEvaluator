@@ -187,5 +187,11 @@ type EvaluationSession =
 
     /// Compiles queries in a frame of the given method and throws them away, so that the first
     /// real ones find the imports they need loaded and the compiler's code compiled by the JIT
-    /// (docs/DESIGN.md §6.9). Errors are ignored.
-    member WarmUp: assemblyName: string * methodToken: int -> unit
+    /// (docs/DESIGN.md §6.9). Returns whether both compiled; errors are otherwise ignored.
+    member WarmUp: assemblyName: string * methodToken: int -> bool
+
+    /// Runs the compiler once over a session of this process's own FSharp.Core and runtime
+    /// assemblies, read from disk, then disposes it. Started before the debuggee's first break, it
+    /// leaves the compiler's code compiled by the JIT for the debuggee's session (docs/DESIGN.md
+    /// §6.9). Returns how many modules the session had and whether its queries compiled.
+    static member WarmUpCompiler: unit -> int * bool

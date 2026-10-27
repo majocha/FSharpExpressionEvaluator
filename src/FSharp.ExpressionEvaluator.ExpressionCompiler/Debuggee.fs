@@ -137,6 +137,28 @@ let private referencedModule (appDomain: DkmClrAppDomain) (reference: AssemblyNa
         log $"no metadata for {reference.FullName}: {e.GetType().Name}"
         None
 
+/// The compiler's warm-up over devenv's own assemblies (`EvaluationSession.WarmUpCompiler`), run
+/// once per process on a thread-pool thread, from when a debuggee loads FSharp.Core
+/// (docs/DESIGN.md §6.9). The first break then finds most of the compiler compiled by the JIT.
+let private compilerWarmUp =
+    lazy
+        (Task.Run(fun () ->
+            let sw = Stopwatch.StartNew()
+
+            try
+                let modules, compiled = EvaluationSession.WarmUpCompiler()
+                log $"compiler warmed up over {modules} modules in {sw.ElapsedMilliseconds} ms (compiled: {compiled})"
+            with e ->
+                Log.exn "EE" "compiler warm-up" e))
+
+/// Starts the compiler's warm-up, unless it has started already.
+let warmUpCompiler () = compilerWarmUp.Force() |> ignore
+
+/// Waits for the compiler's warm-up to end, if it has started; at most 10 s.
+let private waitForCompilerWarmUp () =
+    if compilerWarmUp.IsValueCreated then
+        compilerWarmUp.Value.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
 /// The evaluation session of an AppDomain, kept with it while its set of modules stays the same,
 /// built on a thread-pool thread (docs/DESIGN.md §6.9). Replacing it, or the AppDomain going away,
 /// releases the session, once built.
@@ -187,10 +209,13 @@ let private sessionItem (address: DkmClrInstructionAddress) =
             let sw = Stopwatch.StartNew()
             let session = EvaluationSession.Create debuggeeModules
             let created = sw.ElapsedMilliseconds
-            session.WarmUp(frameAssembly, methodToken)
+            // Imports may build beside the compiler's warm-up, but queries are compiled one at a time.
+            waitForCompilerWarmUp ()
+            let waited = sw.ElapsedMilliseconds - created
+            let compiled = session.WarmUp(frameAssembly, methodToken)
 
             log
-                $"session for AppDomain {appDomain.Id}: {loaded.Length} loaded and {referenced.Length} referenced modules, read in {readLoaded} + {read - readLoaded} ms, built in {created} ms, warmed up in {sw.ElapsedMilliseconds - created} ms"
+                $"session for AppDomain {appDomain.Id}: {loaded.Length} loaded and {referenced.Length} referenced modules, read in {readLoaded} + {read - readLoaded} ms, built in {created} ms, waited {waited} ms for the compiler's warm-up, warmed up in {sw.ElapsedMilliseconds - created - waited} ms (compiled: {compiled})"
 
             session
 

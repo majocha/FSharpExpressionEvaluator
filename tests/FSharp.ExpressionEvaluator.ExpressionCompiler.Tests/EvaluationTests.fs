@@ -939,6 +939,12 @@ let ``locals start with the debugger's aliases`` () =
 /// it). Cold numbers need the test to run alone, in a process of its own:
 /// `dotnet test --filter "FullyQualifiedName~timings"`.
 [<Fact>]
+let ``the compiler warms up over the runtime's own assemblies`` () =
+    let modules, compiled = EvaluationSession.WarmUpCompiler()
+    Assert.True(modules > 2, $"{modules} modules")
+    Assert.True(compiled)
+
+[<Fact>]
 let ``timings of the session and of queries`` () =
     match Environment.GetEnvironmentVariable "FSHARP_EE_PERF" with
     | null
@@ -969,15 +975,33 @@ let ``timings of the session and of queries`` () =
             | Ok _ -> ()
             | Error d -> failwithf "%s: %A" name d
 
+        // As the debugger warms the compiler up when the debuggee loads FSharp.Core
+        // (FSHARP_EE_PERF_COMPILER=0 skips it). Here it runs beside reading and `Create`.
+        let compilerWarmUp =
+            if Environment.GetEnvironmentVariable "FSHARP_EE_PERF_COMPILER" <> "0" then
+                Some(
+                    Threading.Tasks.Task.Run(fun () ->
+                        let sw = Diagnostics.Stopwatch.StartNew()
+                        EvaluationSession.WarmUpCompiler() |> ignore
+                        sw.Elapsed.TotalMilliseconds)
+                )
+            else
+                None
+
         let modules = time "read modules" (fun () -> debuggeeModules false)
         lines.Add $"modules: {modules.Length}"
         let s = time "EvaluationSession.Create (cold)" (fun () -> EvaluationSession.Create modules)
+
+        compilerWarmUp
+        |> Option.iter (fun t ->
+            time "wait for WarmUpCompiler" (fun () -> t.Wait())
+            lines.Add $"WarmUpCompiler (beside the above): {t.Result:F1} ms")
         let add = frameOf (methodOf fixtures "add")
         let withLocals = frameOf (methodOf fixtures "withLocals")
 
         // As the debugger's session is warmed up on the first break (FSHARP_EE_PERF_WARMUP=0 skips it).
         if Environment.GetEnvironmentVariable "FSHARP_EE_PERF_WARMUP" <> "0" then
-            time "WarmUp" (fun () -> s.WarmUp(withLocals.AssemblyName, withLocals.MethodToken))
+            time "WarmUp" (fun () -> s.WarmUp(withLocals.AssemblyName, withLocals.MethodToken)) |> ignore
 
         time "CompileExpression 'x + y' (first)" (fun () -> s.CompileExpression(add, "x + y")) |> ok "x + y"
 

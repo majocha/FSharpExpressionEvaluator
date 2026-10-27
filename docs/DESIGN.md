@@ -1737,12 +1737,58 @@ assignments in F# frames, live in VS.
     C# names. Verified live with watches at TestDebuggee's first break.
 
 
+14. **The compiler's warm-up before the first break (§6.9, 2026-10-27).**
+    The first break used to start the JIT of the whole compiler. Now
+    `CompilerWarmUp` (`IDkmModuleInstanceLoadNotification`, CLR modules)
+    starts it when the debuggee loads FSharp.Core, once per devenv process,
+    on a thread-pool thread.
+    - **What it runs.** `EvaluationSession.WarmUpCompiler` creates a session
+      over devenv's own FSharp.Core and the runtime assemblies its types
+      resolve to: its references, following netstandard's type forwarders
+      (7 modules on .NET Framework). It compiles the usual warm-up queries
+      in a frame of `String.length`, then disposes the session. The whole
+      runtime directory (174 modules on .NET 10) was as slow as the
+      debuggee's own session; a fixed list of names missed
+      `System.Runtime.Numerics` and `System.Collections`.
+    - **With the debuggee's session.** Its `Create` may run beside the
+      warm-up; its `WarmUp` waits for it (at most 10 s), so two queries
+      never compile at once. The log shows the wait.
+    - **Off switch.** `FSHARP_EE_COMPILER_WARMUP=0` in devenv's environment,
+      for measuring.
+    - **Measured** live, TestDebuggee net10.0, whose first break comes about
+      170 ms after FSharp.Core loads (times in ms):
+
+      | | Off | On |
+      |---|---|---|
+      | Compiler warm-up (from FSharp.Core's load) | — | 2620–3440 |
+      | Debuggee session `Create` | 730 | 310–490 |
+      | Wait for the compiler's warm-up | — | 1920–2530 |
+      | Debuggee session `WarmUp` | 1970 | 56–60 |
+      | First Locals query, from the break | 2310 | 1900–2540 |
+
+      With so little head start, the first break gains up to about 0.4 s
+      (the same run without the warm-up was faster than the 2.5–2.8 s of
+      item 9). A break that comes 3 s or more after FSharp.Core loads
+      should find the compiler warm: its session takes about 0.3 s to
+      read plus `Create` and `WarmUp` warm (about 150 ms and 60 ms here).
+      Not measured: TestDebuggee always breaks at once.
+    - **Tests.** `the compiler warms up over the runtime's own assemblies`
+      checks that both queries compile. The timings test runs the warm-up
+      beside reading and `Create` (`FSHARP_EE_PERF_COMPILER=0` skips it). On
+      .NET 10 the debuggee's `WarmUp` drops from about 1030 ms to about
+      125 ms, but the total stays the same, as both start together.
+    - **Seen once.** Right after the Exp instance was reset, a probe run
+      stayed about 150 s at its first break after every query had been
+      logged, and VS looked frozen in the debugger. Runs after it, with the
+      warm-up on and off, took 9–10 s. Not explained.
+
+
 **Next in M4**
 
-- Cold start (§6.9): NGen the private compiler, which VS does for
-  per-machine extensions (the VSIX asset's `Ngen` attributes; not measured:
-  that needs admin and a per-machine install), or JIT the compiler on more
-  threads while `Create` runs.
+- Cold start (§6.9): the first break still waits for the JIT when it comes
+  right after FSharp.Core loads. NGen of the private compiler, which VS does
+  for per-machine extensions (the VSIX asset's `Ngen` attributes; not
+  measured: that needs admin and a per-machine install), would remove it.
 
 
 ---

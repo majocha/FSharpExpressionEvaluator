@@ -2022,7 +2022,10 @@ type EvaluationSession
                 |> List.mapi (fun i p ->
                     // A parameter keeps its position among the query's arguments: `obj` when its type
                     // can't be imported.
-                    let ty = tryImportType p.Type |> Option.defaultValue g.obj_ty_ambivalent
+                    let ty =
+                        tryImportType (rescopeILType dllInfo.ILScopeRef p.Type)
+                        |> Option.defaultValue g.obj_ty_ambivalent
+
                     mkVariable (defaultArg p.Name $"arg{i}") ty)
 
             // The frame's locals, typed from its own local signature: decoded from the module's

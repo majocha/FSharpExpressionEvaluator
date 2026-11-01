@@ -53,6 +53,8 @@ module EvalFixtures =
                 return this.Owner, balance
             }
 
+    let countersParameter (counter: Counter) (counters: Counter list) = counter.Start + counters.Length
+
     let makeClosure () =
         let captured = 5
         fun (x: int) -> captured + x
@@ -831,6 +833,13 @@ let ``anonymous record parameters and captured values`` () =
     let invoke = closure.GetType().GetMethod("Invoke", [| typeof<int> |])
     Assert.Equal((box "captured", "string"), evaluate invoke [ closure; 1 ] "captured.Name")
     Assert.Equal((box 6, "int"), evaluate invoke [ closure; 1 ] "captured.Count + x")
+
+[<Fact>]
+let ``parameters typed by the frame's own assembly`` () =
+    let frameMethod = methodOf fixtures "countersParameter"
+    let counter = EvalFixtures.Counter 3
+    Assert.Equal((box 3, "int"), evaluate frameMethod [ counter; [ counter ] ] "counter.Start")
+    Assert.Equal((box 4, "int"), evaluate frameMethod [ counter; [ counter ] ] "counters.Head.Increment 1")
 
 [<Fact>]
 let ``list and array expressions don't use collector structs`` () =

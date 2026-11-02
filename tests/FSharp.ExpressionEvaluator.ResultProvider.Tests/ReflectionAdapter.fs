@@ -23,6 +23,7 @@ type ReflectionType private (t: Type) =
         member _.Namespace = t.Namespace
         member _.DeclaringType = if t.IsGenericParameter then None else Option.ofObj t.DeclaringType |> Option.map ReflectionType.Of
         member _.BaseType = Option.ofObj t.BaseType |> Option.map ReflectionType.Of
+        member _.Interfaces = t.GetInterfaces() |> Array.map ReflectionType.Of |> List.ofArray
         member _.IsGenericParameter = t.IsGenericParameter
         member _.DefinitionName = if t.IsGenericType then t.GetGenericTypeDefinition().FullName else t.FullName
         member _.GenericArguments = t.GetGenericArguments() |> Array.map ReflectionType.Of |> List.ofArray

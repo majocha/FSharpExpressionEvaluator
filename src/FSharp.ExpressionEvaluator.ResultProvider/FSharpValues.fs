@@ -91,6 +91,46 @@ let tupleItems (v: IValue) =
 
     items v
 
+/// Items of an FSharp.Core integral or char range (`{ 1 .. 3 }`, `{ 'a' .. 'c' }`), at most `max`,
+/// computed from its `start`, `step` and `stop` fields. None for other sequences, and for ranges
+/// whose fields this FSharp.Core version names differently.
+let rangeItems max (v: IValue) : (obj list * bool) option =
+    let isRange =
+        v.Type.Name.StartsWith "Range"
+        && v.Type.DeclaringType |> Option.exists (fun d -> d.FullName = "Microsoft.FSharp.Core.Operators+OperatorIntrinsics")
+
+    let read name =
+        let f = v.Field name
+        if isError f then None else Option.ofObj f.HostValue
+
+    let number (o: obj) =
+        match o with
+        | :? char as c -> Some(decimal (int c))
+        | o ->
+            match Type.GetTypeCode(o.GetType()) with
+            | code when code >= TypeCode.SByte && code <= TypeCode.UInt64 -> Some(Convert.ToDecimal o)
+            | _ -> None
+
+    let item (sample: obj) (n: decimal) : obj =
+        match sample with
+        | :? char -> box (char (int n))
+        | _ -> Convert.ChangeType(n, sample.GetType(), CultureInfo.InvariantCulture)
+
+    if not isRange then
+        None
+    else
+        match read "start", read "stop" with
+        | Some start, Some stop ->
+            let step = match read "step" with Some s -> number s | None -> Some 1M
+
+            match number start, number stop, step with
+            | Some first, Some last, Some step when step <> 0M ->
+                let count = if (last - first) * decimal (sign step) < 0M then 0M else floor ((last - first) / step) + 1M
+                let shown = int (min count (decimal max))
+                Some([ for i in 0 .. shown - 1 -> item start (first + decimal i * step) ], count > decimal max)
+            | _ -> None
+        | _ -> None
+
 /// Captured values of a closure: its instance fields, minus the cached `@_instance` singleton.
 let closureFields (t: IType) =
     Types.hierarchy t
@@ -173,6 +213,19 @@ let private isUnionWithFields (v: IValue) =
 /// Name of a closure for `<fun:...>`: the compiler-generated class name, e.g. `f@34`.
 let closureName (t: IType) = t.Name
 
+/// `seq [1; 2; 3]` for an F# sequence. Ranges are computed from their bounds; other sequences
+/// would have to run (func-eval) to produce items, so they show as `seq [...]` and the C#
+/// Results View enumerates them on request. None for values that are not F# sequences.
+let trySeqPreview (options: Options) (v: IValue) =
+    if v.IsNull || isError v || (seqType v.Type).IsNone then
+        None
+    else
+        match rangeItems options.MaxItems v with
+        | Some(items, truncated) ->
+            let text (item: obj) = formatPrimitive item |> Option.defaultValue (string item)
+            Some("seq [" + join "; " (items |> List.map text |> withMore truncated) + "]")
+        | None -> Some "seq [...]"
+
 let rec private preview (options: Options) depth (declared: IType option) (v: IValue) : string =
     let recurse declared v = preview options (depth + 1) declared v
 
@@ -186,8 +239,9 @@ let rec private preview (options: Options) depth (declared: IType option) (v: IV
     else
         match shape v.Type with
         | NotFSharp ->
-            match formatPrimitive v.HostValue with
-            | Some s when not v.Type.IsEnum -> s
+            match formatPrimitive v.HostValue, trySeqPreview options v with
+            | Some s, _ when not v.Type.IsEnum -> s
+            | _, Some s -> s
             | _ -> v.FallbackDisplay()
         | UnitShape -> "()"
         | FunctionShape -> $"<fun:{closureName v.Type}>"
@@ -274,19 +328,21 @@ let rec private mentionsFSharpCore (t: IType) =
         || List.exists mentionsFSharpCore t.GenericArguments
 
 /// F# Type column for a value the C# provider renders, when its type mentions FSharp.Core types,
-/// which C# spells `Task<Microsoft.FSharp.Core.Unit>`. Laid out as C# does: the declared type, then
-/// the runtime type in braces when it differs (never for `Nullable`, whose values box as the inner type).
+/// which C# spells `Task<Microsoft.FSharp.Core.Unit>`, or it is an F# sequence (`seq<int>`, not its
+/// closure class). Laid out as C# does: the declared type, then the runtime type in braces when it
+/// differs (never for `Nullable`, whose values box as the inner type).
 let csharpTypeColumn (declared: IType option) (v: IValue) =
-    let runtime = if v.IsNull then None else Some v.Type
+    let isSeq = not v.IsNull && (seqType v.Type).IsSome
+    let runtime = if v.IsNull then None else Some(displayType v.Type)
 
     match declared, runtime with
-    | Some d, Some r when mentionsFSharpCore d || mentionsFSharpCore r ->
-        if d.Native.Equals r.Native || d.DefinitionName = "System.Nullable`1" then
+    | Some d, Some r when isSeq || mentionsFSharpCore d || mentionsFSharpCore r ->
+        if d.Native.Equals r.Native || typeName d = typeName r || d.DefinitionName = "System.Nullable`1" then
             Some(typeName d)
         else
             Some $"{typeName d} {{{typeName r}}}"
     | Some d, None when mentionsFSharpCore d -> Some(typeName d)
-    | None, Some r when mentionsFSharpCore r -> Some(typeName r)
+    | None, Some r when isSeq || mentionsFSharpCore r -> Some(typeName r)
     | _ -> None
 
 // ---------------------------------------------------------------------------------------------

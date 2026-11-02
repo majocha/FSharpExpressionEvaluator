@@ -324,8 +324,25 @@ let tupleTypes (t: IType) = tupleElementTypes t
 /// The F# name of a type: `int list`, `int * string`, `int -> int`, `Shape`, `{| A: int |}`.
 let typeName (t: IType) = fst (render t)
 
-/// For union values: the union type rather than its case subclass.
+let private seqTypeCache = Types.cache ()
+
+/// `seq<'T>` for an F# sequence object: FSharp.Core's implementations (ranges, `Seq` module
+/// results) and compiled `seq { }` state machines. None for other types, including F# shapes
+/// and collections like List<'T> that have a display of their own.
+let seqType (t: IType) =
+    seqTypeCache t (fun t ->
+        let isFSharpSeq =
+            (not (isNull t.Namespace) && t.Namespace.StartsWith "Microsoft.FSharp")
+            || hasDefinition "Microsoft.FSharp.Core.CompilerServices.GeneratedSequenceBase`1" t
+
+        if isFSharpSeq && shape t = NotFSharp then
+            t.Interfaces |> List.tryFind (fun i -> i.DefinitionName = "System.Collections.Generic.IEnumerable`1")
+        else
+            None)
+
+/// For union values: the union type rather than its case subclass; for F# sequences, `seq<'T>`
+/// rather than their closure class.
 let displayType (t: IType) =
     match shape t with
     | UnionShape u -> u.Type
-    | _ -> t
+    | _ -> seqType t |> Option.defaultValue t

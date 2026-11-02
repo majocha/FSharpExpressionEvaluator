@@ -52,6 +52,8 @@ type internal LmrType private (t: LmrTypeInfo) =
                         PropertyType = LmrType.Of p.PropertyType
                         Attributes = Lmr.safe [] (fun () -> Lmr.attributes (p.GetCustomAttributesData())) } ]))
 
+    let interfaces = lazy (Lmr.safe [] (fun () -> [ for i in t.GetInterfaces() -> LmrType.Of i ]))
+
     let methods =
         lazy
             (Lmr.safe [] (fun () ->
@@ -69,6 +71,7 @@ type internal LmrType private (t: LmrTypeInfo) =
         member _.Namespace = t.Namespace
         member _.DeclaringType = if t.IsGenericParameter then None else Option.ofObj t.DeclaringType |> Option.map LmrType.Of
         member _.BaseType = Lmr.safe None (fun () -> Option.ofObj t.BaseType |> Option.map LmrType.Of)
+        member _.Interfaces = interfaces.Value
         member _.IsGenericParameter = t.IsGenericParameter
         member _.DefinitionName = if t.IsGenericType then t.GetGenericTypeDefinition().FullName else t.FullName
         member _.GenericArguments = if t.IsGenericType then [ for a in t.GetGenericArguments() -> LmrType.Of a ] else []

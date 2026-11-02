@@ -86,6 +86,12 @@ let ``type column of values C# renders names FSharp.Core types in F#`` () =
     Assert.Equal(Some "System.Collections.Generic.List<int option>", column<List<int option>> (List<int option>()))
     Assert.Equal(Some "Async<int> array", column<Async<int>[]> [| async { return 1 } |])
     Assert.Equal(Some "obj {System.Threading.Tasks.Task<unit>}", column<obj> (System.Threading.Tasks.Task.FromResult()))
+    // F# sequences show as seq<_>, not as their closure class.
+    Assert.Equal(Some "seq<int>", column<seq<int>> (seq { 1..3 }))
+    Assert.Equal(Some "obj {seq<int>}", column<obj> (seq { 1..3 }))
+    Assert.Equal(Some "seq<int>", column<seq<int>> (seq { yield 1 }))
+    Assert.Equal(Some "seq<int>", FSharpValues.csharpTypeColumn None (live (seq { yield 1 })))
     // Types without FSharp.Core in them keep C#'s names.
+    Assert.Equal(None, column<seq<int>> (List<int>()))
     Assert.Equal(None, column<List<int>> (List<int>()))
     Assert.Equal(None, column<obj> "s")

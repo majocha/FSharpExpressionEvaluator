@@ -29,12 +29,20 @@ type internal RawViewData(parent: FSharpResultData) =
     inherit DkmDataItem()
     member _.Parent = parent
 
-/// Attached to a copy of a C# result that only changes its Type column to F# names; children,
-/// the CLR value and the underlying string come from the C# original.
+/// Attached to a copy of a C# result that only changes its Type column to F# names, or a sequence's
+/// Value column to its F# preview; children, the CLR value and the underlying string come from the
+/// C# original. For an F# sequence, `Sequence` describes the value for its Raw View row.
 [<AllowNullLiteral>]
-type internal RetypedData(original: DkmEvaluationResult) =
+type internal RetypedData(original: DkmEvaluationResult, sequence: FSharpResultData) =
     inherit DkmDataItem()
     member _.Original = original
+    member _.Sequence = sequence
+
+/// The rows under an F# sequence (Results View, Raw View), already created.
+[<AllowNullLiteral>]
+type internal SequenceRowsData(rows: DkmEvaluationResult[]) =
+    inherit DkmDataItem()
+    member _.Rows = rows
 
 [<AllowNullLiteral>]
 type internal RowsData(parent: FSharpResultData, rows: Row[]) =
@@ -97,21 +105,27 @@ type ResultProvider() =
             ))
 
     /// C#'s result for a value we do not render, with F# names in the Type column when its type
-    /// mentions FSharp.Core (`System.Threading.Tasks.Task<unit>`).
+    /// mentions FSharp.Core (`System.Threading.Tasks.Task<unit>`), and an F# preview for sequences
+    /// (`seq [1; 2; 3]`), whose Results View stays C#'s.
     static let retype (clrValue: DkmClrValue) (declaredType: DkmClrType) context (result: DkmEvaluationResult) =
         match result with
         | :? DkmSuccessEvaluationResult as s ->
             let value = ConcordValue(clrValue, context) :> IValue
+            let typeName = FSharpValues.csharpTypeColumn (lmrType declaredType) value |> Option.defaultValue s.Type
+            let seqPreview = FSharpValues.trySeqPreview options value
+            let preview = seqPreview |> Option.defaultValue s.Value
 
-            match FSharpValues.csharpTypeColumn (lmrType declaredType) value with
-            | Some typeName when typeName <> s.Type ->
+            let sequence =
+                if seqPreview.IsSome then FSharpResultData(clrValue, value, declaredType, s.FullName) else null
+
+            if typeName <> s.Type || preview <> s.Value then
                 DkmSuccessEvaluationResult.Create(
                     s.InspectionContext,
                     s.StackFrame,
                     s.Name,
                     s.FullName,
                     s.Flags,
-                    s.Value,
+                    preview,
                     s.EditableValue,
                     typeName,
                     s.Category,
@@ -121,10 +135,11 @@ type ResultProvider() =
                     s.Address,
                     s.CustomUIVisualizers,
                     s.ExternalModules,
-                    RetypedData s
+                    RetypedData(s, sequence)
                 )
                 :> DkmEvaluationResult
-            | _ -> result
+            else
+                result
         | _ -> result
 
     static let rows (data: FSharpResultData) =
@@ -173,6 +188,48 @@ type ResultProvider() =
         parent.ClrValue.GetResult(
             workList, parent.DeclaredType, null, context, noFormatSpecifiers, "Raw View", rawFullName parent, DkmCompletionRoutine<_>(complete))
 
+    /// The Raw View row of a value. It has no value of its own; its children come from rawViewChildren.
+    static let rawViewRow context frame (parent: FSharpResultData) =
+        DkmSuccessEvaluationResult.Create(
+            context,
+            frame,
+            "Raw View",
+            rawFullName parent,
+            DkmEvaluationResultFlags.ReadOnly ||| DkmEvaluationResultFlags.Expandable,
+            "",
+            null,
+            "",
+            DkmEvaluationResultCategory.Data,
+            DkmEvaluationResultAccessType.None,
+            DkmEvaluationResultStorageType.None,
+            DkmEvaluationResultTypeModifierFlags.None,
+            null,
+            null,
+            null,
+            RawViewData parent
+        )
+        :> DkmEvaluationResult
+
+    /// Children of an F# sequence: C#'s Results View, then a Raw View holding the fields of its
+    /// closure class (`start`/`stop` of a range, `pc`/`current` of a `seq { }`), which C# lists first.
+    static let sequenceChildren (retyped: RetypedData) workList initialRequestSize (context: DkmInspectionContext) (k: DkmCompletionRoutine<DkmGetChildrenAsyncResult>) =
+        let parent = retyped.Sequence
+        let frame = parent.ClrValue.StackFrame
+
+        let isResultsView (r: DkmEvaluationResult) =
+            (not (isNull r.FullName) && r.FullName.EndsWith ", results") || r.Name = "Results View"
+
+        let complete (r: DkmGetChildrenAsyncResult) =
+            if isNull r.InitialChildren then
+                k.Invoke r
+            else
+                let rows = [| yield! r.InitialChildren |> Array.filter isResultsView; rawViewRow context frame parent |]
+                let enumContext = DkmEvaluationResultEnumContext.Create(rows.Length, frame, context, SequenceRowsData rows)
+                k.Invoke(DkmGetChildrenAsyncResult(Array.truncate initialRequestSize rows, enumContext))
+
+        // A closure has a handful of fields, so one request returns C#'s Results View row.
+        retyped.Original.GetChildren(workList, 100, context, DkmCompletionRoutine<_>(complete))
+
     /// Creates the results for some rows one after another through Concord, then calls k.
     static let evaluateRows (workList: DkmWorkList) context (parent: FSharpResultData) (rows: Row[]) (k: DkmEvaluationResult[] -> unit) =
         let results = Array.zeroCreate rows.Length
@@ -195,26 +252,7 @@ type ResultProvider() =
 
                 match rows[i] with
                 | RawViewRow ->
-                    results[i] <-
-                        DkmSuccessEvaluationResult.Create(
-                            context,
-                            frame,
-                            "Raw View",
-                            rawFullName parent,
-                            DkmEvaluationResultFlags.ReadOnly ||| DkmEvaluationResultFlags.Expandable,
-                            "",
-                            null,
-                            "",
-                            DkmEvaluationResultCategory.Data,
-                            DkmEvaluationResultAccessType.None,
-                            DkmEvaluationResultStorageType.None,
-                            DkmEvaluationResultTypeModifierFlags.None,
-                            null,
-                            null,
-                            null,
-                            RawViewData parent
-                        )
-
+                    results[i] <- rawViewRow context frame parent
                     next (i + 1)
                 | ChildRow child ->
                     let fullName = Option.toObj child.FullName
@@ -277,12 +315,16 @@ type ResultProvider() =
         member _.GetChildren(result, workList, initialRequestSize, inspectionContext, completionRoutine) =
             match result.GetDataItem<FSharpResultData>(), result.GetDataItem<RawViewData>() with
             | null, null ->
-                let result =
-                    match result.GetDataItem<RetypedData>() with
-                    | null -> result
-                    | retyped -> retyped.Original
-
-                result.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
+                match result.GetDataItem<RetypedData>() with
+                | null -> result.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
+                | retyped when isNull retyped.Sequence ->
+                    retyped.Original.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
+                | retyped ->
+                    try
+                        sequenceChildren retyped workList initialRequestSize inspectionContext completionRoutine
+                    with e ->
+                        Log.exn "RP" $"GetChildren '{result.Name}'" e
+                        completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
             | null, raw -> rawViewChildren raw workList initialRequestSize inspectionContext completionRoutine
             | data, _ ->
                 try
@@ -297,9 +339,12 @@ type ResultProvider() =
                     completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
 
         member _.GetItems(enumContext, workList, startIndex, count, completionRoutine) =
-            match enumContext.GetDataItem<RowsData>() with
-            | null -> enumContext.GetItems(workList, startIndex, count, completionRoutine)
-            | data ->
+            match enumContext.GetDataItem<RowsData>(), enumContext.GetDataItem<SequenceRowsData>() with
+            | null, null -> enumContext.GetItems(workList, startIndex, count, completionRoutine)
+            | null, sequence ->
+                let items = sequence.Rows |> Array.skip (min startIndex sequence.Rows.Length) |> Array.truncate count
+                completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items))
+            | data, _ ->
                 try
                     let rows = data.Rows |> Array.skip (min startIndex data.Rows.Length) |> Array.truncate count
 

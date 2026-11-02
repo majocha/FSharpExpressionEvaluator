@@ -227,6 +227,7 @@ type private SigIType(t: SigType) =
             | _ -> None
 
         member _.BaseType = None
+        member _.Interfaces = []
 
         member _.IsGenericParameter =
             match t with

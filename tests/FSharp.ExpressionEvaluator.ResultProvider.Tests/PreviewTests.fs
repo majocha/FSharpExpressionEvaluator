@@ -103,6 +103,45 @@ let ``primitive literals inside F# values`` () =
     shows "[\"a\\\"b\\n\"]" [ "a\"b\n" ]
     shows "[true; false]" [ true; false ]
 
+let private seqShows (expected: string) (value: obj) =
+    Assert.Equal(Some expected, FSharpValues.trySeqPreview FSharpValues.defaultOptions (live value))
+
+[<Fact>]
+let ``ranges are computed from their bounds`` () =
+    seqShows "seq [1; 2; 3]" (seq { 1..3 })
+    seqShows "seq [1; 3; 5; 7; 9]" (seq { 1..2..10 })
+    seqShows "seq [9; 7; 5]" (seq { 9..-2..5 })
+    seqShows "seq []" (seq { 3..1 })
+    seqShows "seq [1; 2; 3; 4; 5; 6; 7; 8; 9; 10; ...]" (seq { 1..1000000 })
+    seqShows "seq [1L; 2L]" (seq { 1L..2L })
+    seqShows "seq [18446744073709551614UL; 18446744073709551615UL]" (seq { System.UInt64.MaxValue - 1UL .. System.UInt64.MaxValue })
+    seqShows "seq [1uy; 2uy]" (seq { 1uy..2uy })
+    seqShows "seq ['a'; 'b'; 'c']" (seq { 'a'..'c' })
+
+[<Fact>]
+let ``other F# sequences are not enumerated`` () =
+    seqShows "seq [...]" (seq { 1.0..3.0 })
+    seqShows "seq [...]" (seq {
+        yield 1
+        yield 2
+    })
+    seqShows "seq [...]" (Seq.map id [ 1; 2 ])
+    seqShows "seq [...]" (Seq.cache [ 1 ])
+
+[<Fact>]
+let ``non-F# sequences and F# collections are not sequences`` () =
+    let none (value: obj) = Assert.Equal(None, FSharpValues.trySeqPreview FSharpValues.defaultOptions (live value))
+    none (System.Collections.Generic.List<int>())
+    none [ 1 ]
+    none [| 1 |]
+    none (Set.ofList [ 1 ])
+    none "text"
+
+[<Fact>]
+let ``sequences inside F# values`` () =
+    shows "{| S = seq [1; 2] |}" {| S = seq { 1..2 } |}
+    shows "[seq [...]]" [ Seq.map id [ 1 ] ]
+
 [<Fact>]
 let ``non-F# values are left to the next provider`` () =
     Assert.Equal(None, preview 42)

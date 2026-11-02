@@ -1033,7 +1033,7 @@ dialog.
 - The Type column shows `declared {runtime}` when the declared type is not an
   F# shape (`obj {int list}`, `exn {…MyError}`).
 - Not yet covered:
-  - `Lazy<_>`, `seq` (Results View is still C#'s), `bigint` literals and units
+  - `Lazy<_>`, `seq` (previews since §17 item 16), `bigint` literals and units
     of measure (§6.8 custom type info);
   - honouring the hex radix inside previews;
   - a configurable preview length.
@@ -1817,6 +1817,30 @@ assignments in F# frames, live in VS.
       `counter + x = 2`, and `counter.Value = 1` through the retry; break 1's
       `cell` shows `7 : int`. `Test-Debugger.ps1` passes all 3 runs (net10.0;
       the first attempt hung in VS after break 2, see item 14).
+
+16. **Sequences (2026-11-02).** A `seq` is not an F# shape, so C# rendered
+    it by its closure class: `inp = {Microsoft.FSharp.Core.Operators.OperatorIntrinsics.RangeInt32@6206-3}`.
+    An F# sequence is now an object of a FSharp.Core type, or a subclass of
+    `GeneratedSequenceBase<T>` (a compiled `seq { }`), that implements
+    `IEnumerable<T>` and is not an F# shape (`FSharpTypes.seqType`; `List<T>`
+    and other collections keep C#'s `Count = 3`).
+    - **Value.** FSharp.Core's integral and char ranges (`OperatorIntrinsics+Range*`)
+      are computed from their `start`/`step`/`stop` fields: `seq [1; 2; 3]`,
+      `seq ['a'; 'b'; 'c']`, cut at 10 items like lists. Any other sequence
+      would have to run to produce its items, so it shows `seq [...]`; float
+      ranges are among them, since their items depend on rounding. A range
+      whose fields are named differently (another FSharp.Core version) falls
+      back to `seq [...]` too.
+    - **Where.** The value is still C#'s result (`retype`, as in item 13)
+      with the Value column replaced and `seq<int>` in the Type column
+      (`obj {seq<int>}` when held in an `obj`), so the Results View still
+      enumerates on request. Inside F# previews: `{| S = seq [1; 2] |}`.
+    - **Children.** C# lists the closure's fields first (`start`, `stop`;
+      `pc`, `current` for a `seq { }`). They move under a Raw View row, after
+      C#'s Results View row (picked out by its `, results` full name).
+    - **Tests.** `ranges are computed from their bounds`, `other F#
+      sequences are not enumerated`, `sequences inside F# values`, and the
+      Type column test. Not yet verified live.
 
 **Next in M4**
 

@@ -16,6 +16,8 @@ type internal IType =
     abstract Namespace: string
     abstract DeclaringType: IType option
     abstract BaseType: IType option
+    /// Every interface the type implements, including those of its base types.
+    abstract Interfaces: IType list
     abstract IsGenericParameter: bool
     /// FullName of the generic type definition, or FullName for non-generic types.
     abstract DefinitionName: string

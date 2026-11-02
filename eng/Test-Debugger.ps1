@@ -36,6 +36,9 @@ $runs = @(
                 # A local that shadows the parameter, and the parameter by its Locals row's full name.
                 '1: name => "TEST"'
                 '1: ``name (shadowed)`` => "test"'
+                # The full names of union case fields' rows (Add Watch): a match on the case.
+                '1: (match rect with TestDebuggee.Program.Shape.Rect (_, x) -> x | _ -> failwith "not Rect") => 2.5'
+                '1: (match result with Error x -> x | _ -> failwith "not Error") => "failed"'
                 '2: captured + x => 6'
                 # A captured mutable local is a ref cell; it reads as its contents.
                 '2: counter => 1'
@@ -66,7 +69,7 @@ $runs = @(
             # A call stack name with a parameter's F# type, once the session is built (break 2).
             ExpectLog = @('TestDebuggee.Program.closure (start: float<m>)')
             # Compiler temporaries under one Locals row: here `function`'s argument.
-            ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]')
+            ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]', '1: rect / Item2 => 2.5')
             # A parameter of a unit-of-measure type (edited without the unit), a record's immutable
             # field (as an edit of its row under `point`), a closure's captured value, a parameter and
             # a class let field.

@@ -22,21 +22,36 @@ let ``record fields`` () =
     Assert.Equal(Some [ "X", "v.X", "1"; "Y", "v.Y", "2" ], children { X = 1; Y = 2 })
 
 [<Fact>]
-let ``union case fields, cast to the case class`` () =
-    let caseClass = "FSharp.ExpressionEvaluator.Tests.Samples.Shape.Circle"
-    Assert.Equal(Some [ "radius", $"(({caseClass})v).radius", "2" ], children (Circle 2.0))
-    let fiveS = "FSharp.ExpressionEvaluator.Tests.Samples.Five.S"
-    Assert.Equal(Some [ "Item1", $"(({fiveS})v).Item1", "x"; "Item2", $"(({fiveS})v).Item2", "2" ], children (S("x", 2)))
+let ``union case fields, named by a match on the case`` () =
+    let samples = "FSharp.ExpressionEvaluator.Tests.Samples"
+
+    Assert.Equal(
+        Some [ "radius", $"(match v with {samples}.Shape.Circle x -> x | _ -> failwith \"not Circle\")", "2" ],
+        children (Circle 2.0)
+    )
+
+    Assert.Equal(
+        Some
+            [
+                "Item1", $"(match v with {samples}.Five.S (x, _) -> x | _ -> failwith \"not S\")", "x"
+                "Item2", $"(match v with {samples}.Five.S (_, x) -> x | _ -> failwith \"not S\")", "2"
+            ],
+        children (S("x", 2))
+    )
+
     Assert.Equal(Some [], children Empty)
-    // Generic case classes have no C# cast that names them; the fields get no full name.
-    Assert.Equal(Some [ "Item", "", "1" ], children (GSome 1))
+    // Generic case classes too, by the union's path without its arity.
+    Assert.Equal(Some [ "Item", $"(match v with {samples}.Gen.GSome x -> x | _ -> failwith \"not GSome\")", "1" ], children (GSome 1))
 
 [<Fact>]
-let ``union fields of single-case, struct and option unions`` () =
-    Assert.Equal(Some [ "id", "v.id", "1"; "name", "v.name", "a" ], children (Single(1, "a")))
-    Assert.Equal(Some [ "b", "v.b", "x" ], children (SB "x"))
+let ``union fields of single-case, struct and FSharp.Core unions`` () =
+    let samples = "FSharp.ExpressionEvaluator.Tests.Samples"
+    // One case: no other cases to fail on.
+    Assert.Equal(Some [ "id", $"(match v with {samples}.Single.Single (x, _) -> x)", "1"; "name", $"(match v with {samples}.Single.Single (_, x) -> x)", "a" ], children (Single(1, "a")))
+    Assert.Equal(Some [ "b", $"(match v with {samples}.StructUnion.SB x -> x | _ -> failwith \"not SB\")", "x" ], children (SB "x"))
+    // Option's `Value` member; FSharp.Core's other cases unqualified.
     Assert.Equal(Some [ "Value", "v.Value", "42" ], children (Some 42))
-    Assert.Equal(Some [ "ResultValue", "v.ResultValue", "1" ], children (Ok 1: Result<int, string>))
+    Assert.Equal(Some [ "ResultValue", "(match v with Ok x -> x | _ -> failwith \"not Ok\")", "1" ], children (Ok 1: Result<int, string>))
 
 [<Fact>]
 let ``list and array items`` () =

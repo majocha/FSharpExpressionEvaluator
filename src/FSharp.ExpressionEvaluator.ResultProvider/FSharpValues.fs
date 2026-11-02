@@ -365,12 +365,29 @@ module FullNames =
 
     let index (parent: string) (i: int) = $"{parenthesize parent}[{i}]"
 
-    /// C# cast to a non-generic union case class, so its fields can be named.
-    let caseMember (parent: string) (caseClass: IType) (name: string) =
-        if caseClass.GenericArguments.IsEmpty && not (isNull caseClass.FullName) then
-            Some $"(({caseClass.FullName.Replace('+', '.')}){parent}).{name}"
-        else
-            None
+    /// A field of a union case value. F# code can't name a union case field as a member, so this
+    /// is a match on the case that binds the field by position. FSharp.Core's cases are named
+    /// unqualified (`Ok`, `Choice1Of2`), others by the union's path (`Program.Shape.Circle`).
+    let caseField (parent: string) (union: UnionInfo) (case: UnionCase) (index: int) (count: int) =
+        let definition = union.Type.DefinitionName
+
+        let casePath =
+            if definition.StartsWith "Microsoft.FSharp." then
+                case.Name
+            else
+                let path = Text.RegularExpressions.Regex.Replace(definition, @"`[0-9]+", "").Replace('+', '.')
+                $"{path}.{case.Name}"
+
+        let pattern =
+            if count = 1 then
+                "x"
+            else
+                "(" + String.Join(", ", [ for i in 0 .. count - 1 -> if i = index then "x" else "_" ]) + ")"
+
+        let otherCases =
+            if union.Cases.Length > 1 then $" | _ -> failwith \"not {case.Name}\"" else ""
+
+        $"(match {parent} with {casePath} {pattern} -> x{otherCases})"
 
 type Child =
     {
@@ -419,14 +436,19 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
             match unionCase u v with
             | None -> None
             | Some case ->
-                let caseClass = v.Type
-                let isCaseClass = caseClass.DefinitionName <> u.Type.DefinitionName
+                let fields = unionCaseFields v.Type case
 
-                fieldChildren (unionCaseFields v.Type case) (fun f ->
-                    if isCaseClass then
-                        parentFullName |> Option.bind (fun p -> FullNames.caseMember p caseClass f.Name)
+                // Option and voption have a `Value` member.
+                let hasValueMember =
+                    u.Type.DefinitionName = "Microsoft.FSharp.Core.FSharpOption`1"
+                    || u.Type.DefinitionName = "Microsoft.FSharp.Core.FSharpValueOption`1"
+
+                fieldChildren fields (fun f ->
+                    if hasValueMember then
+                        memberName "Value"
                     else
-                        memberName f.Name)
+                        let index = fields |> List.findIndex (fun g -> g.Name = f.Name)
+                        parentFullName |> Option.map (fun p -> FullNames.caseField p u case index fields.Length))
                 |> Some
         | RecordShape _ -> fieldChildren (recordFields v.Type) (fun f -> memberName f.Name) |> Some
         | MapShape ->

@@ -357,7 +357,7 @@ F# compiler re-parses them:
 | array element | `arr[3]`, `arr[1, 2]` |
 | list item | `xs[3]` (`FSharpList.Item`; O(n), but correct) |
 | map entry | `m["key"]` (only for keys that format as literals; otherwise none) |
-| union field | `(match u with Shape.Circle (r) -> r \| _ -> Unchecked.defaultof<_>)` (positional pattern) |
+| union field | `(match u with Ns.Shape.Circle x -> x \| _ -> failwith "not Circle")` (positional pattern; `u.Value` for option and voption; §17, item 24) |
 | closure capture | the captured variable's name, which the compiler binds (§6.4) |
 | cast | `(x :?> Ns.Derived)` |
 | delegated (C#) child | C# full name. **Not** F#-parseable, so we wrap or rewrite where we can. Otherwise `null`, which disables Add Watch. |
@@ -2064,15 +2064,41 @@ assignments in F# frames, live in VS.
       - An anonymous record's field gives FS0799 ("Invalid assignment"), a
         hard error without a typed tree. So these fields are still not
         editable.
-      - Union case fields are not editable. The result provider names
-        their rows with C# casts (`((Ns.Shape.Circle)shape).radius`), which
-        F# does not parse. These rows need an F# full name first.
+      - Union case fields are not editable. Their rows' full names are a
+        `match` (item 24), which is not a target of an assignment.
       - Struct records are not tested.
     - **Tests.** `assignment to immutable fields, as the debugger edits
       values`: a record field and a class's `val` field, observed on the
       objects, and FS0005 for the same store as an expression.
     - **Verified live.** `Test-Debugger.ps1` edits `point.X` to `5` at
       break 1 and reads it back. All 3 runs pass on net10.0 and net48.
+
+24. **F# full names for union case fields (§5.4, 2026-11-02).** A union
+    case field's row had a C# cast as its full name
+    (`((Ns.Shape.Circle)shape).radius`), which F# does not parse. A generic
+    case class had no full name, and single-case and struct unions had
+    `v.id`, which F# rejects too. So Add Watch failed on all of them.
+    - **The name.** F# has no member for a union case field. So the full
+      name is a match on the case that binds the field by position:
+      `(match shape with TestDebuggee.Program.Shape.Rect (_, x) -> x | _ ->
+      failwith "not Rect")` (`FullNames.caseField`).
+      - The case is qualified by the union's path, without its generic
+        arity. FSharp.Core's cases are unqualified (`Ok`, `Choice1Of2`).
+      - A union with one case has no `_` clause.
+      - Option and voption keep their `Value` member (`opt.Value`).
+    - **Other cases.** §5.4 planned `Unchecked.defaultof<_>` for the other
+      cases. `failwith` is used instead, so that a watch whose value has
+      changed case shows an error, not a wrong default.
+    - **Edits.** A `match` is not a target of an assignment, so these rows
+      are still not editable (item 23).
+    - **Tests.** `union case fields, named by a match on the case`, `union
+      fields of single-case, struct and FSharp.Core unions`, and `the result
+      provider's full names of union case fields compile`, which evaluates
+      the names in a frame.
+    - **Verified live.** At break 1, `Test-Debugger.ps1` evaluates the full
+      names of `rect`'s second field (`2.5`) and of `result`'s `Error` field
+      (`"failed"`), and expands `rect` in Locals. All 3 runs pass on net10.0
+      and net48.
 
 **Next in M4**
 

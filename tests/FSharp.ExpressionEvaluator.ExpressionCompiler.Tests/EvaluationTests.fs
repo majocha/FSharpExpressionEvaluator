@@ -97,6 +97,12 @@ module EvalFixtures =
         val First: int
         new(first) = { First = first }
 
+    type Shape =
+        | Circle of radius: float
+        | Rect of float * float
+
+    let withUnions (shape: Shape) (rect: Shape) (result: Result<int, string>) = shape, rect, result
+
     /// Immutable fields: a record's and a class's `val`.
     let withFields (point: Point) (pair: Pair) = point.X + pair.First
 
@@ -788,6 +794,16 @@ let ``assignment to immutable fields, as the debugger edits values`` () =
     match compile withFields "point.X <- 5" with
     | Error diagnostics -> Assert.Contains(diagnostics, fun d -> d.Number = 5)
     | Ok _ -> failwith "'point.X <- 5' should not check"
+
+[<Fact>]
+let ``the result provider's full names of union case fields compile`` () =
+    let withUnions = methodOf fixtures "withUnions"
+    let args = [ box (EvalFixtures.Circle 2.0); box (EvalFixtures.Rect(1.0, 2.5)); box (Ok 7: Result<int, string>) ]
+    let shape = "FSharp.ExpressionEvaluator.Tests.EvaluationTests.EvalFixtures.Shape"
+
+    Assert.Equal((box 2.0, "float"), evaluate withUnions args $"(match shape with {shape}.Circle x -> x | _ -> failwith \"not Circle\")")
+    Assert.Equal((box 2.5, "float"), evaluate withUnions args $"(match rect with {shape}.Rect (_, x) -> x | _ -> failwith \"not Rect\")")
+    Assert.Equal((box 7, "int"), evaluate withUnions args "(match result with Ok x -> x | _ -> failwith \"not Ok\")")
 
 [<Fact>]
 let ``assignment to a hoisted variable of a state machine`` () =

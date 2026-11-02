@@ -54,9 +54,14 @@ $runs = @(
                 '1: [ distance ] => float<m> list'
                 '1: ids => Ids'
                 '1: xs => int list'
+                # A parameter, typed from its function's F# signature.
+                '1: trip => float<m>'
+                '1: trip / 2.0 => float<m>'
             )
-            # A closure's captured value, a parameter and a class let field.
-            Assign = @('captured=42', 'by=5', 'count=100')
+            ExpectLocalType = @('1: trip => float<m>', '1: xs => int list')
+            # A parameter of a unit-of-measure type (edited without the unit), a closure's captured
+            # value, a parameter and a class let field.
+            Assign = @('trip=4.5', 'captured=42', 'by=5', 'count=100')
         }
     }
     @{

@@ -1872,8 +1872,9 @@ assignments in F# frames, live in VS.
       the query carries the F# name as `DkmClrCustomTypeInfo`: payload id
       `6C1B7F2E-…` (`FSharpTypes.TypeInfo`), a version byte, then the name in
       UTF-8. Other results carry none, so FSharp.Core's abbreviations
-      (`int list`, `float`) stay the result provider's. The same goes for
-      Locals rows, though their types, imported from IL, never have it yet.
+      (`int list`, `float`) stay the result provider's. The same applies to
+      Locals rows. Parameters have F# types since item 20. Other locals
+      have types imported from IL, so they do not have an F# name.
     - **The name.** `NicePrint` in the checking environment, so in the
       frame's scope as the user writes it (`float<m/s>`, `Ids`), with a
       space after the commas of generic arguments, as the result provider
@@ -1942,6 +1943,42 @@ assignments in F# frames, live in VS.
       asynchronously, and one run read only 5 of the 10 lines when the
       debuggee ended (all 10 were evaluated). The probe now reads the pane
       again until the expected lines are there, for up to 10 s.
+
+20. **Parameters typed from the F# signature (§6.8, 2026-11-02).** The
+    frame's parameters had their IL types, so `trip: float<m>` showed `float`
+    in Locals, and `trip + 1.0` checked when the source does not let it.
+    - **The frame's F# value.** The compiler finds the module function or
+      member of the frame by compiled name and number of typars, as item 21
+      of §16 does for constraints. That search now applies to all frames,
+      not only generic ones. The value's parameters, in compiled form
+      (`GetValReprTypeInCompiledForm`, `GetMemberTypeInMemberForm`), must
+      have the same count as the IL method's parameters.
+    - **Overloads.** F# overloads of a member have the same compiled name.
+      The compiler prefers the overload whose parameter types erase to the
+      IL types of the frame.
+    - **Each parameter.** A parameter gets its F# type only when that type
+      erases to its IL type (`typeEquivAux EraseAll`). Otherwise, it keeps
+      its IL type. The F# type keeps units of measure and abbreviations, so
+      the Type column shows `float<m>` and `Ids` (item 18), and expressions
+      check units as the source does.
+    - **Edits.** An edit of a Locals row gives a value without the unit
+      (`4.5`). An assignment that does not check is compiled again with the
+      parameters' IL types, so `trip <- 4.5` and `trip <- 4.5<m>` both work.
+      A different unit (`4.5<s>`) still gives FS0001.
+    - **Limits.**
+      - Locals other than parameters, and fields of closures and state
+        machines, keep their IL types: no F# type is recorded for them (§9).
+      - A function generic over a unit of measure (`float<'u>`) has typars
+        that IL does not have, so its parameters keep their IL types.
+    - **Tests.** `parameters have the F# types of the frame's function or
+      member`: types and values of `d`, `d / t` and `route`, the FS0001 of
+      `d + t`, the Locals rows, edits with and without the unit, and an
+      overloaded member.
+    - **Verified live.** TestDebuggee's `inspect` has a new parameter
+      `trip: float<m>`. `Test-Debugger.ps1` checks `trip` and `trip / 2.0`
+      (`float<m>`), the Locals row's type (the probe's new
+      `-ExpectLocalType`), and the edit `trip=4.5`. All 3 runs pass
+      (net10.0).
 
 **Next in M4**
 

@@ -34,6 +34,13 @@ module EvalFixtures =
 
     let idsByName: Map<string, Ids> = Map [ "a", ids ]
 
+    /// Parameters whose F# types IL has lost: units of measure and an abbreviation.
+    let speed (d: float<m>) (t: float<s>) (route: Ids) = d / t + float route.Length * 1.0<m / s>
+
+    type Odometer() =
+        member this.Add(d: float<m>, route: Ids) = d + float route.Length * 1.0<m>
+        member this.Add(n: int) = n
+
     let mutable private privateCounter = 8
 
     let add (x: int) (y: int) = x + y
@@ -908,6 +915,50 @@ let ``list and array expressions don't use collector structs`` () =
 
             Assert.False(referencesCollector, text)
             Assert.Equal(expected, (queryMethod compiled).Invoke(null, [| box 1; box 3 |]))
+
+[<Fact>]
+let ``parameters have the F# types of the frame's function or member`` () =
+    let typesOf frameMethod text =
+        match compile frameMethod text with
+        | Ok compiled -> compiled.ResultType, compiled.FSharpType
+        | Error diagnostics -> failwithf "%s: %A" text diagnostics
+
+    let speed = methodOf fixtures "speed"
+    Assert.Equal(("float<m>", Some "float<m>"), typesOf speed "d")
+    Assert.Equal(("float<m/s>", Some "float<m/s>"), typesOf speed "d / t")
+    Assert.Equal(("Ids", Some "Ids"), typesOf speed "route")
+    Assert.Equal((box 2.0, "float<m/s>"), evaluate speed [ 3.0; 1.5; [ 1 ] ] "d / t")
+
+    // Units are checked, as in source.
+    match compile speed "d + t" with
+    | Error diagnostics -> Assert.Contains(diagnostics, fun d -> d.Number = 1)
+    | Ok _ -> failwith "'d + t' should not check"
+
+    // The Locals rows carry them.
+    match session.Value.CompileLocals(frameOf speed, true) with
+    | Ok compiled ->
+        Assert.Equal<(string * string option) list>(
+            [ "d", Some "float<m>"; "t", Some "float<s>"; "route", Some "Ids" ],
+            compiled.Locals |> List.map (fun l -> l.Name, l.FSharpType)
+        )
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    // Edits take a value with the unit or without it, as for a local; another unit doesn't check.
+    Assert.Equal("unit", (assign true speed "d" "5.0<m>").ResultType)
+    Assert.Equal("unit", (assign true speed "d" "5.0").ResultType)
+
+    match session.Value.CompileAssignment(frameOf speed, "d", "5.0<s>", localsAsParameters = true) with
+    | Error diagnostics -> Assert.Contains(diagnostics, fun d -> d.Number = 1)
+    | Ok _ -> failwith "'d <- 5.0<s>' should not check"
+
+    // A member, picked among its overloads by the parameters' IL types.
+    let add count =
+        typeof<EvalFixtures.Odometer>.GetMethods()
+        |> Array.find (fun m -> m.Name = "Add" && m.GetParameters().Length = count)
+
+    Assert.Equal(("float<m>", Some "float<m>"), typesOf (add 2) "d")
+    Assert.Equal(("Ids", Some "Ids"), typesOf (add 2) "route")
+    Assert.Equal(("int", None), typesOf (add 1) "n")
 
 /// The Locals window's variables of a frame, with their values read by running each query method.
 let private localsOf (frame: FrameContext) (frameMethod: MethodBase) (args: obj list) argumentsOnly =

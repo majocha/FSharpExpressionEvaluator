@@ -26,6 +26,8 @@ param(
     [string[]] $Expect = @(),
     # Checks 'break: expression => type': the expression's type at that break, as the Watch window shows it.
     [string[]] $ExpectType = @(),
+    # Checks 'break: name => type': the type of that Locals row at that break.
+    [string[]] $ExpectLocalType = @(),
     # At these breaks ('break: expression'), expand the expression and list its children; fails without any.
     [string[]] $Expand = @(),
     # Lines the tracepoint must have written to the Debug pane.
@@ -61,6 +63,10 @@ $expansions = @($Expand | ForEach-Object { $_ -split ';;' } | Where-Object { $_ 
 $typeExpectations = @($ExpectType | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectType '$_' is not 'break: expression => type'." }
     [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Type = $Matches[3] }
+})
+$localTypeExpectations = @($ExpectLocalType | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectLocalType '$_' is not 'break: name => type'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Name = $Matches[2]; Type = $Matches[3] }
 })
 $ExpectTrace = @($ExpectTrace | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $failures = New-Object System.Collections.Generic.List[string]
@@ -244,7 +250,8 @@ $assigned = @{}
             Write-Host "  $($f.FunctionName)  : $($f.ReturnType)"
         }
         Write-Host '--- Locals'
-        foreach ($local in Get-Items $frame.Locals ([EnvDTE.Expressions])) {
+        $locals = @(Get-Items $frame.Locals ([EnvDTE.Expressions]))
+        foreach ($local in $locals) {
             Show-Value $local '  '
         }
         if ($StepAt -contains $i) {
@@ -261,7 +268,13 @@ $assigned = @{}
         $here = @($expectations | Where-Object { $_.Break -eq $i })
         $hereTypes = @($typeExpectations | Where-Object { $_.Break -eq $i })
         $hereExpand = @($expansions | Where-Object { $_.Break -eq $i })
-        if ($here -or $hereTypes -or $hereExpand) { Write-Host '--- Checks' }
+        $hereLocalTypes = @($localTypeExpectations | Where-Object { $_.Break -eq $i })
+        if ($here -or $hereTypes -or $hereExpand -or $hereLocalTypes) { Write-Host '--- Checks' }
+        foreach ($check in $hereLocalTypes) {
+            $row = @($locals | Where-Object { $_.Name -ceq $check.Name } | Select-Object -First 1)
+            $actual = if ($row) { $row[0].Type } else { 'no such row' }
+            Test-Check "break $i : Locals row $($check.Name) => type $($check.Type)" ($row -and $actual -ceq $check.Type) $actual
+        }
         foreach ($check in $hereExpand) {
             # Children come from the result providers' GetChildren; a Raw View row's children too.
             $e = $dte.Debugger.GetExpression($check.Text, $true, 10000)

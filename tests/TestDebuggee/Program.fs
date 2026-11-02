@@ -36,8 +36,8 @@ type StructUnion =
 
 exception MyError of code: int * string
 
-/// Break 1: a module function with locals of many F# shapes.
-let inspect (xs: int list) (name: string) =
+/// Break 1: a module function with locals of many F# shapes, and a parameter whose F# type IL has lost.
+let inspect (xs: int list) (name: string) (trip: float<m>) =
     let point = { X = 1; Y = 2 }
     let shape = Circle 2.0
     let rect = Rect(1.0, 2.5)
@@ -138,7 +138,7 @@ let main argv =
     Startup.startupCheck |> ignore
     TestDebuggee.Settings.Checks.ready |> ignore
 
-    inspect [ 1; 2; 3 ] "test"
+    inspect [ 1; 2; 3 ] "test" 2.5<m>
     closure () |> ignore
     Counter(10).Increment 2 |> ignore
     generic [ 1; 2 ] (3, "c") |> ignore

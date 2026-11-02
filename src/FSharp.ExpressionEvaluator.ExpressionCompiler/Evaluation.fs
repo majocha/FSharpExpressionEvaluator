@@ -607,6 +607,21 @@ let private fsharpTypeName (g: TcGlobals.TcGlobals) (denv: DisplayEnv) ty =
     else
         None
 
+/// The F# types of a module function's or member's parameters, in the order of its compiled
+/// method's: curried groups and tupled arguments flattened, a lone `unit` and a member's `this`
+/// left out, as IlxGen compiles them. In terms of the value's own typars.
+let private compiledParameterTypes (g: TcGlobals.TcGlobals) (v: Val) numEnclosingTypars =
+    match v.ValReprInfo with
+    | Some valReprInfo ->
+        let _, _, curriedArgs, _, _ =
+            match v.MemberInfo with
+            | Some memberInfo ->
+                GetMemberTypeInMemberForm g memberInfo.MemberFlags valReprInfo numEnclosingTypars v.Type v.Range
+            | None -> GetValReprTypeInCompiledForm g valReprInfo numEnclosingTypars v.Type v.Range
+
+        Some(curriedArgs |> List.concat |> List.map fst)
+    | None -> None
+
 /// The F# type for a CLR type name, looked up in the given assembly when it names one the
 /// session imports, otherwise in every imported assembly.
 let private resolveClrType
@@ -1458,13 +1473,29 @@ type EvaluationSession
         )
 
     /// Compiles the user's text with ref cells read as their contents, or else as ref cells
-    /// (`cell.Value`, `!cell`); the errors are those of the first.
+    /// (`cell.Value`, `!cell`). An assignment is also tried with the parameters' IL types, so that
+    /// editing `d: float<m>` to `5.0` works as it does for a local. The errors are those of the first.
     member private this.CompileText(frame: FrameContext, text: string, localsAsParameters: bool, assigning: bool) =
-        match this.Compile(frame, QueryRequest.Expression text, localsAsParameters, assigning, true) with
-        | Error _ as asContents ->
-            match this.Compile(frame, QueryRequest.Expression text, localsAsParameters, assigning, false) with
-            | Ok _ as asCells -> asCells
-            | Error _ -> asContents
+        let compile (refCellsAsContents, fsharpParameterTypes) =
+            this.Compile(
+                frame,
+                QueryRequest.Expression text,
+                localsAsParameters,
+                assigning,
+                refCellsAsContents,
+                fsharpParameterTypes
+            )
+
+        let retries = [ false, true; if assigning then true, false ]
+
+        match compile (true, true) with
+        | Error _ as first ->
+            retries
+            |> List.tryPick (fun attempt ->
+                match compile attempt with
+                | Ok _ as result -> Some result
+                | Error _ -> None)
+            |> Option.defaultValue first
         | result -> result
 
     member this.CompileExpression(frame: FrameContext, text: string, ?localsAsParameters: bool) =
@@ -1506,7 +1537,7 @@ type EvaluationSession
             })
 
     member this.CompileLocals(frame: FrameContext, argumentsOnly: bool, ?localsAsParameters: bool) =
-        this.Compile(frame, QueryRequest.Locals argumentsOnly, defaultArg localsAsParameters false, false, true)
+        this.Compile(frame, QueryRequest.Locals argumentsOnly, defaultArg localsAsParameters false, false, true, true)
         |> Result.map (fun (assembly, queries) ->
             {
                 Assembly = assembly
@@ -1638,8 +1669,14 @@ type EvaluationSession
         modules.Length, session.WarmUp("FSharp.Core", token)
 
     member private _.Compile
-        (frame: FrameContext, request: QueryRequest, localsAsParameters: bool, assigning: bool, refCellsAsContents: bool)
-        =
+        (
+            frame: FrameContext,
+            request: QueryRequest,
+            localsAsParameters: bool,
+            assigning: bool,
+            refCellsAsContents: bool,
+            fsharpParameterTypes: bool
+        ) =
         let g = tcGlobals
         let m = range0
 
@@ -1713,9 +1750,12 @@ type EvaluationSession
             // member constraints); a member's typars are its class's and then its own.
             let typarCount = declaringType.GenericParams.Length + methodDef.GenericParams.Length
 
+            // The frame's F# value, with the F# types of its parameters as IL lists them: found by
+            // compiled name, number of typars and parameters, preferring an overload whose parameter
+            // types erase to the frame's.
             let frameVal =
                 match List.tryLast entities with
-                | Some entity when typarCount > 0 && entities.Length = enclosing.Length ->
+                | Some entity when entities.Length = enclosing.Length ->
                     // A module's values are in its own table; a type's members on the type.
                     let candidates =
                         if entity.IsModuleOrNamespace then
@@ -1723,25 +1763,50 @@ type EvaluationSession
                         else
                             entity.MembersOfFSharpTyconSorted |> List.map _.Deref
 
-                    candidates
-                    |> List.tryFind (fun v ->
-                        v.Typars.Length = typarCount
-                        && v.CompiledName g.CompilerGlobalState = methodDef.Name)
+                    let ilTypeVars = List.init typarCount (fun i -> ILType.TypeVar(uint16 i))
+
+                    // Whether a parameter's F# type erases to its IL type; an IL type F# can't import
+                    // doesn't count against the value.
+                    let erasesTo (v: Val) fsharpType (p: ILParameter) =
+                        try
+                            let tinst = v.Typars |> List.map mkTyparTy
+
+                            let ilType =
+                                Import.ImportILType amap m tinst (rescopeILType dllInfo.ILScopeRef p.Type)
+
+                            typeEquivAux EraseAll g fsharpType ilType
+                        with _ ->
+                            true
+
+                    let matching =
+                        candidates
+                        |> List.filter (fun v ->
+                            v.Typars.Length = typarCount
+                            && v.CompiledName g.CompilerGlobalState = methodDef.Name)
+                        |> List.choose (fun v ->
+                            match compiledParameterTypes g v declaringType.GenericParams.Length with
+                            | Some types when types.Length = methodDef.Parameters.Length -> Some(v, types)
+                            | _ -> None)
+
+                    matching
+                    |> List.tryFind (fun (v, types) -> List.forall2 (erasesTo v) types methodDef.Parameters)
+                    |> Option.orElse (List.tryHead matching)
                 | _ -> None
 
-            let frameTypars =
+            let frameTypars, frameParameterTypes =
                 match frameVal with
-                | Some v ->
+                | Some(v, parameterTypes) ->
                     let copies = copyTypars false v.Typars
                     let inst = mkTyparInst v.Typars (copies |> List.map mkTyparTy)
 
                     for copy, original in List.zip copies v.Typars do
                         copy.SetConstraints(instTyparConstraints inst original.Constraints)
 
-                    copies
+                    copies, parameterTypes |> List.map (instType inst)
                 | None ->
                     (declaringType.GenericParams @ methodDef.GenericParams)
-                    |> List.map (fun p -> Construct.NewRigidTypar p.Name m)
+                    |> List.map (fun p -> Construct.NewRigidTypar p.Name m),
+                    []
 
             let classTypars = List.take declaringType.GenericParams.Length frameTypars
             let frameTinst = frameTypars |> List.map mkTyparTy
@@ -2073,10 +2138,16 @@ type EvaluationSession
                 methodDef.Parameters
                 |> List.mapi (fun i p ->
                     // A parameter keeps its position among the query's arguments: `obj` when its type
-                    // can't be imported.
+                    // can't be imported. The frame's F# value gives its F# type, with the units of
+                    // measure and abbreviations IL has lost, where that erases to the IL type.
                     let ty =
-                        tryImportType (rescopeILType dllInfo.ILScopeRef p.Type)
-                        |> Option.defaultValue g.obj_ty_ambivalent
+                        match tryImportType (rescopeILType dllInfo.ILScopeRef p.Type), List.tryItem i frameParameterTypes with
+                        | Some ilType, Some fsharpType when
+                            fsharpParameterTypes && typeEquivAux EraseAll g fsharpType ilType
+                            ->
+                            fsharpType
+                        | Some ilType, _ -> ilType
+                        | None, _ -> g.obj_ty_ambivalent
 
                     mkVariable (defaultArg p.Name $"arg{i}") ty)
 

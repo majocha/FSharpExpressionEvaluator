@@ -118,8 +118,13 @@ type CompiledExpression =
 /// A variable of the Locals window: the query method that reads it.
 type CompiledLocal =
     {
-        /// The variable's name, as an expression names it (`x`, `this`, `$exception`).
+        /// The variable's name, as the Locals window shows it (`x`, `this`, `$exception`,
+        /// `x (shadowed)` for one an inner `x` hides).
         Name: string
+
+        /// How an expression names the variable: the name, in double backticks for a shadowed
+        /// one (``x (shadowed)``).
+        FullName: string
 
         MethodName: string
 
@@ -172,7 +177,9 @@ type EvaluationSession =
 
     /// Compiles the Locals window's query for a frame: one method per variable shown, in order:
     /// the debugger's aliases, `this`, the parameters, a closure's captured values or a state
-    /// machine's hoisted variables, then the locals in scope. Compiler temporaries are left out.
+    /// machine's hoisted variables, then the locals in scope. Compiler temporaries are left out. A
+    /// variable an inner one of the same name shadows is listed as `x (shadowed)`, read-only;
+    /// expressions name it ``x (shadowed)``.
     /// With `argumentsOnly`, only the parameters (for the call stack's argument values).
     member CompileLocals:
         frame: FrameContext * argumentsOnly: bool * ?localsAsParameters: bool ->

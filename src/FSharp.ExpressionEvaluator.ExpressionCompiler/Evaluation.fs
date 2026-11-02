@@ -88,6 +88,7 @@ type CompiledExpression =
 type CompiledLocal =
     {
         Name: string
+        FullName: string
         MethodName: string
         ResultType: string
         ReadOnlyResult: bool
@@ -871,6 +872,8 @@ type private CompiledQuery =
         MethodName: string
         ResultType: string
         PotentialSideEffect: bool
+        /// A Locals variable an inner one of the same name shadows (`x (shadowed)`)
+        Shadowed: bool
         ReadOnlyResult: bool
         BoolResult: bool
     }
@@ -1466,6 +1469,7 @@ type EvaluationSession
                     |> List.map (fun q ->
                         {
                             Name = q.Name
+                            FullName = if q.Shadowed then $"``{q.Name}``" else q.Name
                             MethodName = q.MethodName
                             ResultType = q.ResultType
                             ReadOnlyResult = q.ReadOnlyResult
@@ -2081,6 +2085,91 @@ type EvaluationSession
                     |> List.tryPick (fun (cell, contents, _, _) -> if valEq cell v then Some contents else None)
                     |> Option.defaultValue v)
 
+            // The frame's variables the Locals window shows, outermost first, each with its type and
+            // read: the parameters, a generated frame's own fields (a closure's captured values, a
+            // state machine's hoisted variables; a class's fields are shown under `this`), then the
+            // locals in scope. Expressions need them too, for the shadowed ones.
+            let frameRows =
+                let argumentsOnly =
+                    match request with
+                    | QueryRequest.Locals argumentsOnly -> argumentsOnly
+                    | QueryRequest.Expression _ -> false
+
+                let localNames = localVals |> List.map _.LogicalName |> set
+
+                // Pieces of a tuple parameter (`pair_0`, `pair_1`) when the tuple is a local (`pair`)
+                let isTuplePiece (name: string) =
+                    match name.LastIndexOf '_' with
+                    | i when i > 0 && i + 1 < name.Length ->
+                        localNames.Contains(name.Substring(0, i))
+                        && Seq.forall Char.IsDigit (name.Substring(i + 1))
+                    | _ -> false
+
+                let parameters =
+                    parameterVals
+                    |> List.filter (fun v -> not (isHiddenLocalName v.LogicalName || isTuplePiece v.LogicalName))
+                    |> List.map (fun v -> v.LogicalName, v.Type, (fun m -> exprForVal m v))
+
+                let fields =
+                    if isGeneratedFrame then
+                        ownFieldNames
+                        |> List.filter (fun name -> name <> "this" && not (isHiddenLocalName name))
+                        |> List.choose (fun name ->
+                            // The frame's own field, which shadows one of the original `this`.
+                            fieldVariables
+                            |> List.tryFindBack (fun (v: Val, _, _) -> v.LogicalName = name)
+                            |> Option.map (fun (v, read, _) -> name, v.Type, read))
+                    else
+                        []
+
+                let locals =
+                    localVals
+                    |> List.filter (fun v -> not (isHiddenLocalName v.LogicalName))
+                    |> List.map (fun local ->
+                        match contentsVariables |> List.tryFind (fun (cell, _, _, _) -> valEq cell local) with
+                        | Some(_, contents, read, _) -> contents.LogicalName, contents.Type, read
+                        | None -> local.LogicalName, local.Type, (fun m -> exprForVal m local))
+
+                if argumentsOnly then parameters else parameters @ fields @ locals
+
+            // Locals rows for frame variables an inner one of the same name shadows (`for x in xs`
+            // in `f x`): `x` reads the inner one, as in source, and `x (shadowed)` the outer one,
+            // numbered from the outermost when there are several. They are variables of expressions
+            // too, named in double backticks (``x (shadowed)``), which is the rows' full name. The
+            // compiler already names some shadowed locals `x (shadowed)` in the PDB; they are
+            // numbered with the others.
+            let frameRowNames, shadowedVariables =
+                let suffix = " (shadowed)"
+
+                let names =
+                    frameRows
+                    |> List.map (fun (name, _, _) ->
+                        if name.EndsWith suffix then name.Substring(0, name.Length - suffix.Length) else name)
+
+                let isShadowed i name =
+                    (let n, _, _ = frameRows[i] in n.EndsWith suffix)
+                    || names |> List.skip (i + 1) |> List.contains name
+
+                // How many of each name are shadowed, and how many of those come before row i.
+                let shadowed = names |> List.indexed |> List.filter (fun (i, name) -> isShadowed i name)
+                let count name = shadowed |> List.filter (fun (_, n) -> n = name) |> List.length
+                let ordinal i name = shadowed |> List.filter (fun (j, n) -> n = name && j <= i) |> List.length
+
+                let rows =
+                    List.zip names frameRows
+                    |> List.mapi (fun i (name, (_, ty, read)) ->
+                        if isShadowed i name then
+                            let rowName =
+                                if count name = 1 then name + suffix else $"{name} (shadowed {ordinal i name})"
+
+                            rowName, Some(fst (mkLocal m rowName ty), read)
+                        else
+                            name, None)
+
+                rows |> List.map fst, rows |> List.choose snd
+
+            let shadowedNames = shadowedVariables |> List.map (fun (v, _) -> v.LogicalName) |> set
+
             let frameVals = thisVal @ parameterVals @ localVals
 
             // Assignments to frame values store to the query's arguments, which the frame's values
@@ -2098,6 +2187,7 @@ type EvaluationSession
                 @ parameterVals
                 @ scopedLocals
                 @ (aliasVariables |> List.map fst)
+                @ (shadowedVariables |> List.map fst)
 
             // The query module's expressions, each with what it stands for: the user's expression,
             // or one per variable the Locals window shows. Locals with no variable to show still
@@ -2106,27 +2196,9 @@ type EvaluationSession
                 match request with
                 | QueryRequest.Expression _ -> [ text, quoted ]
                 | QueryRequest.Locals argumentsOnly ->
-                    let localNames = localVals |> List.map _.LogicalName |> set
-
-                    // Pieces of a tuple parameter (`pair_0`, `pair_1`) when the tuple is a local (`pair`)
-                    let isTuplePiece (name: string) =
-                        match name.LastIndexOf '_' with
-                        | i when i > 0 && i + 1 < name.Length ->
-                            localNames.Contains(name.Substring(0, i))
-                            && Seq.forall Char.IsDigit (name.Substring(i + 1))
-                        | _ -> false
-
-                    let parameters =
-                        parameterVals
-                        |> List.map _.LogicalName
-                        |> List.filter (fun name -> not (isHiddenLocalName name || isTuplePiece name))
-
-                    let fieldNames =
-                        fieldVariables |> List.map (fun (v: Val, _, _) -> v.LogicalName) |> set
-
                     let names =
                         if argumentsOnly then
-                            parameters
+                            frameRowNames
                         else
                             [
                                 yield! frame.Aliases |> List.map _.Name
@@ -2134,18 +2206,10 @@ type EvaluationSession
                                 // its hoisted `this` field stands for it.
                                 if
                                     thisVal |> List.exists (fun v -> v.LogicalName = "this")
-                                    || fieldNames.Contains "this"
+                                    || fieldVariables |> List.exists (fun (v: Val, _, _) -> v.LogicalName = "this")
                                 then
                                     "this"
-                                yield! parameters
-                                // A closure's captured values and a state machine's hoisted variables,
-                                // flattened; a class's own fields are shown under `this`.
-                                if isGeneratedFrame then
-                                    yield!
-                                        ownFieldNames
-                                        |> List.filter (fun name ->
-                                            name <> "this" && fieldNames.Contains name && not (isHiddenLocalName name))
-                                yield! localVals |> List.map _.LogicalName |> List.filter (not << isHiddenLocalName)
+                                yield! frameRowNames
                             ]
 
                     match List.distinct names with
@@ -2247,7 +2311,8 @@ type EvaluationSession
                         frameVals
                         ((fieldVariables |> List.map (fun (v, read, _) -> v, read))
                          @ (contentsVariables |> List.map (fun (_, v, read, _) -> v, read))
-                         @ aliasVariables)
+                         @ aliasVariables
+                         @ shadowedVariables)
                         ((fieldVariables |> List.map (fun (v, _, write) -> v, write))
                          @ (contentsVariables |> List.map (fun (_, v, _, write) -> v, write))
                          @ frameValueWrites)
@@ -2312,7 +2377,10 @@ type EvaluationSession
                             MethodName = methodName
                             ResultType = NicePrint.prettyStringOfTyNoCx denv ty
                             PotentialSideEffect = mayHaveSideEffects g body
+                            Shadowed = shadowedNames.Contains name
                             ReadOnlyResult =
+                                shadowedNames.Contains name
+                                ||
                                 match stripDebugPoints body with
                                 | Expr.Val(vref, _, _) -> not (vref.IsMutable || assignable.Contains vref.Stamp)
                                 | _ -> true

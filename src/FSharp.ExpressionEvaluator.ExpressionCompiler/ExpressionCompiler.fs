@@ -163,7 +163,7 @@ type ExpressionCompiler() =
                             |> List.map (fun local ->
                                 DkmClrLocalVariableInfo.Create(
                                     displayName local.Name,
-                                    local.Name,
+                                    local.FullName,
                                     local.MethodName,
                                     (if local.ReadOnlyResult then
                                          DkmClrCompilationResultFlags.ReadOnlyResult

@@ -1840,7 +1840,26 @@ assignments in F# frames, live in VS.
       C#'s Results View row (picked out by its `, results` full name).
     - **Tests.** `ranges are computed from their bounds`, `other F#
       sequences are not enumerated`, `sequences inside F# values`, and the
-      Type column test. Not yet verified live.
+      Type column test. Verified live: `inp = seq [1; 2; 3]`.
+
+17. **Shadowed variables in Locals (§6.4, 2026-11-02).** The Locals query
+    compiles each name as an expression, so `x` reads the innermost `x`, as
+    in source, and an outer one it shadows (the parameter in
+    `let h3 x = for x in inp do …`) was not listed at all.
+    - **Rows.** Each shadowed parameter, flattened field or local now has a row
+      `x (shadowed)` at its own place, outermost first, numbered
+      `x (shadowed 1)`, `x (shadowed 2)` when there are several. The row reads
+      the variable directly (its argument, slot or field) and is read-only.
+    - **Full name.** Expressions see these variables too, named in double
+      backticks, so the row's full name is ``x (shadowed)`` and Add Watch
+      works. A first version gave the rows no full name;
+      `DkmClrLocalVariableInfo.Create` rejects null, which failed the whole
+      Locals query.
+    - **The compiler's own names.** F# already names some shadowed locals
+      `x (shadowed)` in the PDB (`let x = … in let x = …`, in the inner scope).
+      Those count as shadowed `x` and are numbered with the others.
+    - **Tests.** `locals list shadowed variables, read-only and named in
+      backticks`. Not yet verified live.
 
 **Next in M4**
 

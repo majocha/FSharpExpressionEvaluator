@@ -33,6 +33,15 @@ module EvalFixtures =
         let label = "n" + string doubled
         doubled + label.Length
 
+    let shadowedOnce (x: int) =
+        let x = x + 1
+        x * 2
+
+    let shadowedTwice (x: int) =
+        let x = x * 10
+        let x = string x
+        x.Length
+
     type Counter(start: int) =
         member this.Start = start
         member this.Increment(by: int) = start + by
@@ -892,6 +901,45 @@ let ``locals of a function: parameters, then locals`` () =
 
     // Only the parameters, for the call stack's argument values
     Assert.Equal<string list>([ "x" ], localsOf (frameOf withLocals) withLocals [ 3; 6; "n6" ] true |> List.map (fun (n, _, _, _) -> n))
+
+[<Fact>]
+let ``locals list shadowed variables, read-only and named in backticks`` () =
+    let once = methodOf fixtures "shadowedOnce"
+
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "x (shadowed)", box 3, "int", true; "x", box 4, "int", false ],
+        localsOf (frameOf once) once [ 3; 4 ] false
+    )
+
+    // At `x.Length` the PDB's innermost scope has slot 0 as `x (shadowed)` (the compiler's own
+    // name for it) and slot 1 as `x`; slots 2 and 3 are temporaries.
+    let twice = methodOf fixtures "shadowedTwice"
+
+    let frame =
+        { frameOf twice with
+            Locals = [ { Name = "x (shadowed)"; Slot = 0 }; { Name = "x"; Slot = 1 } ]
+        }
+
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "x (shadowed 1)", box 3, "int", true; "x (shadowed 2)", box 30, "int", true; "x", box "30", "string", false ],
+        localsOf frame twice [ 3; 30; "30" ] false
+    )
+
+    match session.Value.CompileLocals(frame, false) with
+    | Ok compiled ->
+        Assert.Equal<string list>(
+            [ "``x (shadowed 1)``"; "``x (shadowed 2)``"; "x" ],
+            compiled.Locals |> List.map _.FullName
+        )
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    // Expressions see the innermost `x`, as in source, and name the others by their full names.
+    let evaluateIn text =
+        run (session.Value.CompileExpression(frame, text, localsAsParameters = true)) [ 3; 30; "30" ] text
+
+    Assert.Equal((box "30", "string"), evaluateIn "x")
+    Assert.Equal((box 3, "int"), evaluateIn "``x (shadowed 1)``")
+    Assert.Equal((box 31, "int"), evaluateIn "``x (shadowed 2)`` + 1")
 
 [<Fact>]
 let ``locals show a tuple parameter as the tuple`` () =

@@ -26,6 +26,8 @@ param(
     [string[]] $Expect = @(),
     # Checks 'break: expression => type': the expression's type at that break, as the Watch window shows it.
     [string[]] $ExpectType = @(),
+    # At these breaks ('break: expression'), expand the expression and list its children; fails without any.
+    [string[]] $Expand = @(),
     # Lines the tracepoint must have written to the Debug pane.
     [string[]] $ExpectTrace = @(),
     # After the last break, the debuggee must run to its end without breaking again.
@@ -51,6 +53,10 @@ $Assign = @($Assign | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $expectations = @($Expect | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-Expect '$_' is not 'break: expression => value'." }
     [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Value = $Matches[3] }
+})
+$expansions = @($Expand | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*$') { throw "-Expand '$_' is not 'break: expression'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2] }
 })
 $typeExpectations = @($ExpectType | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectType '$_' is not 'break: expression => type'." }
@@ -254,7 +260,20 @@ $assigned = @{}
         }
         $here = @($expectations | Where-Object { $_.Break -eq $i })
         $hereTypes = @($typeExpectations | Where-Object { $_.Break -eq $i })
-        if ($here -or $hereTypes) { Write-Host '--- Checks' }
+        $hereExpand = @($expansions | Where-Object { $_.Break -eq $i })
+        if ($here -or $hereTypes -or $hereExpand) { Write-Host '--- Checks' }
+        foreach ($check in $hereExpand) {
+            # Children come from the result providers' GetChildren; a Raw View row's children too.
+            $e = $dte.Debugger.GetExpression($check.Text, $true, 10000)
+            $children = @(Get-Items $e.DataMembers ([EnvDTE.Expressions]))
+            foreach ($child in $children) {
+                Show-Value $child '    '
+                if ($child.Name -eq 'Raw View') {
+                    foreach ($raw in @(Get-Items $child.DataMembers ([EnvDTE.Expressions]))) { Show-Value $raw '      ' }
+                }
+            }
+            Test-Check "break $i : $($check.Text) expands" ($children.Count -gt 0) 'no children'
+        }
         foreach ($check in $hereTypes) {
             $e = $dte.Debugger.GetExpression($check.Text, $true, 10000)
             Test-Check "break $i : $($check.Text) => type $($check.Type)" ($e.IsValidValue -and $e.Type -ceq $check.Type) $e.Type
@@ -321,9 +340,18 @@ $assigned = @{}
         $panes = [EnvDTE.OutputWindow].GetProperty('OutputWindowPanes').GetValue($outputWindow, $null)
         $pane = [EnvDTE.OutputWindowPanes].GetMethod('Item').Invoke($panes, @([object]'Debug'))
         $document = [EnvDTE.OutputWindowPane].GetProperty('TextDocument').GetValue($pane, $null)
-        $text = $document.StartPoint.CreateEditPoint().GetText($document.EndPoint)
+        # VS writes to the pane asynchronously, so the last lines can come after the debuggee ends:
+        # read until the expected lines are there, for up to 10 s.
+        $prefix = [regex]::Escape(($Tracepoint -split '\{')[0])
+        $deadline = (Get-Date).AddSeconds(10)
+        do {
+            $text = $document.StartPoint.CreateEditPoint().GetText($document.EndPoint)
+            $traced = @($text -split "`r?`n" | Where-Object { $_ -match $prefix })
+            $missing = @($ExpectTrace | Where-Object { $e = $_; -not ($traced | Where-Object { $_.Trim() -ceq $e }) })
+            if ($missing.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
         Write-Host '--- Tracepoint output'
-        $traced = @($text -split "`r?`n" | Where-Object { $_ -match [regex]::Escape(($Tracepoint -split '\{')[0]) })
         $traced | ForEach-Object { Write-Host "  $_" }
         foreach ($expected in $ExpectTrace) {
             Test-Check "tracepoint wrote '$expected'" (@($traced | Where-Object { $_.Trim() -ceq $expected }).Count -gt 0) "$($traced.Count) other lines"

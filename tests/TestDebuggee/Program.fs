@@ -61,11 +61,15 @@ let inspect (xs: int list) (name: string) =
     let unitValue = ()
     let boxed: obj = box [ 1; 2 ]
     let add = fun (a: int) (b: int) -> a + b
+    // C# renders it, through its DebuggerDisplay.
+    let dict = Collections.Generic.Dictionary<string, int>()
+    dict.Add("a", 1)
+    dict.Add("b", 2)
     Debugger.Break()
 
     printfn
-        "%A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %s %d"
-        point shape rect five structUnion opt none someShape result tuple structTuple empty nested array map set anon cell error unitValue boxed (add 1 2) xs name longList.Length
+        "%A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %s %d %d"
+        point shape rect five structUnion opt none someShape result tuple structTuple empty nested array map set anon cell error unitValue boxed (add 1 2) xs name longList.Length dict.Count
 
 /// Break 2: inside a closure that captures an immutable and a mutable local.
 let closure () =

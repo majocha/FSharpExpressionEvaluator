@@ -196,13 +196,19 @@ type ResultProvider() =
         let parent = raw.Parent
         let context = rawContext context
 
-        let complete (r: DkmEvaluationAsyncResult) =
+        let children (r: DkmEvaluationAsyncResult) =
             match r.Result with
             | null -> k.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult(exn $"Raw View: error 0x{r.ErrorCode:X8}"))
-            | csharp -> csharp.GetChildren(workList, initialRequestSize, context, k)
+            | csharp ->
+                WorkLists.complete "RP" "Raw View children" workList (fun workList k -> csharp.GetChildren(workList, initialRequestSize, context, k)) k.Invoke
 
-        parent.ClrValue.GetResult(
-            workList, parent.DeclaredType, null, context, noFormatSpecifiers, "Raw View", rawFullName parent, DkmCompletionRoutine<_>(complete))
+        WorkLists.complete
+            "RP"
+            "Raw View"
+            workList
+            (fun workList k ->
+                parent.ClrValue.GetResult(workList, parent.DeclaredType, null, context, noFormatSpecifiers, "Raw View", rawFullName parent, k))
+            children
 
     /// The Raw View row of a value. It has no value of its own; its children come from rawViewChildren.
     static let rawViewRow context frame (parent: FSharpResultData) =
@@ -244,7 +250,7 @@ type ResultProvider() =
                 k.Invoke(DkmGetChildrenAsyncResult(Array.truncate initialRequestSize rows, enumContext))
 
         // A closure has a handful of fields, so one request returns C#'s Results View row.
-        retyped.Original.GetChildren(workList, 100, context, DkmCompletionRoutine<_>(complete))
+        WorkLists.complete "RP" "sequence children" workList (fun workList k -> retyped.Original.GetChildren(workList, 100, context, k)) complete
 
     /// Creates the results for some rows one after another through Concord, then calls k.
     static let evaluateRows (workList: DkmWorkList) context (parent: FSharpResultData) (rows: Row[]) (k: DkmEvaluationResult[] -> unit) =
@@ -276,18 +282,36 @@ type ResultProvider() =
                     match child.Value.Value with
                     | :? ConcordValue as v ->
                         let declared = clrType v.Value.Type.AppDomain child.DeclaredType
-                        v.Value.GetResult(workList, declared, null, context, noFormatSpecifiers, child.Name, fullName, DkmCompletionRoutine<_>(complete))
+
+                        WorkLists.complete
+                            "RP"
+                            $"row '{child.Name}'"
+                            workList
+                            (fun workList k -> v.Value.GetResult(workList, declared, null, context, noFormatSpecifiers, child.Name, fullName, k))
+                            complete
                     | v ->
                         results[i] <- failed child.Name fullName v.Error
                         next (i + 1)
 
         next 0
 
+    /// The completion routine, logging the call and its completion with FSHARP_EE_TRACE=1.
+    static let traced (what: string) (completionRoutine: DkmCompletionRoutine<'T>) =
+        let call = Log.trace "RP" what
+
+        call,
+        DkmCompletionRoutine<'T>(fun r ->
+            call.Completed()
+            completionRoutine.Invoke r)
+
     interface IDkmClrResultProvider with
 
         member _.GetResult
             (clrValue, workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
             =
+            let call, completionRoutine = traced $"GetResult '{resultName}'" completionRoutine
+            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+
             let fsharp =
                 Settings.enabled ()
                 && not (inspectionContext.EvaluationFlags.HasFlag DkmEvaluationFlags.ShowValueRaw)
@@ -309,34 +333,38 @@ type ResultProvider() =
             match created with
             | Some result -> completionRoutine.Invoke(DkmEvaluationAsyncResult(result))
             | None ->
-                // Not an F# shape: the next provider (C#) renders it. This call does not come back here.
-                let completionRoutine =
-                    if not fsharp then
-                        completionRoutine
-                    else
-                        DkmCompletionRoutine<DkmEvaluationAsyncResult>(fun r ->
-                            let retyped =
-                                match r.Result with
-                                | null -> r
-                                | result ->
-                                    try
-                                        DkmEvaluationAsyncResult(retype clrValue declaredType fsharpName inspectionContext result)
-                                    with e ->
-                                        Log.exn "RP" $"Type column of '{resultName}'" e
-                                        r
+                // Not an F# shape: the next provider (C#) renders it. This call does not come back here,
+                // and it runs to completion before we return (WorkLists.fs).
+                let retyped (r: DkmEvaluationAsyncResult) =
+                    match r.Result with
+                    | null -> r
+                    | result ->
+                        try
+                            DkmEvaluationAsyncResult(retype clrValue declaredType fsharpName inspectionContext result)
+                        with e ->
+                            Log.exn "RP" $"Type column of '{resultName}'" e
+                            r
 
-                            completionRoutine.Invoke retyped)
+                let csharp workList completionRoutine =
+                    clrValue.GetResult(
+                        workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
 
-                clrValue.GetResult(
-                    workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
+                WorkLists.complete "RP" $"GetResult '{resultName}'" workList csharp (fun r ->
+                    completionRoutine.Invoke(if fsharp then retyped r else r))
 
         member _.GetChildren(result, workList, initialRequestSize, inspectionContext, completionRoutine) =
+            let call, completionRoutine = traced $"GetChildren '{result.Name}'" completionRoutine
+            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+
             match result.GetDataItem<FSharpResultData>(), result.GetDataItem<RawViewData>() with
             | null, null ->
                 match result.GetDataItem<RetypedData>() with
-                | null -> result.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
+                | null ->
+                    WorkLists.complete "RP" "GetChildren" workList (fun workList k ->
+                        result.GetChildren(workList, initialRequestSize, inspectionContext, k)) completionRoutine.Invoke
                 | retyped when isNull retyped.Sequence ->
-                    retyped.Original.GetChildren(workList, initialRequestSize, inspectionContext, completionRoutine)
+                    WorkLists.complete "RP" "GetChildren" workList (fun workList k ->
+                        retyped.Original.GetChildren(workList, initialRequestSize, inspectionContext, k)) completionRoutine.Invoke
                 | retyped ->
                     try
                         sequenceChildren retyped workList initialRequestSize inspectionContext completionRoutine
@@ -357,8 +385,13 @@ type ResultProvider() =
                     completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
 
         member _.GetItems(enumContext, workList, startIndex, count, completionRoutine) =
+            let call, completionRoutine = traced $"GetItems {startIndex}+{count}" completionRoutine
+            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+
             match enumContext.GetDataItem<RowsData>(), enumContext.GetDataItem<SequenceRowsData>() with
-            | null, null -> enumContext.GetItems(workList, startIndex, count, completionRoutine)
+            | null, null ->
+                WorkLists.complete "RP" "GetItems" workList (fun workList k ->
+                    enumContext.GetItems(workList, startIndex, count, k)) completionRoutine.Invoke
             | null, sequence ->
                 let items = sequence.Rows |> Array.skip (min startIndex sequence.Rows.Length) |> Array.truncate count
                 completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items))

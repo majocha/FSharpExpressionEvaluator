@@ -1791,6 +1791,8 @@ assignments in F# frames, live in VS.
       completion closures was alive. Copilot's `DebugAssistant` had async
       initialization pending, not shown to be the cause. The next run of the
       same checks passed. Not ours as far as the dump shows; intermittent.
+      **Ours after all:** a call passed on to C# that never completed; found
+      and fixed in item 19.
 
 
 15. **Captured mutable locals as their contents (§6.4, 2026-10-27).** A
@@ -1888,8 +1890,58 @@ assignments in F# frames, live in VS.
     - **Verified live** (`Test-Debugger.ps1`, its new `ExpectType` checks;
       TestDebuggee built by main's `fsc`, §18): at break 1, `distance :
       float<m>`, `[ distance ] : float<m> list`, `ids : Ids`, and `xs : int
-      list` unchanged. The rest of the runs hung in VS after break 2 or 3, as in
-      item 14.
+      list` unchanged. All 3 runs pass, twice in a row, after item 19's fix.
+
+19. **The Locals hang (item 14), found and fixed (2026-11-02).** The probe
+    hung in 4 of 4 runs today, at breaks 1, 2 and 3: the Locals window
+    stayed "Busy..." and `Debugger.Go` never returned (devenv idle). With the
+    C# EE (`FSHARP_EE_CSHARP=1` in devenv's environment) all 3 runs passed.
+    A ClrMD snapshot of devenv's managed stacks showed no thread in our code:
+    a completion routine that never runs leaves no stack.
+    - **Tracing.** With `FSHARP_EE_TRACE=1` in devenv's environment, the
+      result provider and the frame decoder log each asynchronous call
+      (`GetResult`, `GetChildren`, `GetItems`, `GetFrameName`,
+      `GetFrameReturnType`), its completion, and whether it was still
+      pending when our method returned (`Log.trace`).
+    - **The cause.** For a value that is not an F# shape (`name: string`,
+      an `int`, a class), `GetResult` passed the call on to C# through
+      `clrValue.GetResult` on the caller's work list. That call always
+      returned pending: Concord ran C#'s part as the next item of the work
+      list, about 1 ms later on the same thread. When the Locals window
+      abandoned a refresh (the next watch expression came in the middle),
+      those items never ran, and their completion routines never ran: a
+      traced hang shows exactly the rows passed to C# (`x`, `captured`)
+      without a completion. VS waited for them before it continued the
+      debuggee. C# alone renders a row inside the work item itself, so
+      nothing is left queued.
+    - **The fix.** Every call we pass on to another component now runs on a
+      work list of our own, to completion (`DkmWorkList.Execute`;
+      `WorkLists.complete` in `src/Shared/WorkLists.fs`), and the caller's
+      request completes before our method returns. If that work list can't
+      run, the error is logged and the call goes on the caller's work list
+      as before. The calls:
+      - result provider: `GetResult` of a value C# renders (also with the F#
+        EE off), each row of an F# value's children, the Raw View row and
+        its children, an F# sequence's children, and `GetChildren` and
+        `GetItems` of results that are not ours;
+      - frame decoder: the frame's generic arguments, the argument values
+        of a call stack row, and C#'s name and return type when we have
+        none.
+
+      The frame decoder's continuations now also run inside its `try`, so
+      an exception there falls back to C# instead of losing the call.
+    - **Verified live.** `Test-Debugger.ps1` passed all 3 runs twice in a
+      row, with no call left pending. Its new checks cover the new paths:
+      - break 1 has a `Dictionary` local (`dict => Count = 2`): C#'s
+        `DebuggerDisplay` runs on our work list;
+      - the probe's new `-Expand` lists children: `point` (an F# record:
+        each field rendered by C#, and its Raw View), `dict` (C#'s children
+        and Raw View, with func-evaluated properties) and, at break 3,
+        `this` (a class's fields).
+    - **The probe's tracepoint check.** VS writes to the Debug pane
+      asynchronously, and one run read only 5 of the 10 lines when the
+      debuggee ended (all 10 were evaluated). The probe now reads the pane
+      again until the expected lines are there, for up to 10 s.
 
 **Next in M4**
 

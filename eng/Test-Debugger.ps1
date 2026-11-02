@@ -30,6 +30,8 @@ $runs = @(
                 '1: List.map (fun i -> i * 2) xs => [2; 4; 6]'
                 '1: fst tuple => 1'
                 '1: anon.Name => "anon"'
+                # C# renders it (its DebuggerDisplay), on the result provider's own work list.
+                '1: dict => Count = 2'
                 '1: undefinedName => !error'
                 '2: captured + x => 6'
                 # A captured mutable local is a ref cell; it reads as its contents.
@@ -43,6 +45,9 @@ $runs = @(
                 '5: delay * 2 => 2'
                 '6: List.map (fun i -> i * 2) xs => [2; 4; 6]'
             )
+            # Children from GetChildren: an F# record's fields (each rendered by C#) and its Raw View,
+            # C#'s own children of a Dictionary, and a class's fields.
+            Expand = @('1: point', '1: dict', '3: this')
             # F# types the CLR type has lost: a unit of measure, a type abbreviation.
             ExpectType = @(
                 '1: distance => float<m>'

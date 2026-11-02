@@ -34,3 +34,31 @@ let write (source: string) (message: string) =
         ()
 
 let exn (source: string) (context: string) (e: exn) = write source $"{context} failed: {e}"
+
+let private tracing = lazy (Environment.GetEnvironmentVariable "FSHARP_EE_TRACE" = "1")
+
+let private nextCall = ref 0
+
+/// An asynchronous call traced with FSHARP_EE_TRACE=1: its start, its completion, and whether it was
+/// still pending when the method that started it returned, each with the thread it ran on.
+type TracedCall(source: string, what: string) =
+    let id = if tracing.Value then Threading.Interlocked.Increment(&nextCall.contents) else 0
+    let mutable completed = false
+    let thread () = Threading.Thread.CurrentThread.ManagedThreadId
+
+    do
+        if tracing.Value then
+            write source $"#{id} {what} (thread {thread ()})"
+
+    member _.Completed() =
+        completed <- true
+
+        if tracing.Value then
+            write source $"#{id} completed (thread {thread ()})"
+
+    member _.Returned() =
+        if tracing.Value && not completed then
+            write source $"#{id} returned, pending (thread {thread ()})"
+
+/// Starts tracing a call (docs/DESIGN.md §17): to find a call whose completion routine never runs.
+let trace (source: string) (what: string) = TracedCall(source, what)

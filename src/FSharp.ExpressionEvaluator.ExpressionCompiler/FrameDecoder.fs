@@ -36,19 +36,16 @@ type FrameDecoder() =
     /// The frame's actual generic arguments (type's, then method's), when the method is generic.
     static let withTypeArguments (frame: DkmStackWalkFrame) (workList: DkmWorkList) md token (k: MetadataTypes.SigType list option -> unit) =
         if hasGenericParameters md token then
-            frame.GetClrGenericParameters(
-                workList,
-                DkmCompletionRoutine<_>(fun (r: DkmGetClrGenericParametersAsyncResult) ->
-                    let parsed =
-                        if r.ErrorCode = 0 && not (isNull r.ParameterTypeNames) then
-                            let names = List.ofSeq r.ParameterTypeNames
-                            let types = names |> List.choose MetadataTypes.parseTypeName
-                            if types.Length = names.Length then Some types else None
-                        else
-                            None
+            WorkLists.complete "FD" "generic arguments" workList (fun workList k -> frame.GetClrGenericParameters(workList, k)) (fun r ->
+                let parsed =
+                    if r.ErrorCode = 0 && not (isNull r.ParameterTypeNames) then
+                        let names = List.ofSeq r.ParameterTypeNames
+                        let types = names |> List.choose MetadataTypes.parseTypeName
+                        if types.Length = names.Length then Some types else None
+                    else
+                        None
 
-                    k parsed)
-            )
+                k parsed)
         else
             k None
 
@@ -78,30 +75,39 @@ type FrameDecoder() =
                     context.SymbolsConnection
                 )
 
-            context.GetFrameArguments(
-                workList,
-                frame,
-                DkmCompletionRoutine<_>(fun (r: DkmGetFrameArgumentsAsyncResult) ->
-                    if r.ErrorCode = 0 && not (isNull r.Arguments) then
-                        let values =
-                            [ for a in r.Arguments ->
-                                  match a with
-                                  | :? DkmSuccessEvaluationResult as s -> Some s.Value
-                                  | _ -> None ]
+            WorkLists.complete "FD" "argument values" workList (fun workList k -> context.GetFrameArguments(workList, frame, k)) (fun r ->
+                if r.ErrorCode = 0 && not (isNull r.Arguments) then
+                    let values =
+                        [ for a in r.Arguments ->
+                              match a with
+                              | :? DkmSuccessEvaluationResult as s -> Some s.Value
+                              | _ -> None ]
 
-                        for a in r.Arguments do
-                            a.Close()
+                    for a in r.Arguments do
+                        a.Close()
 
-                        k (Some values)
-                    else
-                        k None)
-            )
+                    k (Some values)
+                else
+                    k None)
         else
             k None
 
     interface IDkmLanguageFrameDecoder with
 
         member _.GetFrameName(inspectionContext, workList, frame, argumentFlags, completionRoutine) =
+            let call = Log.trace "FD" $"GetFrameName [{argumentFlags}]"
+            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+
+            let completionRoutine =
+                DkmCompletionRoutine<DkmGetFrameNameAsyncResult>(fun r ->
+                    call.Completed()
+                    completionRoutine.Invoke r)
+
+            // C#'s name, run to completion before we return, as every call we pass on (WorkLists.fs).
+            let csharpName () =
+                WorkLists.complete "FD" "C# frame name" workList (fun workList k ->
+                    inspectionContext.GetFrameName(workList, frame, argumentFlags, k)) completionRoutine.Invoke
+
             match frame.InstructionAddress with
             | :? DkmClrInstructionAddress as address when Settings.enabled () ->
                 startSession address
@@ -130,13 +136,25 @@ type FrameDecoder() =
                             | Some name ->
                                 log $"GetFrameName [{argumentFlags}] {name}"
                                 completionRoutine.Invoke(DkmGetFrameNameAsyncResult(name))
-                            | None -> inspectionContext.GetFrameName(workList, frame, argumentFlags, completionRoutine)))
+                            | None -> csharpName ()))
                 with e ->
                     Log.exn "FD" "GetFrameName" e
-                    inspectionContext.GetFrameName(workList, frame, argumentFlags, completionRoutine)
-            | _ -> inspectionContext.GetFrameName(workList, frame, argumentFlags, completionRoutine)
+                    csharpName ()
+            | _ -> csharpName ()
 
         member _.GetFrameReturnType(inspectionContext, workList, frame, completionRoutine) =
+            let call = Log.trace "FD" "GetFrameReturnType"
+            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+
+            let completionRoutine =
+                DkmCompletionRoutine<DkmGetFrameReturnTypeAsyncResult>(fun r ->
+                    call.Completed()
+                    completionRoutine.Invoke r)
+
+            let csharpReturnType () =
+                WorkLists.complete "FD" "C# return type" workList (fun workList k ->
+                    inspectionContext.GetFrameReturnType(workList, frame, k)) completionRoutine.Invoke
+
             match frame.InstructionAddress with
             | :? DkmClrInstructionAddress as address when Settings.enabled () ->
                 try
@@ -147,8 +165,8 @@ type FrameDecoder() =
                         completionRoutine.Invoke(DkmGetFrameReturnTypeAsyncResult(MethodNames.returnTypeName md token typeArguments)))
                 with e ->
                     Log.exn "FD" "GetFrameReturnType" e
-                    inspectionContext.GetFrameReturnType(workList, frame, completionRoutine)
-            | _ -> inspectionContext.GetFrameReturnType(workList, frame, completionRoutine)
+                    csharpReturnType ()
+            | _ -> csharpReturnType ()
 
     interface IDkmLanguageInstructionDecoder with
 

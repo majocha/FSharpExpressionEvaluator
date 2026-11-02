@@ -77,7 +77,7 @@ let ``module suffix is dropped`` () =
 let ``anonymous records`` () =
     Assert.Equal("{| A: int; B: string |}", name (live {| A = 1; B = "x" |}).Type)
 
-let private column<'T> (value: obj) = FSharpValues.csharpTypeColumn (Some typeOf<'T>) (live value)
+let private column<'T> (value: obj) = FSharpValues.csharpTypeColumn None (Some typeOf<'T>) (live value)
 
 [<Fact>]
 let ``type column of values C# renders names FSharp.Core types in F#`` () =
@@ -90,8 +90,26 @@ let ``type column of values C# renders names FSharp.Core types in F#`` () =
     Assert.Equal(Some "seq<int>", column<seq<int>> (seq { 1..3 }))
     Assert.Equal(Some "obj {seq<int>}", column<obj> (seq { 1..3 }))
     Assert.Equal(Some "seq<int>", column<seq<int>> (seq { yield 1 }))
-    Assert.Equal(Some "seq<int>", FSharpValues.csharpTypeColumn None (live (seq { yield 1 })))
+    Assert.Equal(Some "seq<int>", FSharpValues.csharpTypeColumn None None (live (seq { yield 1 })))
     // Types without FSharp.Core in them keep C#'s names.
     Assert.Equal(None, column<seq<int>> (List<int>()))
     Assert.Equal(None, column<List<int>> (List<int>()))
     Assert.Equal(None, column<obj> "s")
+
+let private columnAs<'T> fsharpName (value: obj) =
+    FSharpValues.csharpTypeColumn (Some fsharpName) (Some typeOf<'T>) (live value)
+
+[<Fact>]
+let ``the expression compiler's F# type names the declared type`` () =
+    Assert.Equal(Some "float<m>", columnAs<float> "float<m>" 1.5)
+    Assert.Equal(Some "Ids", columnAs<List<int>> "Ids" (List<int>()))
+    Assert.Equal(Some "Ids", columnAs<List<int>> "Ids" null)
+    Assert.Equal(Some "Thing {string}", columnAs<obj> "Thing" "s")
+
+[<Fact>]
+let ``F# type info round-trips, and other payloads are ignored`` () =
+    let payload = FSharpTypes.TypeInfo.encode "float<m/s> list"
+    Assert.Equal(Some "float<m/s> list", FSharpTypes.TypeInfo.tryDecode FSharpTypes.TypeInfo.payloadId payload)
+    Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode (System.Guid.NewGuid()) payload)
+    Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode FSharpTypes.TypeInfo.payloadId (Array.append [| 2uy |] payload[1..]))
+    Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode FSharpTypes.TypeInfo.payloadId null)

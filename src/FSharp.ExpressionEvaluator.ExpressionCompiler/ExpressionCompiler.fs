@@ -21,6 +21,13 @@ type ExpressionCompiler() =
     static let compilerId =
         DkmCompilerId(DkmVendorId.Microsoft, Guid "AB4F38C9-B6E6-43BA-BE3B-58080B2CCCE3")
 
+    /// The result's F# type for the result provider's Type column (docs/DESIGN.md §6.8), when it
+    /// says more than the CLR type.
+    static let customTypeInfo (fsharpType: string option) =
+        match fsharpType with
+        | Some name -> DkmClrCustomTypeInfo.Create(FSharpTypes.TypeInfo.payloadId, ReadOnlyCollection(FSharpTypes.TypeInfo.encode name))
+        | None -> null
+
     static let query (runtime: DkmClrRuntimeInstance) (compiled: CompiledExpression) =
         let flag condition value =
             if condition then value else DkmClrCompilationResultFlags.None
@@ -43,7 +50,7 @@ type ExpressionCompiler() =
             Access = DkmEvaluationResultAccessType.None,
             StorageType = DkmEvaluationResultStorageType.None,
             TypeModifierFlags = DkmEvaluationResultTypeModifierFlags.None,
-            CustomTypeInfo = null
+            CustomTypeInfo = customTypeInfo compiled.FSharpType
         )
 
     /// The error while the session is still being built (docs/DESIGN.md §6.9): no C# instead, as it
@@ -93,7 +100,10 @@ type ExpressionCompiler() =
 
                     match result with
                     | Ok compiled ->
-                        log $"{what}: {compiled.ResultType}, {sw.ElapsedMilliseconds} ms"
+                        let fsharpType =
+                            compiled.FSharpType |> Option.map (fun t -> $" (Type column {t})") |> Option.defaultValue ""
+
+                        log $"{what}: {compiled.ResultType}{fsharpType}, {sw.ElapsedMilliseconds} ms"
                         Some(Ok(query address.RuntimeInstance compiled))
                     | Error diagnostics ->
                         let text = errorText diagnostics
@@ -170,7 +180,7 @@ type ExpressionCompiler() =
                                      else
                                          DkmClrCompilationResultFlags.None),
                                     DkmEvaluationResultCategory.Data,
-                                    null
+                                    customTypeInfo local.FSharpType
                                 ))
                             |> ResizeArray
 

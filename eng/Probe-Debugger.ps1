@@ -24,6 +24,8 @@ param(
     # Checks 'break: expression => value': the expression's value at that break, before any assignment,
     # as the Watch window shows it. The value '!error' expects the expression not to evaluate.
     [string[]] $Expect = @(),
+    # Checks 'break: expression => type': the expression's type at that break, as the Watch window shows it.
+    [string[]] $ExpectType = @(),
     # Lines the tracepoint must have written to the Debug pane.
     [string[]] $ExpectTrace = @(),
     # After the last break, the debuggee must run to its end without breaking again.
@@ -49,6 +51,10 @@ $Assign = @($Assign | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $expectations = @($Expect | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-Expect '$_' is not 'break: expression => value'." }
     [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Value = $Matches[3] }
+})
+$typeExpectations = @($ExpectType | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectType '$_' is not 'break: expression => type'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Type = $Matches[3] }
 })
 $ExpectTrace = @($ExpectTrace | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $failures = New-Object System.Collections.Generic.List[string]
@@ -247,7 +253,12 @@ $assigned = @{}
             }
         }
         $here = @($expectations | Where-Object { $_.Break -eq $i })
-        if ($here) { Write-Host '--- Checks' }
+        $hereTypes = @($typeExpectations | Where-Object { $_.Break -eq $i })
+        if ($here -or $hereTypes) { Write-Host '--- Checks' }
+        foreach ($check in $hereTypes) {
+            $e = $dte.Debugger.GetExpression($check.Text, $true, 10000)
+            Test-Check "break $i : $($check.Text) => type $($check.Type)" ($e.IsValidValue -and $e.Type -ceq $check.Type) $e.Type
+        }
         foreach ($check in $here) {
             $e = $dte.Debugger.GetExpression($check.Text, $true, 10000)
             if ($check.Value -eq '!error') {

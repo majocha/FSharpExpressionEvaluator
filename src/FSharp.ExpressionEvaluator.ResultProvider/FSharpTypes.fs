@@ -346,3 +346,23 @@ let displayType (t: IType) =
     match shape t with
     | UnionShape u -> u.Type
     | _ -> seqType t |> Option.defaultValue t
+
+/// The F# type of an expression's result, when it says more than the CLR type: units of measure
+/// (`float<m>`) and the user's type abbreviations (docs/DESIGN.md §6.8). The expression compiler
+/// sends it as Concord custom type info with this payload id; other providers ignore the id.
+module TypeInfo =
+
+    let payloadId = Guid "6C1B7F2E-3D5A-4E8B-9F0C-2A7D4E6B8C13"
+
+    let private version = 1uy
+
+    /// The payload: a version byte, then the type name in UTF-8.
+    let encode (typeName: string) =
+        Array.append [| version |] (Text.Encoding.UTF8.GetBytes typeName)
+
+    /// The type name of a payload, or None for another id or an unknown version.
+    let tryDecode (id: Guid) (payload: byte[]) =
+        if id = payloadId && not (isNull payload) && payload.Length > 1 && payload[0] = version then
+            Some(Text.Encoding.UTF8.GetString(payload, 1, payload.Length - 1))
+        else
+            None

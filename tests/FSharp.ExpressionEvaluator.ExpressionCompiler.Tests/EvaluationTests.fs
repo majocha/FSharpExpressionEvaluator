@@ -20,6 +20,20 @@ module EvalFixtures =
 
     let mutable moduleCounter = 7
 
+    [<Measure>]
+    type m
+
+    [<Measure>]
+    type s
+
+    type Ids = int list
+
+    let distance = 3.0<m>
+
+    let ids: Ids = [ 1; 2 ]
+
+    let idsByName: Map<string, Ids> = Map [ "a", ids ]
+
     let mutable private privateCounter = 8
 
     let add (x: int) (y: int) = x + y
@@ -303,6 +317,26 @@ let ``private module values are accessible from the frame's module`` () =
 let ``mutable module values`` () =
     Assert.Equal((box 7, "int"), evaluate (methodOf fixtures "add") [ 0; 0 ] "moduleCounter")
     Assert.Equal((box 8, "int"), evaluate (methodOf fixtures "add") [ 0; 0 ] "privateCounter")
+
+[<Fact>]
+let ``results carry their F# type when it says more than the CLR type`` () =
+    let fsharpType text =
+        match compile (methodOf fixtures "add") text with
+        | Ok compiled -> compiled.FSharpType
+        | Error diagnostics -> failwithf "%s: %A" text diagnostics
+
+    Assert.Equal(Some "float<m>", fsharpType "distance")
+    Assert.Equal(Some "float<m/s>", fsharpType "distance / 1.5<s>")
+    Assert.Equal(Some "float<m> list", fsharpType "[ distance ]")
+    Assert.Equal(Some "float<m>[,]", fsharpType "Array2D.create 1 1 distance")
+    Assert.Equal(Some "Ids", fsharpType "ids")
+    Assert.Equal(Some "Map<string, Ids>", fsharpType "idsByName")
+    Assert.Equal(Some "int * Ids", fsharpType "x, ids")
+    // What the CLR type already says: FSharp.Core's abbreviations, measures erased by arithmetic.
+    Assert.Equal(None, fsharpType "moduleValue")
+    Assert.Equal(None, fsharpType "float distance")
+    Assert.Equal(None, fsharpType "Map [ \"a\", 1 ]")
+    Assert.Equal(None, fsharpType "List.length ids")
 
 /// The top-level code of a file, in the `<StartupCode$…>` type named `typeName`.
 let private startupFrame typeName =

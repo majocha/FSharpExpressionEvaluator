@@ -73,7 +73,7 @@ changes to it: the evaluator's code that needs the compiler's internals lives he
 `eng\fsharp.commit` and builds it once, about 4 minutes, into `artifacts\fsharp-ee` (untracked, like the rest of
 `artifacts\`; `FSHARP_EE_CACHE` moves it). Then it copies the compiler to `artifacts\compiler`, built under its
 own name and with this repo's assemblies as friends (`eng\PrivateCompiler.targets`), and the same
-commit's `fsc` to `artifacts\fsc`, which compiles the tests' fixtures. To try another checkout,
+commit's `fsc` to `artifacts\fsc`, which compiles the tests' fixtures and TestDebuggee. To try another checkout,
 pass `-FSharpRepo <checkout>` (built once with `.\build.cmd -c Debug`).
 
 ## Roadmap

@@ -68,14 +68,28 @@ type ResultProvider() =
     static let lmrType (t: DkmClrType) =
         if isNull t then None else Lmr.safe None (fun () -> Some(LmrType.Of(t.GetLmrType())))
 
-    static let typeColumn (declared: IType option) (value: IValue) =
+    /// The F# type of an expression's result, from the expression compiler (docs/DESIGN.md §6.8).
+    static let fsharpTypeName (customTypeInfo: DkmClrCustomTypeInfo) =
+        match customTypeInfo with
+        | null -> None
+        | info ->
+            try
+                FSharpTypes.TypeInfo.tryDecode info.PayloadTypeId (Seq.toArray info.Payload)
+            with e ->
+                Log.exn "RP" "F# type info" e
+                None
+
+    /// The Type column; `fsharpName`, the expression's F# type, replaces the declared type's name.
+    static let typeColumn (fsharpName: string option) (declared: IType option) (value: IValue) =
+        let declaredName d = fsharpName |> Option.defaultWith (fun () -> FSharpTypes.typeName d)
+
         match declared with
         | Some d when not value.IsNull && FSharpTypes.shape d = FSharpTypes.NotFSharp ->
             // e.g. a list held in an `obj`: show both, as the C# provider does.
-            $"{FSharpTypes.typeName d} {{{FSharpTypes.typeName (FSharpTypes.displayType value.Type)}}}"
-        | _ -> FSharpValues.typeNameOf declared value
+            $"{declaredName d} {{{FSharpTypes.typeName (FSharpTypes.displayType value.Type)}}}"
+        | _ -> fsharpName |> Option.defaultWith (fun () -> FSharpValues.typeNameOf declared value)
 
-    static let tryCreate (clrValue: DkmClrValue) (declaredType: DkmClrType) context name fullName =
+    static let tryCreate (clrValue: DkmClrValue) (declaredType: DkmClrType) fsharpName context name fullName =
         let value = ConcordValue(clrValue, context) :> IValue
         let declared = lmrType declaredType
 
@@ -93,7 +107,7 @@ type ResultProvider() =
                 flags,
                 preview,
                 null,
-                typeColumn declared value,
+                typeColumn fsharpName declared value,
                 DkmEvaluationResultCategory.Data,
                 DkmEvaluationResultAccessType.None,
                 DkmEvaluationResultStorageType.None,
@@ -107,11 +121,13 @@ type ResultProvider() =
     /// C#'s result for a value we do not render, with F# names in the Type column when its type
     /// mentions FSharp.Core (`System.Threading.Tasks.Task<unit>`), and an F# preview for sequences
     /// (`seq [1; 2; 3]`), whose Results View stays C#'s.
-    static let retype (clrValue: DkmClrValue) (declaredType: DkmClrType) context (result: DkmEvaluationResult) =
+    static let retype (clrValue: DkmClrValue) (declaredType: DkmClrType) fsharpName context (result: DkmEvaluationResult) =
         match result with
         | :? DkmSuccessEvaluationResult as s ->
             let value = ConcordValue(clrValue, context) :> IValue
-            let typeName = FSharpValues.csharpTypeColumn (lmrType declaredType) value |> Option.defaultValue s.Type
+
+            let typeName =
+                FSharpValues.csharpTypeColumn fsharpName (lmrType declaredType) value |> Option.defaultValue s.Type
             let seqPreview = FSharpValues.trySeqPreview options value
             let preview = seqPreview |> Option.defaultValue s.Value
 
@@ -278,12 +294,14 @@ type ResultProvider() =
                 && not (hasSpecifier "raw" formatSpecifiers)
                 && not (hasSpecifier "results" formatSpecifiers)
 
+            let fsharpName = if fsharp then fsharpTypeName customTypeInfo else None
+
             let created =
                 if not fsharp then
                     None
                 else
                     try
-                        tryCreate clrValue declaredType inspectionContext resultName resultFullName
+                        tryCreate clrValue declaredType fsharpName inspectionContext resultName resultFullName
                     with e ->
                         Log.exn "RP" $"GetResult '{resultName}'" e
                         None
@@ -302,7 +320,7 @@ type ResultProvider() =
                                 | null -> r
                                 | result ->
                                     try
-                                        DkmEvaluationAsyncResult(retype clrValue declaredType inspectionContext result)
+                                        DkmEvaluationAsyncResult(retype clrValue declaredType fsharpName inspectionContext result)
                                     with e ->
                                         Log.exn "RP" $"Type column of '{resultName}'" e
                                         r

@@ -43,6 +43,13 @@ $runs = @(
                 '5: delay * 2 => 2'
                 '6: List.map (fun i -> i * 2) xs => [2; 4; 6]'
             )
+            # F# types the CLR type has lost: a unit of measure, a type abbreviation.
+            ExpectType = @(
+                '1: distance => float<m>'
+                '1: [ distance ] => float<m> list'
+                '1: ids => Ids'
+                '1: xs => int list'
+            )
             # A closure's captured value, a parameter and a class let field.
             Assign = @('captured=42', 'by=5', 'count=100')
         }

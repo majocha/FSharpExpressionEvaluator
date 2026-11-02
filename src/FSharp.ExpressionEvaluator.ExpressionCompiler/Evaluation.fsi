@@ -101,6 +101,10 @@ type CompiledExpression =
         /// The F# type of the result, for display.
         ResultType: string
 
+        /// The F# type of the result when it says more than its CLR type (units of measure, type
+        /// abbreviations outside FSharp.Core), for the result provider's Type column.
+        FSharpType: string option
+
         /// Format specifiers that followed the expression (`x, h` gives `h`).
         FormatSpecifiers: string list
 
@@ -130,6 +134,9 @@ type CompiledLocal =
 
         /// The F# type of the variable, for display.
         ResultType: string
+
+        /// As `CompiledExpression.FSharpType`.
+        FSharpType: string option
 
         /// The variable can't be assigned to.
         ReadOnlyResult: bool

@@ -79,6 +79,7 @@ type CompiledExpression =
         TypeName: string
         MethodName: string
         ResultType: string
+        FSharpType: string option
         FormatSpecifiers: string list
         PotentialSideEffect: bool
         ReadOnlyResult: bool
@@ -91,6 +92,7 @@ type CompiledLocal =
         FullName: string
         MethodName: string
         ResultType: string
+        FSharpType: string option
         ReadOnlyResult: bool
     }
 
@@ -563,6 +565,48 @@ let private niceType (g: TcGlobals.TcGlobals) ty =
 
     nice ty
 
+/// The F# name of a result's type when it says more than its CLR type, from which the result
+/// provider names types on its own (docs/DESIGN.md §6.8): units of measure (`float<m>`) and type
+/// abbreviations outside FSharp.Core (`type Ids = int list`). Laid out as the result provider
+/// writes types: a space after the commas between generic arguments (`Map<string, Id>`), and
+/// `float<m>[,]` for NicePrint's `float<m> array2d`.
+let private fsharpTypeName (g: TcGlobals.TcGlobals) (denv: DisplayEnv) ty =
+    let isFSharpCore (tcref: TyconRef) =
+        match ccuOfTyconRef tcref with
+        | Some ccu -> ccuEq ccu g.fslibCcu
+        | None -> false
+
+    let rec saysMore ty =
+        match stripTyparEqns ty with
+        | TType_app(tcref, args, _) -> (tcref.IsTypeAbbrev && not (isFSharpCore tcref)) || List.exists saysMore args
+        | TType_fun(domain, range, _) -> saysMore domain || saysMore range
+        | TType_tuple(_, elements)
+        | TType_anon(_, elements) -> List.exists saysMore elements
+        | TType_measure _ -> true
+        | _ -> false
+
+    if saysMore ty then
+        let name =
+            Text.RegularExpressions.Regex.Replace(
+                NicePrint.prettyStringOfTyNoCx denv ty,
+                @" array(\d+)d\b",
+                fun m -> "[" + String(',', int m.Groups[1].Value - 1) + "]"
+            )
+
+        let text = Text.StringBuilder()
+
+        // Commas also separate the dimensions of an array type (`int[,]`), and stay as they are there.
+        name
+        |> String.iteri (fun i c ->
+            text.Append c |> ignore
+
+            if c = ',' && i + 1 < name.Length && name[i + 1] <> ',' && name[i + 1] <> ']' && name[i + 1] <> ' ' then
+                text.Append ' ' |> ignore)
+
+        Some(string text)
+    else
+        None
+
 /// The F# type for a CLR type name, looked up in the given assembly when it names one the
 /// session imports, otherwise in every imported assembly.
 let private resolveClrType
@@ -871,6 +915,7 @@ type private CompiledQuery =
         Name: string
         MethodName: string
         ResultType: string
+        FSharpType: string option
         PotentialSideEffect: bool
         /// A Locals variable an inner one of the same name shadows (`x (shadowed)`)
         Shadowed: bool
@@ -1434,6 +1479,7 @@ type EvaluationSession
                 TypeName = QueryTypeName
                 MethodName = query.MethodName
                 ResultType = query.ResultType
+                FSharpType = query.FSharpType
                 FormatSpecifiers = formatSpecifiers
                 PotentialSideEffect = query.PotentialSideEffect
                 ReadOnlyResult = query.ReadOnlyResult
@@ -1452,6 +1498,7 @@ type EvaluationSession
                 TypeName = QueryTypeName
                 MethodName = query.MethodName
                 ResultType = query.ResultType
+                FSharpType = query.FSharpType
                 FormatSpecifiers = []
                 PotentialSideEffect = query.PotentialSideEffect
                 ReadOnlyResult = query.ReadOnlyResult
@@ -1472,6 +1519,7 @@ type EvaluationSession
                             FullName = if q.Shadowed then $"``{q.Name}``" else q.Name
                             MethodName = q.MethodName
                             ResultType = q.ResultType
+                            FSharpType = q.FSharpType
                             ReadOnlyResult = q.ReadOnlyResult
                         })
             })
@@ -2376,6 +2424,7 @@ type EvaluationSession
                             Name = name
                             MethodName = methodName
                             ResultType = NicePrint.prettyStringOfTyNoCx denv ty
+                            FSharpType = fsharpTypeName g denv ty
                             PotentialSideEffect = mayHaveSideEffects g body
                             Shadowed = shadowedNames.Contains name
                             ReadOnlyResult =

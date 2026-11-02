@@ -12,6 +12,16 @@ type Shape =
 
 let moduleList = [ 10; 20; 30 ]
 
+[<Measure>]
+type m
+
+/// The CLR type has neither: the Type column shows them from the expression compiler's F# type.
+type Ids = int list
+
+let distance = 3.0<m>
+
+let ids: Ids = [ 1; 2 ]
+
 type Five =
     | P
     | Q of int

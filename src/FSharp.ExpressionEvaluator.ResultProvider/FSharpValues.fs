@@ -329,19 +329,22 @@ let rec private mentionsFSharpCore (t: IType) =
 
 /// F# Type column for a value the C# provider renders, when its type mentions FSharp.Core types,
 /// which C# spells `Task<Microsoft.FSharp.Core.Unit>`, or it is an F# sequence (`seq<int>`, not its
-/// closure class). Laid out as C# does: the declared type, then the runtime type in braces when it
-/// differs (never for `Nullable`, whose values box as the inner type).
-let csharpTypeColumn (declared: IType option) (v: IValue) =
+/// closure class), or the expression compiler gave its F# type (`fsharpName`, which replaces the
+/// declared type's name). Laid out as C# does: the declared type, then the runtime type in braces
+/// when it differs (never for `Nullable`, whose values box as the inner type).
+let csharpTypeColumn (fsharpName: string option) (declared: IType option) (v: IValue) =
     let isSeq = not v.IsNull && (seqType v.Type).IsSome
     let runtime = if v.IsNull then None else Some(displayType v.Type)
+    let declaredName d = fsharpName |> Option.defaultWith (fun () -> typeName d)
 
     match declared, runtime with
-    | Some d, Some r when isSeq || mentionsFSharpCore d || mentionsFSharpCore r ->
+    | Some d, Some r when fsharpName.IsSome || isSeq || mentionsFSharpCore d || mentionsFSharpCore r ->
         if d.Native.Equals r.Native || typeName d = typeName r || d.DefinitionName = "System.Nullable`1" then
-            Some(typeName d)
+            Some(declaredName d)
         else
-            Some $"{typeName d} {{{typeName r}}}"
-    | Some d, None when mentionsFSharpCore d -> Some(typeName d)
+            Some $"{declaredName d} {{{typeName r}}}"
+    | Some d, None when fsharpName.IsSome || mentionsFSharpCore d -> Some(declaredName d)
+    | None, _ when fsharpName.IsSome -> fsharpName
     | None, Some r when isSeq || mentionsFSharpCore r -> Some(typeName r)
     | _ -> None
 

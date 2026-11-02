@@ -2089,8 +2089,12 @@ assignments in F# frames, live in VS.
     - **Other cases.** §5.4 planned `Unchecked.defaultof<_>` for the other
       cases. `failwith` is used instead, so that a watch whose value has
       changed case shows an error, not a wrong default.
-    - **Edits.** A `match` is not a target of an assignment, so these rows
-      are still not editable (item 23).
+    - **Edits.** Union values are immutable in F#, and a `match` is not a
+      target of an assignment, so these rows are not editable, by design.
+      A trial version compiled the edit as `(match u with C (_, x) -> x <- v
+      | _ -> …)`, ignored FS0027 and turned the store to `x` into a store to
+      the field. It was dropped, because it gives a meaning to F# that is
+      not valid.
     - **Tests.** `union case fields, named by a match on the case`, `union
       fields of single-case, struct and FSharp.Core unions`, and `the result
       provider's full names of union case fields compile`, which evaluates

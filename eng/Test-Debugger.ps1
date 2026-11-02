@@ -67,9 +67,10 @@ $runs = @(
             ExpectLog = @('TestDebuggee.Program.closure (start: float<m>)')
             # Compiler temporaries under one Locals row: here `function`'s argument.
             ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]')
-            # A parameter of a unit-of-measure type (edited without the unit), a closure's captured
-            # value, a parameter and a class let field.
-            Assign = @('trip=4.5', 'captured=42', 'by=5', 'count=100')
+            # A parameter of a unit-of-measure type (edited without the unit), a record's immutable
+            # field (as an edit of its row under `point`), a closure's captured value, a parameter and
+            # a class let field.
+            Assign = @('trip=4.5', 'point.X=5', 'captured=42', 'by=5', 'count=100')
         }
     }
     @{

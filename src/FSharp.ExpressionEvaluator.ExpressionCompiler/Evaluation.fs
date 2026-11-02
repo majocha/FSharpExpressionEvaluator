@@ -2457,7 +2457,12 @@ type EvaluationSession
             // In a generic frame the checker sees the frame's typars as free in `<>m0` until
             // `bindFrameValues` makes it generic over them, so its scope errors (FS3187, FS3188) wait for
             // the post-inference checks rerun on the rewritten tree.
-            let deferredErrors = if frameTypars.IsEmpty then [] else [ 3187; 3188 ]
+            // An assignment can also store to a field that isn't mutable (a record field, a class's
+            // `val`), as the debugger lets users edit any value (§6.6): the checker reports FS0005 as a
+            // recoverable error and still builds the store, which IlxGen emits to the backing field.
+            let deferredErrors =
+                (if frameTypars.IsEmpty then [] else [ 3187; 3188 ])
+                @ (if assigning then [ 5 ] else [])
 
             let! tcState, topAttrs, implFile, denv =
                 withDiagnosticsIgnoring deferredErrors BuildPhase.TypeCheck (fun () ->

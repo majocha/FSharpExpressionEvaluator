@@ -1310,7 +1310,7 @@ surgery than planned:
       frame values. Otherwise the optimizer turns a mutable value used in an
       inner lambda (the curried frame parameters) into a ref cell.
     - **Not yet:**
-      - immutable record fields;
+      - immutable record fields (done in §17, item 23);
       - Immediate-window variables (Roslyn writes them through
         `GetVariableAddress<T>`).
     - Code generation for queries no longer runs in parallel.
@@ -2051,6 +2051,28 @@ assignments in F# frames, live in VS.
       has a parameter `start: float<m>`. The probe's new `-ExpectLog` checks
       the EE log of its run for `TestDebuggee.Program.closure (start:
       float<m>)`. All 3 runs pass on net10.0 and net48.
+
+23. **Edits of immutable fields (§6.6, 2026-11-02).** An edit of a record
+    field's row (`point` / `X` in Locals) compiles `point.X <- 5`. The
+    checker rejected it with FS0005 ("This field is not mutable").
+    - **The fix.** The checker reports FS0005 as a recoverable error and
+      still builds the store. IlxGen emits the store to the backing field
+      (`X@`). So an assignment now ignores FS0005, as it already makes the
+      frame's values mutable. The same applies to a class's `val` fields.
+      Expressions still get FS0005, as in source.
+    - **Limits.**
+      - An anonymous record's field gives FS0799 ("Invalid assignment"), a
+        hard error without a typed tree. So these fields are still not
+        editable.
+      - Union case fields are not editable. The result provider names
+        their rows with C# casts (`((Ns.Shape.Circle)shape).radius`), which
+        F# does not parse. These rows need an F# full name first.
+      - Struct records are not tested.
+    - **Tests.** `assignment to immutable fields, as the debugger edits
+      values`: a record field and a class's `val` field, observed on the
+      objects, and FS0005 for the same store as an expression.
+    - **Verified live.** `Test-Debugger.ps1` edits `point.X` to `5` at
+      break 1 and reads it back. All 3 runs pass on net10.0 and net48.
 
 **Next in M4**
 

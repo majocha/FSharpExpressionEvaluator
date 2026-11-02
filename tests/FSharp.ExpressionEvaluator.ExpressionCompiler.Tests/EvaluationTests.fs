@@ -91,6 +91,15 @@ module EvalFixtures =
 
     let countersParameter (counter: Counter) (counters: Counter list) = counter.Start + counters.Length
 
+    type Point = { X: int; Y: int }
+
+    type Pair =
+        val First: int
+        new(first) = { First = first }
+
+    /// Immutable fields: a record's and a class's `val`.
+    let withFields (point: Point) (pair: Pair) = point.X + pair.First
+
     let makeClosure () =
         let captured = 5
         fun (x: int) -> captured + x
@@ -762,6 +771,23 @@ let ``assignment to fields of this`` () =
     Assert.Equal("unit", compiled.ResultType)
     (queryMethod compiled).Invoke(null, [| box account; box 6 |]) |> ignore
     Assert.Equal(42, account.Deposit 0)
+
+[<Fact>]
+let ``assignment to immutable fields, as the debugger edits values`` () =
+    let withFields = methodOf fixtures "withFields"
+    let point = { EvalFixtures.X = 1; EvalFixtures.Y = 2 }
+    let pair = EvalFixtures.Pair 3
+    let args = [| box point; box pair |]
+
+    (queryMethod (assign true withFields "point.X" "10")).Invoke(null, args) |> ignore
+    (queryMethod (assign true withFields "pair.First" "30")).Invoke(null, args) |> ignore
+    Assert.Equal(10, point.X)
+    Assert.Equal(30, pair.First)
+
+    // Expressions still can't assign them, as in source.
+    match compile withFields "point.X <- 5" with
+    | Error diagnostics -> Assert.Contains(diagnostics, fun d -> d.Number = 5)
+    | Ok _ -> failwith "'point.X <- 5' should not check"
 
 [<Fact>]
 let ``assignment to a hoisted variable of a state machine`` () =

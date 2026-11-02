@@ -36,8 +36,10 @@ type StructUnion =
 
 exception MyError of code: int * string
 
-/// Break 1: a module function with locals of many F# shapes, and a parameter whose F# type IL has lost.
+/// Break 1: a module function with locals of many F# shapes, a parameter whose F# type IL has lost,
+/// and a local that shadows a parameter (Locals shows both).
 let inspect (xs: int list) (name: string) (trip: float<m>) =
+    let name = name.ToUpperInvariant()
     let point = { X = 1; Y = 2 }
     let shape = Circle 2.0
     let rect = Rect(1.0, 2.5)

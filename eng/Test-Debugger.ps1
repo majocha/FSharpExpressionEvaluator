@@ -33,6 +33,9 @@ $runs = @(
                 # C# renders it (its DebuggerDisplay), on the result provider's own work list.
                 '1: dict => Count = 2'
                 '1: undefinedName => !error'
+                # A local that shadows the parameter, and the parameter by its Locals row's full name.
+                '1: name => "TEST"'
+                '1: ``name (shadowed)`` => "test"'
                 '2: captured + x => 6'
                 # A captured mutable local is a ref cell; it reads as its contents.
                 '2: counter => 1'
@@ -59,7 +62,7 @@ $runs = @(
                 '1: trip => float<m>'
                 '1: trip / 2.0 => float<m>'
             )
-            ExpectLocalType = @('1: trip => float<m>', '1: xs => int list')
+            ExpectLocalType = @('1: trip => float<m>', '1: xs => int list', '1: name (shadowed) => string', '1: name => string')
             # Compiler temporaries under one Locals row: here `function`'s argument.
             ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]')
             # A parameter of a unit-of-measure type (edited without the unit), a closure's captured

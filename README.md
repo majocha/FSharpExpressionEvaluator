@@ -66,6 +66,21 @@ FSharp.Core's inline functions, private members and module values, F# errors (`F
 aliases (`$exception`), format specifiers and assignment. The Locals window comes
 from the F# compiler too.
 
+**Locals and types in F# frames** (M5). Locals shows the variables as the source has them:
+
+| In Locals | Why |
+|---|---|
+| `captured`, `counter` in a closure | a closure's captured values, as variables of the frame |
+| `doubled` in `task { }` or `seq { }` | the hoisted variables of the state machine, without its plumbing fields |
+| `counter = 1 : int` | a captured `let mutable` reads and writes as its value, not as a ref cell |
+| `name (shadowed)`, `name` | a variable that an inner one of the same name hides |
+| `trip : float<m>`, `ids : Ids` | units of measure and type abbreviations, from the F# signature |
+| `[compiler generated]` | one collapsed row for the compiler's own variables, such as `function`'s `_arg1` |
+
+The Type column shows units of measure and abbreviations for expressions too
+(`distance / 1.5<s>` is `float<m/s>`). For locals other than parameters, the PDB records
+only IL types, so these show the CLR type.
+
 **Building.** The private compiler is FSharp.Compiler.Service from `dotnet/fsharp`, with no
 changes to it: the evaluator's code that needs the compiler's internals lives here
 (`Evaluation.fs`; [docs/FCS-INTERNALS.md](docs/FCS-INTERNALS.md) lists what it uses). Run
@@ -85,7 +100,7 @@ pass `-FSharpRepo <checkout>` (built once with `.\build.cmd -c Debug`).
 | M2 | Frame and instruction decoder: F# call stack names | done |
 | M3 | F# expression compiler core (first in a `dotnet/fsharp` branch, now in this repo) | done |
 | M4 | Concord integration: Watch, Immediate, conditions, Locals, assignment | in progress |
-| M5 | Closures, state machines and compiler temporaries in Locals; custom type info | |
+| M5 | Closures, state machines and compiler temporaries in Locals; custom type info | done |
 | M6 | Upstream PDB improvements in `dotnet/fsharp` | |
 
 The design, the reasoning behind it, and the results of each milestone are in
@@ -154,7 +169,9 @@ powershell -File eng\Test-Debugger.ps1 -Target net10.0
 `Test-Debugger.ps1` runs `Probe-Debugger.ps1` three times, with expected values. It checks
 watch values, assignments, a conditional breakpoint and a tracepoint, and exits with 1 when
 a check fails. `Probe-Debugger.ps1` takes the same checks: `-Expect 'break: expression => value'`,
-`-ExpectTrace` and `-ExpectEnd`.
+`-ExpectType 'break: expression => type'`, `-ExpectLocalType 'break: name => type'`,
+`-ExpectLocalChild 'break: row / child => value'`, `-Expand 'break: expression'`, `-ExpectTrace`
+and `-ExpectEnd`.
 
 The components log to `%FSHARP_EE_LOG%` if set, otherwise to
 `%LOCALAPPDATA%\FSharpExpressionEvaluator\ee.log`. `Probe-Debugger.ps1` sets

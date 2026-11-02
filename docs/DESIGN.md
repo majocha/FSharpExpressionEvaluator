@@ -1861,7 +1861,11 @@ assignments in F# frames, live in VS.
       `x (shadowed)` in the PDB (`let x = … in let x = …`, in the inner scope).
       Those count as shadowed `x` and are numbered with the others.
     - **Tests.** `locals list shadowed variables, read-only and named in
-      backticks`. Not yet verified live.
+      backticks`.
+    - **Verified live** (2026-11-02). At TestDebuggee's break 1, a local
+      `name` shadows the parameter `name`. Locals shows `name (shadowed) =
+      "test"` and `name = "TEST"`, and the expression ``name (shadowed)``
+      reads the parameter. All 3 runs pass on net10.0 and net48.
 
 18. **F# types in the Type column (§6.8, 2026-11-02).** The result
     provider names a value's type from its CLR type, which has lost units of
@@ -2013,6 +2017,9 @@ assignments in F# frames, live in VS.
       list through `function`. The probe's new `-ExpectLocalChild` expands
       the Locals row: `[compiler generated] / _arg1 = Some [1; 2; 3]`. All 3
       runs pass (net10.0).
+    - **net48.** Items 17 to 21 also pass all 3 runs for the net48 x86
+      debuggee. There, the result provider runs in msvsmon, and VS still
+      evaluates the intermediate results of the `[compiler generated]` row.
 
 **Next in M4**
 

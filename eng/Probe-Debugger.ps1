@@ -28,6 +28,8 @@ param(
     [string[]] $ExpectType = @(),
     # Checks 'break: name => type': the type of that Locals row at that break.
     [string[]] $ExpectLocalType = @(),
+    # Checks 'break: row / child => value': the value of a child of that Locals row at that break.
+    [string[]] $ExpectLocalChild = @(),
     # At these breaks ('break: expression'), expand the expression and list its children; fails without any.
     [string[]] $Expand = @(),
     # Lines the tracepoint must have written to the Debug pane.
@@ -67,6 +69,10 @@ $typeExpectations = @($ExpectType | ForEach-Object { $_ -split ';;' } | Where-Ob
 $localTypeExpectations = @($ExpectLocalType | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectLocalType '$_' is not 'break: name => type'." }
     [pscustomobject]@{ Break = [int]$Matches[1]; Name = $Matches[2]; Type = $Matches[3] }
+})
+$localChildExpectations = @($ExpectLocalChild | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*/\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectLocalChild '$_' is not 'break: row / child => value'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Row = $Matches[2]; Child = $Matches[3]; Value = $Matches[4] }
 })
 $ExpectTrace = @($ExpectTrace | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $failures = New-Object System.Collections.Generic.List[string]
@@ -269,7 +275,17 @@ $assigned = @{}
         $hereTypes = @($typeExpectations | Where-Object { $_.Break -eq $i })
         $hereExpand = @($expansions | Where-Object { $_.Break -eq $i })
         $hereLocalTypes = @($localTypeExpectations | Where-Object { $_.Break -eq $i })
-        if ($here -or $hereTypes -or $hereExpand -or $hereLocalTypes) { Write-Host '--- Checks' }
+        $hereLocalChildren = @($localChildExpectations | Where-Object { $_.Break -eq $i })
+        if ($here -or $hereTypes -or $hereExpand -or $hereLocalTypes -or $hereLocalChildren) { Write-Host '--- Checks' }
+        foreach ($check in $hereLocalChildren) {
+            # The children of a Locals row come from the result providers' GetChildren.
+            $row = @($locals | Where-Object { $_.Name -ceq $check.Row } | Select-Object -First 1)
+            $children = if ($row) { @(Get-Items $row[0].DataMembers ([EnvDTE.Expressions])) } else { @() }
+            foreach ($child in $children) { Show-Value $child '    ' }
+            $child = @($children | Where-Object { $_.Name -ceq $check.Child } | Select-Object -First 1)
+            $actual = if ($child) { $child[0].Value } elseif ($row) { 'no such child' } else { 'no such row' }
+            Test-Check "break $i : Locals row $($check.Row) / $($check.Child) => $($check.Value)" ($child -and $actual -ceq $check.Value) $actual
+        }
         foreach ($check in $hereLocalTypes) {
             $row = @($locals | Where-Object { $_.Name -ceq $check.Name } | Select-Object -First 1)
             $actual = if ($row) { $row[0].Type } else { 'no such row' }

@@ -108,13 +108,16 @@ let work (delay: int) =
 
 let twice x = x * 2
 
-/// Break 6: steps over an F# function and a BCL call (see their return values).
-let returns () =
-    let xs = [ 1; 2; 3 ]
-    Debugger.Break()
-    let n = twice (List.length xs)
-    let s = String.Concat("a", string n)
-    s
+/// Break 6: steps over an F# function and a BCL call (see their return values). The list is the
+/// argument of `function`, `_arg1`, which Locals lists under its `[compiler generated]` row.
+let returns (label: string) =
+    function
+    | Some(xs: int list) ->
+        Debugger.Break()
+        let n = twice (List.length xs)
+        let s = String.Concat(label, string n)
+        s
+    | None -> label
 
 /// Break 7: no Debugger.Break here; Probe-Debugger.ps1 sets a conditional breakpoint or a tracepoint
 /// on the marked line.
@@ -143,6 +146,6 @@ let main argv =
     Counter(10).Increment 2 |> ignore
     generic [ 1; 2 ] (3, "c") |> ignore
     (work 1).Wait()
-    returns () |> ignore
+    returns "a" (Some [ 1; 2; 3 ]) |> ignore
     loop () |> ignore
     0

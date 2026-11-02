@@ -44,6 +44,14 @@ type internal SequenceRowsData(rows: DkmEvaluationResult[]) =
     inherit DkmDataItem()
     member _.Rows = rows
 
+/// The Locals window's `[compiler generated]` row (docs/DESIGN.md §6.4): its value is a null `obj`, its
+/// children are the compiler temporaries, each evaluated as an expression.
+[<AllowNullLiteral>]
+type internal CompilerGeneratedData(clrValue: DkmClrValue, names: string list) =
+    inherit DkmDataItem()
+    member _.ClrValue = clrValue
+    member _.Names = names
+
 [<AllowNullLiteral>]
 type internal RowsData(parent: FSharpResultData, rows: Row[]) =
     inherit DkmDataItem()
@@ -78,6 +86,65 @@ type ResultProvider() =
             with e ->
                 Log.exn "RP" "F# type info" e
                 None
+
+    /// The compiler temporaries of the `[compiler generated]` row, from the expression compiler.
+    static let compilerGeneratedNames (customTypeInfo: DkmClrCustomTypeInfo) =
+        match customTypeInfo with
+        | null -> None
+        | info ->
+            try
+                FSharpTypes.CompilerGenerated.tryDecode info.PayloadTypeId (Seq.toArray info.Payload)
+            with e ->
+                Log.exn "RP" "compiler generated names" e
+                None
+
+    /// The `[compiler generated]` row: no value and no type of its own, and no full name, as no
+    /// expression stands for the group.
+    static let compilerGeneratedRow (clrValue: DkmClrValue) context name names =
+        DkmSuccessEvaluationResult.Create(
+            context,
+            clrValue.StackFrame,
+            name,
+            null,
+            DkmEvaluationResultFlags.ReadOnly ||| DkmEvaluationResultFlags.Expandable,
+            "",
+            null,
+            "",
+            DkmEvaluationResultCategory.Data,
+            DkmEvaluationResultAccessType.None,
+            DkmEvaluationResultStorageType.None,
+            DkmEvaluationResultTypeModifierFlags.None,
+            null,
+            null,
+            null,
+            CompilerGeneratedData(clrValue, names)
+        )
+
+    /// Children of the `[compiler generated]` row: each temporary as an expression for the debugger
+    /// to evaluate, as the Watch window does, so each row has its value, its full name and edits. This
+    /// component can't evaluate them itself: it is below the expression evaluators (component level
+    /// 63000), and Concord passes its calls only to components below it (E_NOTIMPL).
+    static let compilerGeneratedChildren (data: CompilerGeneratedData) initialRequestSize (context: DkmInspectionContext) =
+        let frame = data.ClrValue.StackFrame
+
+        let children =
+            data.Names
+            |> List.map (fun name ->
+                DkmIntermediateEvaluationResult.Create(
+                    context,
+                    frame,
+                    name,
+                    name,
+                    name,
+                    context.Language,
+                    frame.RuntimeInstance,
+                    null
+                )
+                :> DkmEvaluationResult)
+            |> Array.ofList
+
+        let enumContext = DkmEvaluationResultEnumContext.Create(children.Length, frame, context, SequenceRowsData children)
+        DkmGetChildrenAsyncResult(Array.truncate initialRequestSize children, enumContext)
 
     /// The Type column; `fsharpName`, the expression's F# type, replaces the declared type's name.
     static let typeColumn (fsharpName: string option) (declared: IType option) (value: IValue) =
@@ -324,11 +391,14 @@ type ResultProvider() =
                 if not fsharp then
                     None
                 else
-                    try
-                        tryCreate clrValue declaredType fsharpName inspectionContext resultName resultFullName
-                    with e ->
-                        Log.exn "RP" $"GetResult '{resultName}'" e
-                        None
+                    match compilerGeneratedNames customTypeInfo with
+                    | Some names -> Some(compilerGeneratedRow clrValue inspectionContext resultName names)
+                    | None ->
+                        try
+                            tryCreate clrValue declaredType fsharpName inspectionContext resultName resultFullName
+                        with e ->
+                            Log.exn "RP" $"GetResult '{resultName}'" e
+                            None
 
             match created with
             | Some result -> completionRoutine.Invoke(DkmEvaluationAsyncResult(result))
@@ -357,6 +427,14 @@ type ResultProvider() =
             use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
 
             match result.GetDataItem<FSharpResultData>(), result.GetDataItem<RawViewData>() with
+            | null, null when not (isNull (result.GetDataItem<CompilerGeneratedData>())) ->
+                try
+                    completionRoutine.Invoke(
+                        compilerGeneratedChildren (result.GetDataItem<CompilerGeneratedData>()) initialRequestSize inspectionContext
+                    )
+                with e ->
+                    Log.exn "RP" $"GetChildren '{result.Name}'" e
+                    completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
             | null, null ->
                 match result.GetDataItem<RetypedData>() with
                 | null ->
@@ -407,6 +485,8 @@ type ResultProvider() =
 
         member _.GetClrValue(successResult) =
             match successResult.GetDataItem<FSharpResultData>(), successResult.GetDataItem<RetypedData>() with
+            | null, null when not (isNull (successResult.GetDataItem<CompilerGeneratedData>())) ->
+                successResult.GetDataItem<CompilerGeneratedData>().ClrValue
             | null, null -> successResult.GetClrValue()
             | null, retyped -> (retyped.Original :?> DkmSuccessEvaluationResult).GetClrValue()
             | data, _ -> data.ClrValue

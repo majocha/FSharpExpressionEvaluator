@@ -366,3 +366,23 @@ module TypeInfo =
             Some(Text.Encoding.UTF8.GetString(payload, 1, payload.Length - 1))
         else
             None
+
+/// The compiler temporaries under the Locals window's `[compiler generated]` row (docs/DESIGN.md
+/// §6.4), as expressions name them. The expression compiler sends them as Concord custom type info
+/// of that row, with this payload id.
+module CompilerGenerated =
+
+    let payloadId = Guid "EDC0AEE5-090B-4926-AC47-0804F46C5132"
+
+    let private version = 1uy
+
+    /// The payload: a version byte, then the names in UTF-8, one per line (no F# name has a line break).
+    let encode (names: string list) =
+        Array.append [| version |] (Text.Encoding.UTF8.GetBytes(String.concat "\n" names))
+
+    /// The names of a payload, or None for another id or an unknown version.
+    let tryDecode (id: Guid) (payload: byte[]) =
+        if id = payloadId && not (isNull payload) && payload.Length > 1 && payload[0] = version then
+            Some(Text.Encoding.UTF8.GetString(payload, 1, payload.Length - 1).Split '\n' |> List.ofArray)
+        else
+            None

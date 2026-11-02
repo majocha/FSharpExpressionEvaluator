@@ -533,8 +533,8 @@ Hidden by default in Locals: names matching
 `matchValue`, `copyOfStruct`, `_arg\d+`, `tupledArg`, `patternInput`,
 `inputSequence`, `enumerator`, `activePatternResult\d+`, `resultOfApply`,
 `unitVar\d*`, `objectArg` and `struct copies`. They remain **bindable by
-name** in expressions. A setting shows them under a `[compiler generated]`
-node.
+name** in expressions. One collapsed `[compiler generated]` row lists them
+(§17, item 21), so no setting is necessary.
 
 ### 6.5 Locals window query
 
@@ -1979,6 +1979,40 @@ assignments in F# frames, live in VS.
       (`float<m>`), the Locals row's type (the probe's new
       `-ExpectLocalType`), and the edit `trip=4.5`. All 3 runs pass
       (net10.0).
+
+21. **The `[compiler generated]` row (§6.4, 2026-11-02).** Compiler
+    temporaries were left out of Locals, so the value that `function`
+    matches (its argument, `_arg1`) was not visible anywhere in Locals.
+    - **What is a temporary.** The names of §6.4 (`isHiddenLocalName`),
+      among the frame's parameters, a generated frame's own fields and its
+      locals. The PDB has no temporary locals: IlxGen gives a
+      compiler-generated local no scope (`AllocLocal`, `compgen`). So the
+      row lists parameters (`_arg1`, `unitVar0`) and closure fields.
+    - **The row.** When there are temporaries, the Locals query adds one
+      read-only row, `[compiler generated]`, last. Its query reads a null
+      `obj`. A first version read `()`, but a `unit` query compiles to a
+      `void` method, and VS showed "Expression has been evaluated and has no
+      value" without a call to the result provider.
+      Its custom type info has a second payload id
+      (`FSharpTypes.CompilerGenerated`) with the temporaries' names, as
+      expressions write them (``x@5`` in double backticks).
+    - **Its children.** The result provider shows the row with no value,
+      no type and no full name. When the row expands, each child is a
+      `DkmIntermediateEvaluationResult`: the name as an F# expression, which
+      the debugger evaluates as the Watch window does. Each child thus has
+      its value, full name and edits.
+    - **Not evaluated by the result provider.** A first version called
+      `DkmInspectionContext.EvaluateExpression` from `GetChildren`. That
+      call failed with `E_NOTIMPL`. The result provider is at component
+      level 63000, below the expression evaluators, and Concord passes a
+      component's calls only to components below it.
+    - **Not in** the call stack's argument values (`argumentsOnly`).
+    - **Tests.** `compiler temporaries are listed under one row`, and the
+      payload round trip.
+    - **Verified live.** TestDebuggee's break 6 (`returns`) now takes its
+      list through `function`. The probe's new `-ExpectLocalChild` expands
+      the Locals row: `[compiler generated] / _arg1 = Some [1; 2; 3]`. All 3
+      runs pass (net10.0).
 
 **Next in M4**
 

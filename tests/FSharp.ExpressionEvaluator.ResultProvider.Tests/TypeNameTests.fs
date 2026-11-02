@@ -113,3 +113,11 @@ let ``F# type info round-trips, and other payloads are ignored`` () =
     Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode (System.Guid.NewGuid()) payload)
     Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode FSharpTypes.TypeInfo.payloadId (Array.append [| 2uy |] payload[1..]))
     Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode FSharpTypes.TypeInfo.payloadId null)
+
+[<Fact>]
+let ``compiler generated names round-trip, and the F# type's payload is not them`` () =
+    let names = [ "_arg1"; "``x@5``" ]
+    let payload = FSharpTypes.CompilerGenerated.encode names
+    Assert.Equal(Some names, FSharpTypes.CompilerGenerated.tryDecode FSharpTypes.CompilerGenerated.payloadId payload)
+    Assert.Equal(None, FSharpTypes.CompilerGenerated.tryDecode FSharpTypes.TypeInfo.payloadId payload)
+    Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode FSharpTypes.CompilerGenerated.payloadId payload)

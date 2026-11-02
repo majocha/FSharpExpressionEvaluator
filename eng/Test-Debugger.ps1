@@ -44,6 +44,7 @@ $runs = @(
                 '4: value, pair => ([1; 2], (3, "c"))'
                 '5: delay * 2 => 2'
                 '6: List.map (fun i -> i * 2) xs => [2; 4; 6]'
+                '6: _arg1 => Some [1; 2; 3]'
             )
             # Children from GetChildren: an F# record's fields (each rendered by C#) and its Raw View,
             # C#'s own children of a Dictionary, and a class's fields.
@@ -59,6 +60,8 @@ $runs = @(
                 '1: trip / 2.0 => float<m>'
             )
             ExpectLocalType = @('1: trip => float<m>', '1: xs => int list')
+            # Compiler temporaries under one Locals row: here `function`'s argument.
+            ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]')
             # A parameter of a unit-of-measure type (edited without the unit), a closure's captured
             # value, a parameter and a class let field.
             Assign = @('trip=4.5', 'captured=42', 'by=5', 'count=100')

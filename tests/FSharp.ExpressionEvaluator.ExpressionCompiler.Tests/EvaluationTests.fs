@@ -54,6 +54,12 @@ module EvalFixtures =
         let label = "n" + string doubled
         doubled + label.Length
 
+    /// A parameter the compiler names: `function`'s argument, `_arg1`.
+    let withTemporaries (scale: int) =
+        function
+        | Some(n: int) -> n * scale
+        | None -> 0
+
     let shadowedOnce (x: int) =
         let x = x + 1
         x * 2
@@ -986,6 +992,34 @@ let ``locals of a function: parameters, then locals`` () =
 
     // Only the parameters, for the call stack's argument values
     Assert.Equal<string list>([ "x" ], localsOf (frameOf withLocals) withLocals [ 3; 6; "n6" ] true |> List.map (fun (n, _, _, _) -> n))
+
+[<Fact>]
+let ``compiler temporaries are listed under one row`` () =
+    let frameMethod = methodOf fixtures "withTemporaries"
+
+    let frame = frameOf frameMethod
+    // scale and _arg1 (parameters), then the local n
+    let args = [ box 2; box (Some 3); box 3 ]
+
+    // The temporaries are not rows of their own: one read-only row reads `null` and names them.
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "scale", box 2, "int", false; "n", box 3, "int", false; CompilerGeneratedRow, null, "obj", true ],
+        localsOf frame frameMethod args false
+    )
+
+    match session.Value.CompileLocals(frame, false) with
+    | Ok compiled ->
+        Assert.Equal<(string * string list) list>(
+            [ "scale", []; "n", []; CompilerGeneratedRow, [ "_arg1" ] ],
+            compiled.Locals |> List.map (fun l -> l.Name, l.CompilerGenerated)
+        )
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    // The result provider evaluates each name as an expression.
+    Assert.Equal((box (Some 3), "int option"), evaluate frameMethod args "_arg1")
+
+    // Not among the call stack's argument values.
+    Assert.Equal<string list>([ "scale" ], localsOf frame frameMethod args true |> List.map (fun (n, _, _, _) -> n))
 
 [<Fact>]
 let ``locals list shadowed variables, read-only and named in backticks`` () =

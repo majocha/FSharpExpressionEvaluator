@@ -140,6 +140,10 @@ type CompiledLocal =
 
         /// The variable can't be assigned to.
         ReadOnlyResult: bool
+
+        /// For the `[compiler generated]` row (`CompilerGeneratedRow`): the compiler temporaries
+        /// under it, as expressions name them (`matchValue`, ``x@5``). Empty for other rows.
+        CompilerGenerated: string list
     }
 
 /// The Locals window's query: an assembly with one method per variable.
@@ -149,6 +153,10 @@ type CompiledLocals =
         TypeName: string
         Locals: CompiledLocal list
     }
+
+/// The name of the Locals row that the compiler temporaries are listed under (docs/DESIGN.md §6.4).
+[<Literal>]
+val CompilerGeneratedRow: string = "[compiler generated]"
 
 /// A diagnostic from compiling an expression.
 type EvaluationDiagnostic =

@@ -28,6 +28,17 @@ type ExpressionCompiler() =
         | Some name -> DkmClrCustomTypeInfo.Create(FSharpTypes.TypeInfo.payloadId, ReadOnlyCollection(FSharpTypes.TypeInfo.encode name))
         | None -> null
 
+    /// A Locals row's custom type info: its F# type, or the temporaries under the
+    /// `[compiler generated]` row.
+    static let localTypeInfo (local: CompiledLocal) =
+        match local.CompilerGenerated with
+        | [] -> customTypeInfo local.FSharpType
+        | names ->
+            DkmClrCustomTypeInfo.Create(
+                FSharpTypes.CompilerGenerated.payloadId,
+                ReadOnlyCollection(FSharpTypes.CompilerGenerated.encode names)
+            )
+
     static let query (runtime: DkmClrRuntimeInstance) (compiled: CompiledExpression) =
         let flag condition value =
             if condition then value else DkmClrCompilationResultFlags.None
@@ -180,7 +191,7 @@ type ExpressionCompiler() =
                                      else
                                          DkmClrCompilationResultFlags.None),
                                     DkmEvaluationResultCategory.Data,
-                                    customTypeInfo local.FSharpType
+                                    localTypeInfo local
                                 ))
                             |> ResizeArray
 

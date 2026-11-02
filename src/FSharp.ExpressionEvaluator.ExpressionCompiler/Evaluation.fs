@@ -94,6 +94,7 @@ type CompiledLocal =
         ResultType: string
         FSharpType: string option
         ReadOnlyResult: bool
+        CompilerGenerated: string list
     }
 
 type CompiledLocals =
@@ -102,6 +103,9 @@ type CompiledLocals =
         TypeName: string
         Locals: CompiledLocal list
     }
+
+[<Literal>]
+let CompilerGeneratedRow = "[compiler generated]"
 
 type EvaluationDiagnostic =
     {
@@ -936,6 +940,8 @@ type private CompiledQuery =
         Shadowed: bool
         ReadOnlyResult: bool
         BoolResult: bool
+        /// For the `[compiler generated]` row: the temporaries under it, as expressions name them
+        CompilerGenerated: string list
     }
 
 /// A PE image holding only a metadata blob and embedded managed resources (at their original
@@ -1552,6 +1558,7 @@ type EvaluationSession
                             ResultType = q.ResultType
                             FSharpType = q.FSharpType
                             ReadOnlyResult = q.ReadOnlyResult
+                            CompilerGenerated = q.CompilerGenerated
                         })
             })
 
@@ -2289,6 +2296,29 @@ type EvaluationSession
 
             let shadowedNames = shadowedVariables |> List.map (fun (v, _) -> v.LogicalName) |> set
 
+            // Compiler temporaries (§6.4) are not rows of their own: the Locals window lists them,
+            // as expressions name them, under one `[compiler generated]` row. The row reads a null
+            // `obj`: a `unit` query compiles to a `void` method, which the debugger shows as having no
+            // value, without asking a result provider.
+            let compilerGenerated =
+                match request with
+                | QueryRequest.Locals false ->
+                    [
+                        for v in parameterVals do
+                            if isHiddenLocalName v.LogicalName then
+                                v.LogicalName
+                        if isGeneratedFrame then
+                            for name in ownFieldNames do
+                                if name <> "this" && isHiddenLocalName name then
+                                    name
+                        for v in localVals do
+                            if isHiddenLocalName v.LogicalName then
+                                v.LogicalName
+                    ]
+                    |> List.distinct
+                    |> List.map PrettyNaming.NormalizeIdentifierBackticks
+                | _ -> []
+
             let frameVals = thisVal @ parameterVals @ localVals
 
             // Assignments to frame values store to the query's arguments, which the frame's values
@@ -2331,9 +2361,15 @@ type EvaluationSession
                                 yield! frameRowNames
                             ]
 
-                    match List.distinct names with
-                    | [] -> [ "", "()" ]
-                    | names -> names |> List.map (fun name -> name, $"``{name}``")
+                    let rows =
+                        match List.distinct names with
+                        | [] -> [ "", "()" ]
+                        | names -> names |> List.map (fun name -> name, $"``{name}``")
+
+                    if compilerGenerated.IsEmpty then
+                        rows
+                    else
+                        rows @ [ CompilerGeneratedRow, "(null: obj)" ]
 
             let! parsed =
                 withDiagnostics BuildPhase.Parse (fun () ->
@@ -2505,6 +2541,7 @@ type EvaluationSession
                                 | Expr.Val(vref, _, _) -> not (vref.IsMutable || assignable.Contains vref.Stamp)
                                 | _ -> true
                             BoolResult = typeEquiv g ty g.bool_ty
+                            CompilerGenerated = if name = CompilerGeneratedRow then compilerGenerated else []
                         }
                     | _ -> failwith $"'{methodName}' not found in the checked query module")
 

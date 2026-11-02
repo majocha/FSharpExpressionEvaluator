@@ -46,6 +46,22 @@ let ``F# parameter types`` () =
     )
 
 [<Fact>]
+let ``F# signature types replace the IL ones they are given for`` () =
+    let describe = methodOf fixtures "describe"
+    // IL parameters: xs, f, pair_0, pair_1, o. A tuple is named from its elements.
+    let fsharpTypes = [ Some "Ids"; None; None; Some "float<m>"; None ]
+
+    Assert.Equal(
+        $"{ns}.describe (xs: Ids) (f: int -> string) (pair: int * float<m>) (o: int option)",
+        frameNameWithTypes md describe.MetadataToken namesAndTypes None fsharpTypes
+    )
+
+    Assert.Equal(
+        $"{ns}.describe (Ids) (int -> string) (int * float<m>) (int option)",
+        frameNameWithTypes md describe.MetadataToken { namesAndTypes with Names = false } None fsharpTypes
+    )
+
+[<Fact>]
 let ``tuple parameters of curried functions`` () =
     let describe = methodOf fixtures "describe"
     let values = Some [ Some "[1]"; Some "<fun>"; Some "1"; Some "\"a\""; Some "None" ]

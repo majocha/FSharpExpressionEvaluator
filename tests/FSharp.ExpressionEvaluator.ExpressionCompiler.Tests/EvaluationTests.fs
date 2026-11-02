@@ -966,6 +966,29 @@ let ``parameters have the F# types of the frame's function or member`` () =
     Assert.Equal(("Ids", Some "Ids"), typesOf (add 2) "route")
     Assert.Equal(("int", None), typesOf (add 1) "n")
 
+[<Fact>]
+let ``call stack type names come from the F# signature where it says more`` () =
+    let names (frameMethod: MethodBase) =
+        session.Value.SignatureTypeNames(Assembly.GetExecutingAssembly().GetName().Name, frameMethod.MetadataToken)
+
+    Assert.Equal<string option list * string option>(
+        ([ Some "float<m>"; Some "float<s>"; Some "Ids" ], Some "float<m/s>"),
+        names (methodOf fixtures "speed")
+    )
+
+    let add count =
+        typeof<EvalFixtures.Odometer>.GetMethods()
+        |> Array.find (fun m -> m.Name = "Add" && m.GetParameters().Length = count)
+
+    Assert.Equal<string option list * string option>(([ Some "float<m>"; Some "Ids" ], Some "float<m>"), names (add 2))
+    Assert.Equal<string option list * string option>(([ None ], None), names (add 1))
+    // Nothing more to say, and type variables: the IL names stay.
+    Assert.Equal<string option list * string option>(([ None; None ], None), names (methodOf fixtures "add"))
+    Assert.Equal<string option list * string option>(([ None ], None), names (methodOf fixtures "largest"))
+    // Not an F# value: a closure's Invoke.
+    let invoke = (EvalFixtures.makeClosure ()).GetType().GetMethod("Invoke", [| typeof<int> |])
+    Assert.Equal<string option list * string option>(([], None), names invoke)
+
 /// The Locals window's variables of a frame, with their values read by running each query method.
 let private localsOf (frame: FrameContext) (frameMethod: MethodBase) (args: obj list) argumentsOnly =
     match session.Value.CompileLocals(frame, argumentsOnly, localsAsParameters = true) with

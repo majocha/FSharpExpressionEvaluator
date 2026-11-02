@@ -24,6 +24,14 @@ type FrameDecoder() =
         with e ->
             Log.exn "FD" "warm-up" e
 
+    /// F# names for the frame method's parameter and return types, when the session is built.
+    static let signatureTypeNames (address: DkmClrInstructionAddress) =
+        try
+            Debuggee.signatureTypeNames address
+        with e ->
+            Log.exn "FD" "F# signature types" e
+            [], None
+
     static let metadata (m: DkmClrModuleInstance) =
         let mutable size = 0u
         let ptr = m.GetMetaDataBytesPtr(&size)
@@ -125,9 +133,12 @@ type FrameDecoder() =
                                     Values = values
                                 }
 
+                            let fsharpTypes =
+                                if format.Types then fst (signatureTypeNames address) else []
+
                             let name =
                                 try
-                                    Some(MethodNames.frameName md token format typeArguments)
+                                    Some(MethodNames.frameNameWithTypes md token format typeArguments fsharpTypes)
                                 with e ->
                                     Log.exn "FD" "GetFrameName" e
                                     None
@@ -162,7 +173,11 @@ type FrameDecoder() =
                     let token = address.MethodId.Token
 
                     withTypeArguments frame workList md token (fun typeArguments ->
-                        completionRoutine.Invoke(DkmGetFrameReturnTypeAsyncResult(MethodNames.returnTypeName md token typeArguments)))
+                        let name =
+                            snd (signatureTypeNames address)
+                            |> Option.defaultWith (fun () -> MethodNames.returnTypeName md token typeArguments)
+
+                        completionRoutine.Invoke(DkmGetFrameReturnTypeAsyncResult(name)))
                 with e ->
                     Log.exn "FD" "GetFrameReturnType" e
                     csharpReturnType ()
@@ -181,7 +196,10 @@ type FrameDecoder() =
                             Values = None
                         }
 
-                    MethodNames.frameName (metadata address.ModuleInstance) address.MethodId.Token format None
+                    let fsharpTypes =
+                        if format.Types then fst (signatureTypeNames address) else []
+
+                    MethodNames.frameNameWithTypes (metadata address.ModuleInstance) address.MethodId.Token format None fsharpTypes
                 with e ->
                     Log.exn "FD" "GetMethodName" e
                     languageInstructionAddress.GetMethodName argumentFlags

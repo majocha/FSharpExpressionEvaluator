@@ -176,14 +176,23 @@ let private memberName (md: MetadataReader) (m: MethodDefinition) (declaring: Ty
         | None, Some op -> $"({op})"
         | None, None -> name
 
-type private Parameter = { Name: string; Type: SigType }
+/// A parameter, with the F# name of its type when the F# signature says more than IL (`float<m>`).
+type private Parameter =
+    {
+        Name: string
+        Type: SigType
+        FSharpType: string option
+    }
+
+let private parameterTypeName (p: Parameter) =
+    p.FSharpType |> Option.defaultWith (fun () -> typeName p.Type)
 
 let private formatArgument (format: ArgumentFormat) (p: Parameter) (value: string option) =
     let text =
         match format.Names, format.Types with
-        | true, true -> $"{p.Name}: {typeName p.Type}"
+        | true, true -> $"{p.Name}: {parameterTypeName p}"
         | true, false -> p.Name
-        | false, true -> typeName p.Type
+        | false, true -> parameterTypeName p
         | false, false -> ""
 
     match value with
@@ -206,7 +215,24 @@ let private tupleParameter (group: Parameter list) =
             let tupleType =
                 Named({ Namespace = "System"; Name = $"Tuple`{group.Length}"; Declaring = None; Attributes = [] }, group |> List.map _.Type)
 
-            Some { Name = prefix; Type = tupleType }
+            // With an F# name for any element, the tuple is named from its elements' names.
+            let fsharpType =
+                if group |> List.exists _.FSharpType.IsSome then
+                    group
+                    |> List.map (fun p ->
+                        let name = parameterTypeName p
+                        if name.Contains "->" || name.Contains " * " then $"({name})" else name)
+                    |> String.concat " * "
+                    |> Some
+                else
+                    None
+
+            Some
+                {
+                    Name = prefix
+                    Type = tupleType
+                    FSharpType = fsharpType
+                }
         else
             None
     | _ -> None
@@ -267,8 +293,15 @@ let private argumentGroups (md: MetadataReader) (m: MethodDefinition) (declaring
     | _ -> [ parameterCount ]
 
 /// The frame name of a method, F#-style. `typeArguments` are the frame's actual generic arguments
-/// (type parameters first, then method parameters), when Concord provides them.
-let frameName (md: MetadataReader) (methodToken: int) (format: ArgumentFormat) (typeArguments: SigType list option) =
+/// (type parameters first, then method parameters), when Concord provides them. `fsharpTypes` are
+/// F# names for the parameters' types, in IL order, where the F# signature says more than IL.
+let frameNameWithTypes
+    (md: MetadataReader)
+    (methodToken: int)
+    (format: ArgumentFormat)
+    (typeArguments: SigType list option)
+    (fsharpTypes: string option list)
+    =
     let handle = MetadataTokens.MethodDefinitionHandle(methodToken &&& 0xFFFFFF)
     let m = md.GetMethodDefinition handle
     let declaringHandle = m.GetDeclaringType()
@@ -303,7 +336,11 @@ let frameName (md: MetadataReader) (methodToken: int) (format: ArgumentFormat) (
         let parameters =
             signature.ParameterTypes
             |> Seq.mapi (fun i t ->
-                { Name = names |> Map.tryFind (i + 1) |> Option.defaultValue $"arg{i}"; Type = substitute substitution t })
+                {
+                    Name = names |> Map.tryFind (i + 1) |> Option.defaultValue $"arg{i}"
+                    Type = substitute substitution t
+                    FSharpType = List.tryItem i fsharpTypes |> Option.flatten
+                })
             |> List.ofSeq
 
         let generics =
@@ -323,6 +360,10 @@ let frameName (md: MetadataReader) (methodToken: int) (format: ArgumentFormat) (
             if isClosure md declaring && name = "Invoke" then "" else "." + memberName md m declaring + generics
 
         typeName + member' + formatArguments format groups parameters
+
+/// The frame name of a method, F#-style, from metadata only.
+let frameName (md: MetadataReader) (methodToken: int) (format: ArgumentFormat) (typeArguments: SigType list option) =
+    frameNameWithTypes md methodToken format typeArguments []
 
 /// The F# name of a method's return type (`unit` for void).
 let returnTypeName (md: MetadataReader) (methodToken: int) (typeArguments: SigType list option) =

@@ -63,6 +63,8 @@ $runs = @(
                 '1: trip / 2.0 => float<m>'
             )
             ExpectLocalType = @('1: trip => float<m>', '1: xs => int list', '1: name (shadowed) => string', '1: name => string')
+            # A call stack name with a parameter's F# type, once the session is built (break 2).
+            ExpectLog = @('TestDebuggee.Program.closure (start: float<m>)')
             # Compiler temporaries under one Locals row: here `function`'s argument.
             ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]')
             # A parameter of a unit-of-measure type (edited without the unit), a closure's captured

@@ -612,19 +612,69 @@ let private fsharpTypeName (g: TcGlobals.TcGlobals) (denv: DisplayEnv) ty =
         None
 
 /// The F# types of a module function's or member's parameters, in the order of its compiled
-/// method's: curried groups and tupled arguments flattened, a lone `unit` and a member's `this`
-/// left out, as IlxGen compiles them. In terms of the value's own typars.
-let private compiledParameterTypes (g: TcGlobals.TcGlobals) (v: Val) numEnclosingTypars =
+/// method's (curried groups and tupled arguments flattened, a lone `unit` and a member's `this`
+/// left out, as IlxGen compiles them), and its return type (None for `unit`). In terms of the
+/// value's own typars.
+let private compiledSignature (g: TcGlobals.TcGlobals) (v: Val) numEnclosingTypars =
     match v.ValReprInfo with
     | Some valReprInfo ->
-        let _, _, curriedArgs, _, _ =
+        let _, _, curriedArgs, returnType, _ =
             match v.MemberInfo with
             | Some memberInfo ->
                 GetMemberTypeInMemberForm g memberInfo.MemberFlags valReprInfo numEnclosingTypars v.Type v.Range
             | None -> GetValReprTypeInCompiledForm g valReprInfo numEnclosingTypars v.Type v.Range
 
-        Some(curriedArgs |> List.concat |> List.map fst)
+        Some(curriedArgs |> List.concat |> List.map fst, returnType)
     | None -> None
+
+/// The F# value of a frame's method, when it is a module function or a member, with the F# types of
+/// its parameters and its return type (`compiledSignature`): found on its module, or on its type, by
+/// compiled name and number of typars and parameters, preferring an overload whose parameter types
+/// erase to the frame's IL types.
+let private tryFrameValue
+    (g: TcGlobals.TcGlobals)
+    (amap: Import.ImportMap)
+    (scope: ILScopeRef)
+    (entities: Entity list)
+    (enclosing: ILTypeDef list)
+    (methodDef: ILMethodDef)
+    =
+    let declaringType = List.last enclosing
+    let typarCount = declaringType.GenericParams.Length + methodDef.GenericParams.Length
+
+    match List.tryLast entities with
+    | Some entity when entities.Length = enclosing.Length ->
+        // A module's values are in its own table; a type's members on the type.
+        let candidates =
+            if entity.IsModuleOrNamespace then
+                Seq.toList entity.ModuleOrNamespaceType.AllValsAndMembers
+            else
+                entity.MembersOfFSharpTyconSorted |> List.map _.Deref
+
+        // Whether a parameter's F# type erases to its IL type; an IL type F# can't import
+        // doesn't count against the value.
+        let erasesTo (v: Val) fsharpType (p: ILParameter) =
+            try
+                let tinst = v.Typars |> List.map mkTyparTy
+                let ilType = Import.ImportILType amap range0 tinst (rescopeILType scope p.Type)
+                typeEquivAux EraseAll g fsharpType ilType
+            with _ ->
+                true
+
+        let matching =
+            candidates
+            |> List.filter (fun v ->
+                v.Typars.Length = typarCount
+                && v.CompiledName g.CompilerGlobalState = methodDef.Name)
+            |> List.choose (fun v ->
+                match compiledSignature g v declaringType.GenericParams.Length with
+                | Some(types, returnType) when types.Length = methodDef.Parameters.Length -> Some(v, types, returnType)
+                | _ -> None)
+
+        matching
+        |> List.tryFind (fun (v, types, _) -> List.forall2 (erasesTo v) types methodDef.Parameters)
+        |> Option.orElse (List.tryHead matching)
+    | _ -> None
 
 /// The F# type for a CLR type name, looked up in the given assembly when it names one the
 /// session imports, otherwise in every imported assembly.
@@ -1397,6 +1447,10 @@ type EvaluationSession
     let lexResourceManager = LexResourceManager()
     let amap = tcImports.GetImportMap()
 
+    // Call stack type names by frame method: the frame decoder asks for every frame it names.
+    let signatureTypeNames =
+        Collections.Concurrent.ConcurrentDictionary<string * int, string option list * string option>()
+
     interface IDisposable with
         member _.Dispose() =
             DebuggeeFileSystem.Instance.Remove files
@@ -1561,6 +1615,55 @@ type EvaluationSession
                             CompilerGenerated = q.CompilerGenerated
                         })
             })
+
+    member _.SignatureTypeNames(assemblyName: string, methodToken: int) =
+        signatureTypeNames.GetOrAdd(
+            (assemblyName, methodToken),
+            fun _ ->
+                let g = tcGlobals
+
+                try
+                    let dllInfo = tcImports.FindDllInfo(ctok, range0, assemblyName)
+
+                    let ccu =
+                        tcImports.GetImportedAssemblies()
+                        |> List.find (fun a -> a.ILScopeRef = dllInfo.ILScopeRef)
+                        |> _.FSharpViewOfMetadata
+
+                    match dllInfo.RawMetadata.TryGetILModuleDef() |> Option.bind (fun ilModule -> tryFindMethod ilModule methodToken) with
+                    | Some(enclosing, methodDef) ->
+                        let entities = fsharpEntities ccu enclosing
+
+                        match tryFrameValue g amap dllInfo.ILScopeRef entities enclosing methodDef with
+                        | Some(_, parameterTypes, returnType) ->
+                            // Named as in the frame's scope: FSharp.Core's namespaces and the frame's
+                            // enclosing modules are open.
+                            let fsharpCore =
+                                [ "Core"; "Collections"; "Control" ]
+                                |> List.fold (fun (denv: DisplayEnv) ns -> denv.AddOpenPath [ "Microsoft"; "FSharp"; ns ]) (DisplayEnv.Empty g)
+
+                            let denv =
+                                (fsharpCore, entities @ startupCodeModules ccu enclosing)
+                                ||> List.fold (fun denv e ->
+                                    if e.IsModuleOrNamespace then
+                                        denv.AddOpenPath(e.CompilationPath.MangledPath @ [ e.LogicalName ])
+                                    else
+                                        denv)
+
+                            // A type with type variables is left to the frame decoder, which names the
+                            // frame's actual type arguments.
+                            let name ty =
+                                if (freeInType CollectTypars ty).FreeTypars.IsEmpty then
+                                    fsharpTypeName g denv ty
+                                else
+                                    None
+
+                            parameterTypes |> List.map name, returnType |> Option.bind name
+                        | None -> [], None
+                    | None -> [], None
+                with _ ->
+                    [], None
+        )
 
     member this.WarmUp(assemblyName: string, methodToken: int) =
         // The frame as far as it is known without the debugger: no locals, opens or aliases.
@@ -1755,50 +1858,10 @@ type EvaluationSession
             // method is an F# value (a module function or a member), they are copies of its
             // typars, so they keep the F# constraints IL does not record (comparison, equality,
             // member constraints); a member's typars are its class's and then its own.
-            let typarCount = declaringType.GenericParams.Length + methodDef.GenericParams.Length
-
-            // The frame's F# value, with the F# types of its parameters as IL lists them: found by
-            // compiled name, number of typars and parameters, preferring an overload whose parameter
-            // types erase to the frame's.
+            // The frame's F# value, with the F# types of its parameters as IL lists them.
             let frameVal =
-                match List.tryLast entities with
-                | Some entity when entities.Length = enclosing.Length ->
-                    // A module's values are in its own table; a type's members on the type.
-                    let candidates =
-                        if entity.IsModuleOrNamespace then
-                            Seq.toList entity.ModuleOrNamespaceType.AllValsAndMembers
-                        else
-                            entity.MembersOfFSharpTyconSorted |> List.map _.Deref
-
-                    let ilTypeVars = List.init typarCount (fun i -> ILType.TypeVar(uint16 i))
-
-                    // Whether a parameter's F# type erases to its IL type; an IL type F# can't import
-                    // doesn't count against the value.
-                    let erasesTo (v: Val) fsharpType (p: ILParameter) =
-                        try
-                            let tinst = v.Typars |> List.map mkTyparTy
-
-                            let ilType =
-                                Import.ImportILType amap m tinst (rescopeILType dllInfo.ILScopeRef p.Type)
-
-                            typeEquivAux EraseAll g fsharpType ilType
-                        with _ ->
-                            true
-
-                    let matching =
-                        candidates
-                        |> List.filter (fun v ->
-                            v.Typars.Length = typarCount
-                            && v.CompiledName g.CompilerGlobalState = methodDef.Name)
-                        |> List.choose (fun v ->
-                            match compiledParameterTypes g v declaringType.GenericParams.Length with
-                            | Some types when types.Length = methodDef.Parameters.Length -> Some(v, types)
-                            | _ -> None)
-
-                    matching
-                    |> List.tryFind (fun (v, types) -> List.forall2 (erasesTo v) types methodDef.Parameters)
-                    |> Option.orElse (List.tryHead matching)
-                | _ -> None
+                tryFrameValue g amap dllInfo.ILScopeRef entities enclosing methodDef
+                |> Option.map (fun (v, parameterTypes, _) -> v, parameterTypes)
 
             let frameTypars, frameParameterTypes =
                 match frameVal with

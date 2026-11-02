@@ -178,12 +178,14 @@ type private SessionItem(modules: string, session: Task<EvaluationSession>) =
 /// modules out of the debuggee here, while it is stopped (the debugger's buffers of referenced
 /// assemblies go away when they load), then builds the session and warms it up in the frame on a
 /// thread-pool thread.
+/// What a session item is built for: the modules loaded in the AppDomain.
+let private modulesKey (modules: DkmClrModuleInstance[]) =
+    modules |> Array.map (fun m -> string m.Mvid) |> Array.sort |> String.concat ","
+
 let private sessionItem (address: DkmClrInstructionAddress) =
     let appDomain = address.ModuleInstance.AppDomain
     let modules = modulesInAppDomain address
-
-    let key =
-        modules |> Array.map (fun m -> string m.Mvid) |> Array.sort |> String.concat ","
+    let key = modulesKey modules
 
     match appDomain.GetDataItem<SessionItem>() with
     | item when not (isNull item) && item.Modules = key -> item
@@ -247,6 +249,20 @@ let session (timeout: TimeSpan) (address: DkmClrInstructionAddress) =
     else
         log $"session for AppDomain {address.ModuleInstance.AppDomain.Id}: still building after {timeout.TotalSeconds} s"
         None
+
+/// The F# names of the types of the frame method's parameters and return type, where the F#
+/// signature says more than IL (`EvaluationSession.SignatureTypeNames`). Only from a session that is
+/// built for the modules loaded now: the decoders neither wait for one nor start one (a breakpoint's
+/// name can be asked for while the debuggee runs), and name the types from IL until then.
+let signatureTypeNames (address: DkmClrInstructionAddress) =
+    match address.ModuleInstance.AppDomain.GetDataItem<SessionItem>() with
+    | item when
+        not (isNull item)
+        && item.Session.Status = TaskStatus.RanToCompletion
+        && item.Modules = modulesKey (modulesInAppDomain address)
+        ->
+        item.Session.Result.SignatureTypeNames(assemblyName address.ModuleInstance, address.MethodId.Token)
+    | _ -> [], None
 
 /// The frame's locals in scope at its IL offset and the namespaces open there, from the portable PDB.
 let private pdbScope (address: DkmClrInstructionAddress) =

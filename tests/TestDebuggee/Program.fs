@@ -73,8 +73,9 @@ let inspect (xs: int list) (name: string) (trip: float<m>) =
         "%A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %s %d %d"
         point shape rect five structUnion opt none someShape result tuple structTuple empty nested array map set anon cell error unitValue boxed (add 1 2) xs name longList.Length dict.Count
 
-/// Break 2: inside a closure that captures an immutable and a mutable local.
-let closure () =
+/// Break 2: inside a closure that captures an immutable and a mutable local. On the call stack,
+/// `closure` shows its parameter's F# type.
+let closure (start: float<m>) =
     let captured = 5
     let mutable counter = 0
 
@@ -144,7 +145,7 @@ let main argv =
     TestDebuggee.Settings.Checks.ready |> ignore
 
     inspect [ 1; 2; 3 ] "test" 2.5<m>
-    closure () |> ignore
+    closure 1.0<m> |> ignore
     Counter(10).Increment 2 |> ignore
     generic [ 1; 2 ] (3, "c") |> ignore
     (work 1).Wait()

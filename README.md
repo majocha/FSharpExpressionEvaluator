@@ -39,7 +39,7 @@ provider.
 **Call stack and breakpoint locations** in F# frames:
 
 ```
-Program.inspect (xs: int list) (name: string)
+Program.inspect (xs: int list) (name: string) (trip: float<m>)
 Program.generic<int list> (value: int list) (pair: int * string)
 Program.f@66 (x: int)
 Program.Counter.Increment (by: int)
@@ -47,7 +47,8 @@ Program.Counter.Increment (by: int)
 
 Names show curried argument groups, tuple parameters, `()`, operators and source names. They
 also show closures without `.Invoke`, the frame's actual generic arguments and, optionally,
-argument values.
+argument values. When the F# compiler has loaded the debuggee's assemblies (from the first
+break on), units of measure and type abbreviations come from the F# signature.
 
 **F# expressions in Watch, Immediate and DataTips** (M4, in progress). They are compiled by
 the F# compiler, an unmodified `dotnet/fsharp` built privately into the VSIX:

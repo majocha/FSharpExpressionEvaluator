@@ -639,8 +639,10 @@ are never retried as C#.
 
 Names come from module metadata (System.Reflection.Metadata over
 `GetMetaDataBytesPtr`). Type names are rendered by the result provider's own
-rules. FCS is not needed. Implemented in M2 (§15); "Shown" is with the Call
-Stack window's default Types+Names.
+rules. FCS is not needed for them. When the AppDomain's session is built, the
+F# signature replaces the parameter and return types that IL has lost
+(`float<m>`, `Ids`; §17, item 22). Implemented in M2 (§15); "Shown" is with
+the Call Stack window's default Types+Names.
 
 | Compiled | Shown |
 |---|---|
@@ -2020,6 +2022,35 @@ assignments in F# frames, live in VS.
     - **net48.** Items 17 to 21 also pass all 3 runs for the net48 x86
       debuggee. There, the result provider runs in msvsmon, and VS still
       evaluates the intermediate results of the `[compiler generated]` row.
+
+22. **F# types in call stack names (§7, 2026-11-02).** The frame decoder
+    names types from IL metadata, so `closure (start: float<m>)` showed
+    `closure (start: float)`.
+    - **From the session.** `EvaluationSession.SignatureTypeNames` finds the
+      frame method's F# value (item 20's lookup, now `tryFrameValue`) and
+      names its parameter and return types. A name is given only where the
+      F# type says more than the IL type (`fsharpTypeName`, item 18) and has
+      no type variables, because the frame decoder names the frame's actual
+      type arguments. The names are in the frame's scope: FSharp.Core's
+      namespaces and the enclosing modules are open. They are cached by
+      method.
+    - **No waiting.** The decoders use a session only when it is built for
+      the modules loaded now. They do not start one, because a breakpoint's
+      name can be asked for while the debuggee runs. Until the session is
+      built, the names come from IL, as before. So the first break's call
+      stack can show IL types.
+    - **Where.** Call stack names (`GetFrameName`), the frame's return type
+      (`GetFrameReturnType`) and breakpoint names (`GetMethodName`). A tuple
+      parameter with an F# element type is named from its elements
+      (`pair: int * float<m>`).
+    - **Tests.** `call stack type names come from the F# signature where it
+      says more` (a function, an overloaded member, nothing to add, a generic
+      function, a closure), and `F# signature types replace the IL ones they
+      are given for`.
+    - **Verified live.** TestDebuggee's `closure` (on the stack at break 2)
+      has a parameter `start: float<m>`. The probe's new `-ExpectLog` checks
+      the EE log of its run for `TestDebuggee.Program.closure (start:
+      float<m>)`. All 3 runs pass on net10.0 and net48.
 
 **Next in M4**
 

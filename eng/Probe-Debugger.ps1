@@ -32,6 +32,8 @@ param(
     [string[]] $ExpectLocalChild = @(),
     # At these breaks ('break: expression'), expand the expression and list its children; fails without any.
     [string[]] $Expand = @(),
+    # Text the EE log must have, in a line written during this run (e.g. a call stack name).
+    [string[]] $ExpectLog = @(),
     # Lines the tracepoint must have written to the Debug pane.
     [string[]] $ExpectTrace = @(),
     # After the last break, the debuggee must run to its end without breaking again.
@@ -157,6 +159,8 @@ function Wait-Until([scriptblock] $condition, [int] $seconds, [string] $what) {
 # Start (or reuse) the Exp instance, with the EE's spike switches in its environment.
 $env:FSHARP_EE_SPIKE_MARKERS = '1'
 $env:FSHARP_EE_LOG = $Log
+# -ExpectLog reads only what this run writes.
+$logStart = if (Test-Path $Log) { (Get-Item $Log).Length } else { 0 }
 $vs = Get-CimInstance Win32_Process -Filter "Name='devenv.exe'" |
     Where-Object { $_.ExecutablePath -eq $devenv -and $_.CommandLine -match '(?i)/rootsuffix\s+"?Exp' } | Select-Object -First 1
 $startedVs = $false
@@ -350,6 +354,20 @@ $assigned = @{}
 
     foreach ($assignment in $Assign) {
         if (-not $assigned[$assignment]) { Test-Check "$assignment at some break" $false 'the name evaluated at none' }
+    }
+
+    if ($ExpectLog) {
+        $written = ''
+        if (Test-Path $Log) {
+            $stream = [IO.File]::Open($Log, 'Open', 'Read', 'ReadWrite')
+            try {
+                [void]$stream.Seek([Math]::Min($logStart, $stream.Length), 'Begin')
+                $written = (New-Object IO.StreamReader($stream)).ReadToEnd()
+            } finally { $stream.Dispose() }
+        }
+        foreach ($text in $ExpectLog) {
+            Test-Check "the EE log has '$text'" ($written.Contains($text)) 'not in this run''s log'
+        }
     }
 
     if ($ExpectEnd -or $Tracepoint) {

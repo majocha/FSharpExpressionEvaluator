@@ -207,6 +207,12 @@ type EvaluationSession =
         frame: FrameContext * target: string * value: string * ?localsAsParameters: bool ->
             Result<CompiledExpression, EvaluationDiagnostic list>
 
+    /// The F# names of the types of a frame method's parameters, in IL order, and of its return type,
+    /// for the call stack (docs/DESIGN.md §7): Some where the F# type says more than the IL type
+    /// (units of measure, the user's abbreviations) and has no type variables, otherwise None. Empty
+    /// when the method is not an F# value. Cached by method.
+    member SignatureTypeNames: assemblyName: string * methodToken: int -> string option list * string option
+
     /// Compiles queries in a frame of the given method and throws them away, so that the first
     /// real ones find the imports they need loaded and the compiler's code compiled by the JIT
     /// (docs/DESIGN.md §6.9). Returns whether both compiled; errors are otherwise ignored.

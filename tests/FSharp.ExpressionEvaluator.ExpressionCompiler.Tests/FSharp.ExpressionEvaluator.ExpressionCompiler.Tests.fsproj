@@ -13,6 +13,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\Shared\Log.fs" Link="Core\Log.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\Model.fs" Link="Core\Model.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Core\FSharpTypes.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MetadataTypes.fs" Link="Core\MetadataTypes.fs" />

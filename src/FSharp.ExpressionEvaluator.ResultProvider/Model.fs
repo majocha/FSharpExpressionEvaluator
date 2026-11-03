@@ -34,6 +34,8 @@ type internal IType =
     abstract Properties: Property list
     /// Methods declared on this type itself (static and instance).
     abstract Methods: Method list
+    /// Whether this type's assembly defines a type of this full name (`Ns.Outer+Inner`).
+    abstract TypeExists: fullName: string -> bool
     /// The underlying LMR or reflection type, for identity and for creating Concord types.
     abstract Native: obj
 

@@ -38,7 +38,7 @@ $runs = @(
                 '1: ``name (shadowed)`` => "test"'
                 # The full names of union case fields' rows (Add Watch): a match on the case.
                 '1: (match rect with TestDebuggee.Program.Shape.Rect (_, x) -> x | _ -> failwith "not Rect") => 2.5'
-                '1: (match result with Error x -> x | _ -> failwith "not Error") => "failed"'
+                '1: (match result with Result.Error x -> x | _ -> failwith "not Error") => "failed"'
                 '2: captured + x => 6'
                 # A captured mutable local is a ref cell; it reads as its contents.
                 '2: counter => 1'

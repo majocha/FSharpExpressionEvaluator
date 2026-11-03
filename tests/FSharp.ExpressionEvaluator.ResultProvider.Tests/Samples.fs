@@ -26,6 +26,14 @@ type StructUnion =
     | SA of a: int
     | SB of b: string
 
+type Kind = Kind of int
+
+/// A module named as a type compiles as `KindModule`; source names it `Kind`.
+module Kind =
+    type Inner =
+        | InA of int
+        | InB
+
 type Gen<'T> =
     | GNone
     | GSome of 'T

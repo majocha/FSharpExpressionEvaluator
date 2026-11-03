@@ -227,6 +227,32 @@ let private ownArity (name: string) =
     | -1 -> 0
     | i -> int (name.Substring(i + 1))
 
+/// A type's own name as source writes it: no generic arity, and a module compiled with a `Module`
+/// suffix without it. The compiler adds the suffix for `[<CompilationRepresentation(ModuleSuffix)>]`,
+/// and also, with no attribute, to a module named as a type beside it (`type Shape` and
+/// `module Shape`), so that is checked for in the module's assembly.
+let private sourceName (t: IType) =
+    let n = stripArity t.Name
+
+    let isSuffixed () =
+        let baseName = n.Substring(0, n.Length - "Module".Length)
+
+        let scope =
+            match t.DeclaringType with
+            | Some d -> d.FullName + "+"
+            | None when String.IsNullOrEmpty t.Namespace -> ""
+            | None -> t.Namespace + "."
+
+        representationFlags t &&& moduleSuffixFlag <> 0
+        || (CompilationMapping.kind t.Attributes = Some CompilationMapping.Module
+            && [ 0..4 ]
+               |> List.exists (fun arity -> t.TypeExists(scope + baseName + (if arity = 0 then "" else $"`{arity}"))))
+
+    if n.EndsWith "Module" && n.Length > "Module".Length && isSuffixed () then
+        n.Substring(0, n.Length - "Module".Length)
+    else
+        n
+
 /// F# type name of a function type `a -> b`, from FSharpFunc or OptimizedClosures.FSharpFunc arguments.
 let private functionTypeArgs (t: IType) =
     Types.hierarchy t
@@ -298,13 +324,7 @@ and private tupleElementTypes (t: IType) =
 /// Namespace- and module-qualified name with F#-style generic arguments. For nested generic types
 /// the CLR repeats the enclosing type's arguments first; each level takes its own arity.
 and private nominal (t: IType) (args: IType list) =
-    let name =
-        let n = stripArity t.Name
-
-        if representationFlags t &&& moduleSuffixFlag <> 0 && n.EndsWith "Module" then
-            n.Substring(0, n.Length - "Module".Length)
-        else
-            n
+    let name = sourceName t
 
     let arity = ownArity t.Name
     let outerArgs = List.take (args.Length - arity) args
@@ -317,6 +337,14 @@ and private nominal (t: IType) (args: IType list) =
         | None -> t.Namespace + "."
 
     prefix + name + genericArgs ownArgs
+
+/// The F# path of a type as source names it, without generic arguments (`Ns.Shape.Kind` for
+/// `Ns.ShapeModule+Kind`).
+let rec sourcePath (t: IType) =
+    match t.DeclaringType with
+    | Some d -> sourcePath d + "." + sourceName t
+    | None when String.IsNullOrEmpty t.Namespace -> sourceName t
+    | None -> t.Namespace + "." + sourceName t
 
 /// Element types of a tuple type, with System.Tuple`8's Rest flattened.
 let tupleTypes (t: IType) = tupleElementTypes t

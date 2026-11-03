@@ -101,7 +101,8 @@ module EvalFixtures =
         | Circle of radius: float
         | Rect of float * float
 
-    let withUnions (shape: Shape) (rect: Shape) (result: Result<int, string>) = shape, rect, result
+    let withUnions (shape: Shape) (rect: Shape) (result: Result<int, string>) (choice: Choice<int, string>) =
+        shape, rect, result, choice
 
     /// Immutable fields: a record's and a class's `val`.
     let withFields (point: Point) (pair: Pair) = point.X + pair.First
@@ -798,12 +799,15 @@ let ``assignment to immutable fields, as the debugger edits values`` () =
 [<Fact>]
 let ``the result provider's full names of union case fields compile`` () =
     let withUnions = methodOf fixtures "withUnions"
-    let args = [ box (EvalFixtures.Circle 2.0); box (EvalFixtures.Rect(1.0, 2.5)); box (Ok 7: Result<int, string>) ]
+    let args =
+        [ box (EvalFixtures.Circle 2.0); box (EvalFixtures.Rect(1.0, 2.5)); box (Ok 7: Result<int, string>); box (Choice2Of2 "b": Choice<int, string>) ]
     let shape = "FSharp.ExpressionEvaluator.Tests.EvaluationTests.EvalFixtures.Shape"
 
     Assert.Equal((box 2.0, "float"), evaluate withUnions args $"(match shape with {shape}.Circle x -> x | _ -> failwith \"not Circle\")")
     Assert.Equal((box 2.5, "float"), evaluate withUnions args $"(match rect with {shape}.Rect (_, x) -> x | _ -> failwith \"not Rect\")")
-    Assert.Equal((box 7, "int"), evaluate withUnions args "(match result with Ok x -> x | _ -> failwith \"not Ok\")")
+    // FSharp.Core's cases, qualified by their F# type name.
+    Assert.Equal((box 7, "int"), evaluate withUnions args "(match result with Result.Ok x -> x | _ -> failwith \"not Ok\")")
+    Assert.Equal((box "b", "string"), evaluate withUnions args "(match choice with Choice.Choice2Of2 x -> x | _ -> failwith \"not Choice2Of2\")")
 
 [<Fact>]
 let ``assignment to a hoisted variable of a state machine`` () =

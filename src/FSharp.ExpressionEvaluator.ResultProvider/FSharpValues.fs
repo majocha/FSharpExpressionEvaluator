@@ -366,17 +366,20 @@ module FullNames =
     let index (parent: string) (i: int) = $"{parenthesize parent}[{i}]"
 
     /// A field of a union case value. F# code can't name a union case field as a member, so this
-    /// is a match on the case that binds the field by position. FSharp.Core's cases are named
-    /// unqualified (`Ok`, `Choice1Of2`), others by the union's path (`Program.Shape.Circle`).
+    /// is a match on the case that binds the field by position. The case is qualified, so that a
+    /// case of the same name in the frame's scope doesn't take its place: by the union's source path
+    /// (`Program.Shape.Circle`), and FSharp.Core's by their F# type name (`Result.Ok`).
     let caseField (parent: string) (union: UnionInfo) (case: UnionCase) (index: int) (count: int) =
-        let definition = union.Type.DefinitionName
-
-        let casePath =
-            if definition.StartsWith "Microsoft.FSharp." then
-                case.Name
+        let unionPath =
+            if union.Type.DefinitionName.StartsWith "Microsoft.FSharp." then
+                let name = typeName union.Type
+                match name.IndexOf '<' with
+                | -1 -> name
+                | i -> name.Substring(0, i)
             else
-                let path = Text.RegularExpressions.Regex.Replace(definition, @"`[0-9]+", "").Replace('+', '.')
-                $"{path}.{case.Name}"
+                sourcePath union.Type
+
+        let casePath = $"{unionPath}.{case.Name}"
 
         let pattern =
             if count = 1 then

@@ -2033,7 +2033,8 @@ assignments in F# frames, live in VS.
       no type variables, because the frame decoder names the frame's actual
       type arguments. The names are in the frame's scope: FSharp.Core's
       namespaces and the enclosing modules are open. They are cached by
-      method.
+      method. A failure is logged and cached as "no F# names", so that
+      method keeps its IL type names.
     - **No waiting.** The decoders use a session only when it is built for
       the modules loaded now. They do not start one, because a breakpoint's
       name can be asked for while the debuggee runs. Until the session is
@@ -2082,8 +2083,20 @@ assignments in F# frames, live in VS.
       name is a match on the case that binds the field by position:
       `(match shape with TestDebuggee.Program.Shape.Rect (_, x) -> x | _ ->
       failwith "not Rect")` (`FullNames.caseField`).
-      - The case is qualified by the union's path, without its generic
-        arity. FSharp.Core's cases are unqualified (`Ok`, `Choice1Of2`).
+      - The case is qualified, so that a case of the same name in the
+        frame's scope does not take its place. The union's path is the
+        path that source writes (`FSharpTypes.sourcePath`): no generic
+        arity, and a module without its `Module` suffix. FSharp.Core's
+        cases are qualified by the F# type name (`Result.Ok`,
+        `Choice.Choice2Of2`).
+      - **The `Module` suffix.** The compiler adds it for
+        `[<CompilationRepresentation(ModuleSuffix)>]`, and also, with no
+        attribute, to a module named as a type beside it (`type Kind` and
+        `module Kind`). The second case is found in the module's assembly
+        (`IType.TypeExists`). The same rule fixes the Type column
+        (`Kind.Inner`, not `KindModule.Inner`). The frame decoder's types
+        come from signatures without an assembly, so its names keep an
+        implicit suffix.
       - A union with one case has no `_` clause.
       - Option and voption keep their `Value` member (`opt.Value`).
     - **Other cases.** §5.4 planned `Unchecked.defaultof<_>` for the other

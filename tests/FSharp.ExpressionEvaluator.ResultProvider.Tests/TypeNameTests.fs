@@ -62,6 +62,8 @@ let ``user types are namespace and module qualified`` () =
     Assert.Equal($"{ns}.Shape", name typeOf<Shape>)
     Assert.Equal($"{ns}.Gen<int>", name typeOf<Gen<int>>)
     Assert.Equal($"{ns}.Point", name typeOf<Point>)
+    // In a module named as a type beside it, compiled as `KindModule` with no attribute.
+    Assert.Equal($"{ns}.Kind.Inner", name typeOf<Kind.Inner>)
 
 [<Fact>]
 let ``union case classes display as their union`` () =

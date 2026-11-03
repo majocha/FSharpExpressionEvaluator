@@ -40,6 +40,12 @@ let ``union case fields, named by a match on the case`` () =
     )
 
     Assert.Equal(Some [], children Empty)
+    // A union in a module compiled with a `Module` suffix: the path as source writes it.
+    Assert.Equal(
+        Some [ "Item", $"(match v with {samples}.Kind.Inner.InA x -> x | _ -> failwith \"not InA\")", "1" ],
+        children (Kind.InA 1)
+    )
+
     // Generic case classes too, by the union's path without its arity.
     Assert.Equal(Some [ "Item", $"(match v with {samples}.Gen.GSome x -> x | _ -> failwith \"not GSome\")", "1" ], children (GSome 1))
 
@@ -49,9 +55,9 @@ let ``union fields of single-case, struct and FSharp.Core unions`` () =
     // One case: no other cases to fail on.
     Assert.Equal(Some [ "id", $"(match v with {samples}.Single.Single (x, _) -> x)", "1"; "name", $"(match v with {samples}.Single.Single (_, x) -> x)", "a" ], children (Single(1, "a")))
     Assert.Equal(Some [ "b", $"(match v with {samples}.StructUnion.SB x -> x | _ -> failwith \"not SB\")", "x" ], children (SB "x"))
-    // Option's `Value` member; FSharp.Core's other cases unqualified.
+    // Option's `Value` member; FSharp.Core's other cases qualified by their F# type name.
     Assert.Equal(Some [ "Value", "v.Value", "42" ], children (Some 42))
-    Assert.Equal(Some [ "ResultValue", "(match v with Ok x -> x | _ -> failwith \"not Ok\")", "1" ], children (Ok 1: Result<int, string>))
+    Assert.Equal(Some [ "ResultValue", "(match v with Result.Ok x -> x | _ -> failwith \"not Ok\")", "1" ], children (Ok 1: Result<int, string>))
 
 [<Fact>]
 let ``list and array items`` () =

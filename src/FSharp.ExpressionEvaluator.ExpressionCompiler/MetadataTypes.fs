@@ -270,6 +270,8 @@ type private SigIType(t: SigType) =
         member _.Fields = []
         member _.Properties = []
         member _.Methods = []
+        // A signature type has no assembly to look in: a module's implicit `Module` suffix stays.
+        member _.TypeExists _ = false
         member _.Native = box t
 
 /// The F# name of a signature type: `int list`, `int -> int`, `byref<int>`.

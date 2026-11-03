@@ -42,6 +42,7 @@ type ReflectionType private (t: Type) =
         member _.Methods =
             [ for m in t.GetMethods declared -> { Name = m.Name; IsStatic = m.IsStatic; Attributes = attributes (m.GetCustomAttributesData()) } ]
 
+        member _.TypeExists fullName = not (isNull (t.Assembly.GetType fullName))
         member _.Native = box t
 
 let rec private findField (t: Type) name =

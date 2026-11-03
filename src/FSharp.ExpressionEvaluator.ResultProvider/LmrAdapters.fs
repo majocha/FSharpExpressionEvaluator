@@ -84,6 +84,7 @@ type internal LmrType private (t: LmrTypeInfo) =
         member _.Fields = fields.Value
         member _.Properties = properties.Value
         member _.Methods = methods.Value
+        member _.TypeExists fullName = Lmr.safe false (fun () -> not (isNull (t.Assembly.GetType fullName)))
         member _.Native = box t
 
 /// A debuggee value. Field and element reads go through Concord without func-eval.

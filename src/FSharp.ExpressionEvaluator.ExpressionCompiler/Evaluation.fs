@@ -1661,7 +1661,9 @@ type EvaluationSession
                             parameterTypes |> List.map name, returnType |> Option.bind name
                         | None -> [], None
                     | None -> [], None
-                with _ ->
+                with e ->
+                    // Cached like a result: the call stack keeps its IL type names for this method.
+                    Log.exn "EE" $"F# signature types of 0x{methodToken:X8} in '{assemblyName}'" e
                     [], None
         )
 

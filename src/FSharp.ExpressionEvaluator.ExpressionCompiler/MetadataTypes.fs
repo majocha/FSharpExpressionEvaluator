@@ -59,6 +59,16 @@ let private attributeTypeName (md: MetadataReader) (attribute: CustomAttribute) 
         Some(ofTypeDef (m.GetDeclaringType()))
     | _ -> None
 
+/// The manifest resources embedded in a module (rather than in other files): name and offset.
+let embeddedResources (md: MetadataReader) =
+    [
+        for h in md.ManifestResources do
+            let r = md.GetManifestResource h
+
+            if r.Implementation.IsNil then
+                md.GetString r.Name, int r.Offset
+    ]
+
 /// Decodes attribute arguments; the F# attributes we read take ints, int enums, int arrays or strings.
 type private AttributeTypes() =
     interface ICustomAttributeTypeProvider<obj> with

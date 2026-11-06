@@ -80,13 +80,9 @@ let private debuggeeModule (m: DkmClrModuleInstance) =
         None
     else
         let fsharpResources =
-            [
-                for h in md.ManifestResources do
-                    let r = md.GetManifestResource h
-
-                    if r.Implementation.IsNil && (md.GetString r.Name).StartsWith "FSharp" then
-                        int r.Offset
-            ]
+            MetadataTypes.embeddedResources md
+            |> List.filter (fun (name, _) -> name.StartsWith "FSharp")
+            |> List.map snd
 
         let resources =
             if fsharpResources.IsEmpty then

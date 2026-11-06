@@ -183,6 +183,10 @@ let private withDiagnosticsIgnoring (ignored: int list) (phase: BuildPhase) (f: 
 
 let private withDiagnostics phase f = withDiagnosticsIgnoring [] phase f
 
+/// A type definition by name, if there is one.
+let private tryFindTypeDefByName (typeDefs: ILTypeDefs) (name: string) =
+    if typeDefs.ExistsByName name then Some(typeDefs.FindByName name) else None
+
 /// Finds a method definition by token, with the chain of type definitions enclosing it.
 let private tryFindMethod (ilModule: ILModuleDef) (token: int) =
     let rid = token &&& 0x00FFFFFF
@@ -282,11 +286,11 @@ let private ExpressionIndent = 8
 
 /// The source of the query module: `let <>m0 () = (expression)` and so on, one method per
 /// expression. The frame's opens are not in it but in the environment it is checked in, under the
-/// frame's values, which an open would otherwise shadow.
+/// frame's values, which an open would otherwise shadow. The texts' line breaks are `\n`.
 let private querySource (texts: string list) =
     let query n (text: string) =
         let indented =
-            text.Replace("\r\n", "\n").Split('\n')
+            text.Split('\n')
             |> Array.map (fun line -> String(' ', ExpressionIndent) + line)
             |> String.concat "\n"
 
@@ -752,6 +756,16 @@ let private resolveClrType
         None
     |> Option.defaultValue g.obj_ty_ambivalent
 
+/// Options of a typed tree rewrite: `intercept` before a node's children, `transform` after them.
+let private rewriting intercept transform rewriteQuotations =
+    {
+        PreIntercept = intercept
+        PostTransform = transform
+        PreInterceptBinding = None
+        RewriteQuotations = rewriteQuotations
+        StackGuard = StackGuard("ExpressionEvaluation")
+    }
+
 /// Replaces reads and writes of the given Vals with expressions built at their range: field
 /// variables become field loads and stores on `this` (as class `let` fields are compiled), aliases
 /// become calls to the debugger's intrinsic methods.
@@ -772,15 +786,7 @@ let private replaceVariables (reads: (Val * (range -> Expr)) list) (writes: (Val
                 Some(write m (recurse value))
             | _ -> None
 
-        RewriteExpr
-            {
-                PreIntercept = Some intercept
-                PostTransform = (fun _ -> None)
-                PreInterceptBinding = None
-                RewriteQuotations = true
-                StackGuard = StackGuard("ExpressionEvaluation")
-            }
-            expr
+        RewriteExpr (rewriting (Some intercept) (fun _ -> None) true) expr
 
 /// Gives `<>m0` the frame's `this`, parameters and locals as its own parameters: the type checker
 /// saw them as free locals, so after this rewrite IlxGen stores them as method arguments. Other
@@ -928,16 +934,7 @@ let private mayHaveSideEffects (g: TcGlobals.TcGlobals) (expr: Expr) =
 
         None
 
-    RewriteExpr
-        {
-            PreIntercept = Some intercept
-            PostTransform = (fun _ -> None)
-            PreInterceptBinding = None
-            RewriteQuotations = false
-            StackGuard = StackGuard("ExpressionEvaluation")
-        }
-        expr
-    |> ignore
+    RewriteExpr (rewriting (Some intercept) (fun _ -> None) false) expr |> ignore
 
     sideEffects
 
@@ -955,26 +952,21 @@ let private avoidCollectorLowering (g: TcGlobals.TcGlobals) (implFile: CheckedIm
         let key = ValLinkageFullKey({ nlr.ItemKey.PartialKey with LogicalName = name }, nlr.ItemKey.TypeForLinkage)
         mkNonLocalValRef (mkNonLocalEntityRef enclosing.Ccu path) key
 
-    let listOfSeq = sibling g.seq_to_list_vref "ListModule" "ofSeq"
-    let arrayOfSeq = sibling g.seq_to_array_vref "ArrayModule" "ofSeq"
+    let replacements =
+        [
+            g.seq_to_list_vref, sibling g.seq_to_list_vref "ListModule" "ofSeq"
+            g.seq_to_array_vref, sibling g.seq_to_array_vref "ArrayModule" "ofSeq"
+        ]
 
     let replace (e: Expr) =
         match e with
-        | Expr.App(Expr.Val(vref, flags, mVal), fty, tyargs, args, m) when valRefEq g vref g.seq_to_list_vref ->
-            Some(Expr.App(Expr.Val(listOfSeq, flags, mVal), fty, tyargs, args, m))
-        | Expr.App(Expr.Val(vref, flags, mVal), fty, tyargs, args, m) when valRefEq g vref g.seq_to_array_vref ->
-            Some(Expr.App(Expr.Val(arrayOfSeq, flags, mVal), fty, tyargs, args, m))
+        | Expr.App(Expr.Val(vref, flags, mVal), fty, tyargs, args, m) ->
+            replacements
+            |> List.tryPick (fun (original, replacement) -> if valRefEq g vref original then Some replacement else None)
+            |> Option.map (fun replacement -> Expr.App(Expr.Val(replacement, flags, mVal), fty, tyargs, args, m))
         | _ -> None
 
-    RewriteImplFile
-        {
-            PreIntercept = None
-            PostTransform = replace
-            PreInterceptBinding = None
-            RewriteQuotations = false
-            StackGuard = StackGuard("ExpressionEvaluation")
-        }
-        implFile
+    RewriteImplFile (rewriting None replace false) implFile
 
 /// What the query module is compiled for.
 [<RequireQualifiedAccess>]
@@ -1090,15 +1082,7 @@ let private metadataOnlyImage (metadata: byte[]) (resources: (int * byte[]) list
         use provider =
             MetadataReaderProvider.FromMetadataImage(ImmutableArray.Create<byte>(metadata))
 
-        let md = provider.GetMetadataReader()
-
-        [
-            for h in md.ManifestResources do
-                let r = md.GetManifestResource h
-
-                if r.Implementation.IsNil then
-                    int r.Offset
-        ]
+        MetadataTypes.embeddedResources (provider.GetMetadataReader()) |> List.map snd
 
     let size =
         let provided =
@@ -1261,6 +1245,12 @@ let private decodeLocalSignature
             }
     ]
 
+/// A method with its IL body changed by `f`.
+let private mapILBody (f: ILMethodBody -> ILMethodBody) (md: ILMethodDef) =
+    match md.Body with
+    | MethodBody.IL body -> md.With(body = notlazy (MethodBody.IL(notlazy (f body.Value))))
+    | _ -> md
+
 /// IlxGen saw the frame's locals as the trailing parameters of `<>m0`. The debugger instead
 /// needs them as the method's leading locals, in the frame's exact local signature: drop those
 /// parameters, prepend the frame's locals, and retarget argument and local instructions.
@@ -1269,7 +1259,6 @@ let private parametersToFrameLocals (frameLocalSignature: ILLocals) (slots: int 
     let shift = uint16 frameLocalSignature.Length
     let slotOf (i: uint16) = uint16 slots[int i - ownParameters]
     let isFrameLocal (i: uint16) = int i >= ownParameters
-    let body = md.MethodBody
 
     let rewrite instr =
         match instr with
@@ -1281,31 +1270,29 @@ let private parametersToFrameLocals (frameLocalSignature: ILLocals) (slots: int 
         | I_stloc i -> I_stloc(i + shift)
         | instr -> instr
 
-    let code =
-        { body.Code with
-            Instrs = body.Code.Instrs |> Array.map rewrite
-            Locals =
-                body.Code.Locals
-                |> List.map (fun info ->
-                    { info with
-                        DebugMappings =
-                            info.DebugMappings
-                            |> List.map (fun mapping ->
-                                { mapping with
-                                    LocalIndex = mapping.LocalIndex + int shift
-                                })
-                    })
-        }
+    let shiftLocals (body: ILMethodBody) =
+        let code =
+            { body.Code with
+                Instrs = body.Code.Instrs |> Array.map rewrite
+                Locals =
+                    body.Code.Locals
+                    |> List.map (fun info ->
+                        { info with
+                            DebugMappings =
+                                info.DebugMappings
+                                |> List.map (fun mapping ->
+                                    { mapping with
+                                        LocalIndex = mapping.LocalIndex + int shift
+                                    })
+                        })
+            }
 
-    let body =
         { body with
-            Locals =
-                (frameLocalSignature |> List.map (fun l -> { l with DebugInfo = None }))
-                @ body.Locals
+            Locals = (frameLocalSignature |> List.map (fun l -> { l with DebugInfo = None })) @ body.Locals
             Code = code
         }
 
-    md.With(parameters = List.take ownParameters md.Parameters, body = notlazy (MethodBody.IL(notlazy body)))
+    (mapILBody shiftLocals md).With(parameters = List.take ownParameters md.Parameters)
 
 /// Replaces the calls to field placeholders in a generated type (and its nested types, e.g. a
 /// lambda's closure) with the field loads and stores they stand for. Until then the fields of
@@ -1323,26 +1310,10 @@ let rec private replaceFieldPlaceholders (fields: Collections.Generic.IReadOnlyD
 
     let methods =
         td.Methods.AsList()
-        |> List.map (fun md ->
-            match md.Body with
-            | MethodBody.IL body ->
-                let body = body.Value
-
-                md.With(
-                    body =
-                        notlazy (
-                            MethodBody.IL(
-                                notlazy
-                                    { body with
-                                        Code =
-                                            { body.Code with
-                                                Instrs = Array.map replace body.Code.Instrs
-                                            }
-                                    }
-                            )
-                        )
-                )
-            | _ -> md)
+        |> List.map (mapILBody (fun body ->
+            { body with
+                Code = { body.Code with Instrs = Array.map replace body.Code.Instrs }
+            }))
 
     td.With(
         methods = mkILMethods methods,
@@ -1475,6 +1446,26 @@ type private DebuggeeFileSystem() =
     override _.GetLastWriteTimeShim path =
         if files.ContainsKey path then writeTime else base.GetLastWriteTimeShim path
 
+/// An instance field that reads as a variable of the query, read from an owner object.
+type private FieldVariable =
+    {
+        FieldName: string
+        FieldILType: ILType
+        FieldType: TType
+        ReadField: range -> Expr
+        WriteField: range -> Expr -> Expr
+    }
+
+/// A variable of the query that `bindFrameValues` replaces by reads (and writes) of what it
+/// stands for: a field of `this`, a ref cell's contents, an alias, a shadowed variable.
+type private ReplacedVariable =
+    {
+        Var: Val
+        Read: range -> Expr
+        /// None for variables an assignment can't target.
+        Write: (range -> Expr -> Expr) option
+    }
+
 [<Sealed>]
 type EvaluationSession
     (
@@ -1488,6 +1479,23 @@ type EvaluationSession
     let ctok = AssumeCompilationThreadWithoutEvidence()
     let lexResourceManager = LexResourceManager()
     let amap = tcImports.GetImportMap()
+
+    /// The F# view of an imported assembly.
+    let tryCcuOf (scope: ILScopeRef) =
+        tcImports.GetImportedAssemblies()
+        |> List.tryFind (fun a -> a.ILScopeRef = scope)
+        |> Option.map _.FSharpViewOfMetadata
+
+    /// A frame's method: its assembly, the assembly's F# view and IL module, and the method with
+    /// the type definitions enclosing it, outermost first. None when the method is not found.
+    let tryFrameMethod (assemblyName: string) (methodToken: int) =
+        let dllInfo = tcImports.FindDllInfo(ctok, range0, assemblyName)
+
+        match tryCcuOf dllInfo.ILScopeRef, dllInfo.RawMetadata.TryGetILModuleDef() with
+        | Some ccu, Some ilModule ->
+            tryFindMethod ilModule methodToken
+            |> Option.map (fun (enclosing, methodDef) -> dllInfo, ccu, ilModule, enclosing, methodDef)
+        | _ -> None
 
     // Call stack type names by frame method: the frame decoder asks for every frame it names.
     let signatureTypeNames =
@@ -1641,15 +1649,8 @@ type EvaluationSession
                 let g = tcGlobals
 
                 try
-                    let dllInfo = tcImports.FindDllInfo(ctok, range0, assemblyName)
-
-                    let ccu =
-                        tcImports.GetImportedAssemblies()
-                        |> List.find (fun a -> a.ILScopeRef = dllInfo.ILScopeRef)
-                        |> _.FSharpViewOfMetadata
-
-                    match dllInfo.RawMetadata.TryGetILModuleDef() |> Option.bind (fun ilModule -> tryFindMethod ilModule methodToken) with
-                    | Some(enclosing, methodDef) ->
+                    match tryFrameMethod assemblyName methodToken with
+                    | Some(dllInfo, ccu, _, enclosing, methodDef) ->
                         let entities = fsharpEntities ccu enclosing
 
                         match tryFrameValue g amap dllInfo.ILScopeRef entities enclosing methodDef with
@@ -1832,20 +1833,8 @@ type EvaluationSession
             // The frame's method and the F# entities enclosing it.
             let! dllInfo, ccu, ilModule, enclosing, methodDef =
                 withDiagnostics BuildPhase.TypeCheck (fun () ->
-                    let dllInfo = tcImports.FindDllInfo(ctok, m, frame.AssemblyName)
-
-                    let ccu =
-                        tcImports.GetImportedAssemblies()
-                        |> List.find (fun a -> a.ILScopeRef = dllInfo.ILScopeRef)
-                        |> _.FSharpViewOfMetadata
-
-                    let ilModule =
-                        match dllInfo.RawMetadata.TryGetILModuleDef() with
-                        | Some ilModule -> ilModule
-                        | None -> failwith $"No metadata for '{frame.AssemblyName}'"
-
-                    match tryFindMethod ilModule frame.MethodToken with
-                    | Some(enclosing, md) -> dllInfo, ccu, ilModule, enclosing, md
+                    match tryFrameMethod frame.AssemblyName frame.MethodToken with
+                    | Some frameMethod -> frameMethod
                     | None -> failwith $"Method 0x{frame.MethodToken:X8} not found in '{frame.AssemblyName}'")
 
             let entities = fsharpEntities ccu enclosing
@@ -1928,14 +1917,9 @@ type EvaluationSession
                                 |> Option.bind typeDefsOf
                             | _ -> None
 
-                    let ccu =
-                        tcImports.GetImportedAssemblies()
-                        |> List.tryFind (fun a -> a.ILScopeRef = tref.Scope)
-                        |> Option.map _.FSharpViewOfMetadata
-
-                    match typeDefs, ccu with
+                    match typeDefs, tryCcuOf tref.Scope with
                     | Some typeDefs, Some ccu ->
-                        match (if typeDefs.ExistsByName tref.Name then Some(typeDefs.FindByName tref.Name) else None) with
+                        match tryFindTypeDefByName typeDefs tref.Name with
                         | Some td ->
                             let names =
                                 td.GenericParams
@@ -2061,18 +2045,11 @@ type EvaluationSession
 
             // A type definition of the frame's assembly.
             let tryFindTypeDef (tref: ILTypeRef) =
-                if tref.Scope <> dllInfo.ILScopeRef then
-                    None
-                else
-                    try
-                        let outer = ilModule.TypeDefs.FindByName(List.head (tref.Enclosing @ [ tref.Name ]))
-
-                        Some(
-                            (outer, List.tail (tref.Enclosing @ [ tref.Name ]))
-                            ||> List.fold (fun td name -> td.NestedTypes.FindByName name)
-                        )
-                    with _ ->
-                        None
+                match tref.Enclosing @ [ tref.Name ] with
+                | outer :: nested when tref.Scope = dllInfo.ILScopeRef ->
+                    (tryFindTypeDefByName ilModule.TypeDefs outer, nested)
+                    ||> List.fold (fun td name -> td |> Option.bind (fun td -> tryFindTypeDefByName td.NestedTypes name))
+                | _ -> None
 
             // Loads and stores of fields of generated types, by the name of the placeholder method
             // standing for them (`replaceFieldPlaceholders`).
@@ -2112,11 +2089,13 @@ type EvaluationSession
                         let load = fieldAccess true field ownerType
                         let store = fieldAccess false field ownerType
 
-                        f.Name,
-                        fieldType,
-                        ty,
-                        (fun m -> mkAsmExpr ([ load ], [], [ owner m ], [ ty ], m)),
-                        (fun m value -> mkAsmExpr ([ store ], [], [ owner m; value ], [], m))))
+                        {
+                            FieldName = f.Name
+                            FieldILType = fieldType
+                            FieldType = ty
+                            ReadField = fun m -> mkAsmExpr ([ load ], [], [ owner m ], [ ty ], m)
+                            WriteField = fun m value -> mkAsmExpr ([ store ], [], [ owner m; value ], [], m)
+                        }))
 
             // Plumbing fields of state machines, not user variables: those of resumable code
             // (`task`), and of `seq` (a GeneratedSequenceBase<_> subclass).
@@ -2127,16 +2106,12 @@ type EvaluationSession
                         baseType.TypeRef.FullName = "Microsoft.FSharp.Core.CompilerServices.GeneratedSequenceBase`1"
                     | _ -> false
 
+                let stateMachineFields = set [ "Data"; "ResumptionPoint"; "awaiter" ]
+                let seqFields = set [ "pc"; "current"; "enum"; "redirect"; "redirectTo" ]
+
                 fun name ->
-                    (isStateMachine
-                     && (name = "Data" || name = "ResumptionPoint" || name = "awaiter"))
-                    || (isGeneratedFrame
-                        && isSeq
-                        && (name = "pc"
-                            || name = "current"
-                            || name = "enum"
-                            || name = "redirect"
-                            || name = "redirectTo"))
+                    (isStateMachine && stateMachineFields.Contains name)
+                    || (isGeneratedFrame && isSeq && seqFields.Contains name)
 
             // Fields of `this` as variables: a closure's captured values, a class's `let` fields, a
             // state machine's hoisted variables. A hoisted `this` also brings the fields of the
@@ -2147,25 +2122,32 @@ type EvaluationSession
                 | [ thisVal ] ->
                     let own =
                         fieldsOf declaringType thisILType (fun m -> exprForVal m thisVal)
-                        |> List.filter (fun (name, _, _, _, _) -> not (isPlumbing name))
+                        |> List.filter (fun f -> not (isPlumbing f.FieldName))
 
                     let ofOriginalThis =
-                        match own |> List.tryFind (fun (name, _, _, _, _) -> name = "this") with
-                        | Some(_, (ILType.Boxed _ as originalThisType), _, read, _) ->
+                        match own |> List.tryFind (fun f -> f.FieldName = "this") with
+                        | Some { FieldILType = ILType.Boxed _ as originalThisType; ReadField = read } ->
                             match tryFindTypeDef originalThisType.TypeRef with
                             | Some td -> fieldsOf td originalThisType read
                             | None -> []
                         | _ -> []
 
                     (ofOriginalThis @ own)
-                    |> List.map (fun (name, _, ty, read, write) ->
-                        match contentsTypeOf ty with
+                    |> List.map (fun f ->
+                        match contentsTypeOf f.FieldType with
                         | Some ty ->
-                            mkVariable name ty,
-                            (fun m -> mkRefCellGet g m ty (read m)),
-                            (fun m value -> mkRefCellSet g m ty (read m) value)
-                        | None -> mkVariable name ty, read, write),
-                    own |> List.map (fun (name, _, _, _, _) -> name)
+                            {
+                                Var = mkVariable f.FieldName ty
+                                Read = fun m -> mkRefCellGet g m ty (f.ReadField m)
+                                Write = Some(fun m value -> mkRefCellSet g m ty (f.ReadField m) value)
+                            }
+                        | None ->
+                            {
+                                Var = mkVariable f.FieldName f.FieldType
+                                Read = f.ReadField
+                                Write = Some f.WriteField
+                            }),
+                    own |> List.map _.FieldName
                 | _ -> [], []
 
             // The debugger's aliases, read through its intrinsic methods (as Roslyn binds them).
@@ -2222,7 +2204,7 @@ type EvaluationSession
                         else
                             mkCallUnbox g m ty (mkCoerceIfNeeded g g.obj_ty_ambivalent valueTy value)
 
-                    fst (mkLocal m alias.Name ty), read)
+                    { Var = fst (mkLocal m alias.Name ty); Read = read; Write = None })
 
             let parameterVals =
                 methodDef.Parameters
@@ -2283,15 +2265,17 @@ type EvaluationSession
                     contentsTypeOf cell.Type
                     |> Option.map (fun ty ->
                         cell,
-                        mkVariable cell.LogicalName ty,
-                        (fun m -> mkRefCellGet g m ty (exprForVal m cell)),
-                        (fun m value -> mkRefCellSet g m ty (exprForVal m cell) value)))
+                        {
+                            Var = mkVariable cell.LogicalName ty
+                            Read = fun m -> mkRefCellGet g m ty (exprForVal m cell)
+                            Write = Some(fun m value -> mkRefCellSet g m ty (exprForVal m cell) value)
+                        }))
 
             let scopedLocals =
                 localVals
                 |> List.map (fun v ->
                     contentsVariables
-                    |> List.tryPick (fun (cell, contents, _, _) -> if valEq cell v then Some contents else None)
+                    |> List.tryPick (fun (cell, contents) -> if valEq cell v then Some contents.Var else None)
                     |> Option.defaultValue v)
 
             // The frame's variables the Locals window shows, outermost first, each with its type and
@@ -2326,8 +2310,8 @@ type EvaluationSession
                         |> List.choose (fun name ->
                             // The frame's own field, which shadows one of the original `this`.
                             fieldVariables
-                            |> List.tryFindBack (fun (v: Val, _, _) -> v.LogicalName = name)
-                            |> Option.map (fun (v, read, _) -> name, v.Type, read))
+                            |> List.tryFindBack (fun f -> f.Var.LogicalName = name)
+                            |> Option.map (fun f -> name, f.Var.Type, f.Read))
                     else
                         []
 
@@ -2335,8 +2319,8 @@ type EvaluationSession
                     localVals
                     |> List.filter (fun v -> not (isHiddenLocalName v.LogicalName))
                     |> List.map (fun local ->
-                        match contentsVariables |> List.tryFind (fun (cell, _, _, _) -> valEq cell local) with
-                        | Some(_, contents, read, _) -> contents.LogicalName, contents.Type, read
+                        match contentsVariables |> List.tryFind (fun (cell, _) -> valEq cell local) with
+                        | Some(_, contents) -> contents.Var.LogicalName, contents.Var.Type, contents.Read
                         | None -> local.LogicalName, local.Type, (fun m -> exprForVal m local))
 
                 if argumentsOnly then parameters else parameters @ fields @ locals
@@ -2371,13 +2355,13 @@ type EvaluationSession
                             let rowName =
                                 if count name = 1 then name + suffix else $"{name} (shadowed {ordinal i name})"
 
-                            rowName, Some(fst (mkLocal m rowName ty), read)
+                            rowName, Some { Var = fst (mkLocal m rowName ty); Read = read; Write = None }
                         else
                             name, None)
 
                 rows |> List.map fst, rows |> List.choose snd
 
-            let shadowedNames = shadowedVariables |> List.map (fun (v, _) -> v.LogicalName) |> set
+            let shadowedNames = shadowedVariables |> List.map _.Var.LogicalName |> set
 
             // Compiler temporaries (§6.4) are not rows of their own: the Locals window lists them,
             // as expressions name them, under one `[compiler generated]` row. The row reads a null
@@ -2415,11 +2399,11 @@ type EvaluationSession
             // locals, and those by the debugger's variables.
             let scopedVals =
                 thisVal
-                @ (fieldVariables |> List.map (fun (v, _, _) -> v))
+                @ (fieldVariables |> List.map _.Var)
                 @ parameterVals
                 @ scopedLocals
-                @ (aliasVariables |> List.map fst)
-                @ (shadowedVariables |> List.map fst)
+                @ (aliasVariables |> List.map _.Var)
+                @ (shadowedVariables |> List.map _.Var)
 
             // The query module's expressions, each with what it stands for: the user's expression,
             // or one per variable the Locals window shows. Locals with no variable to show still
@@ -2438,7 +2422,7 @@ type EvaluationSession
                                 // its hoisted `this` field stands for it.
                                 if
                                     thisVal |> List.exists (fun v -> v.LogicalName = "this")
-                                    || fieldVariables |> List.exists (fun (v: Val, _, _) -> v.LogicalName = "this")
+                                    || fieldVariables |> List.exists (fun f -> f.Var.LogicalName = "this")
                                 then
                                     "this"
                                 yield! frameRowNames
@@ -2547,19 +2531,17 @@ type EvaluationSession
                                      namedDebugPoints)) =
                     implFile
 
+                let replaced =
+                    fieldVariables @ (contentsVariables |> List.map snd) @ aliasVariables @ shadowedVariables
+
+                let reads = replaced |> List.map (fun r -> r.Var, r.Read)
+
+                let writes =
+                    (replaced |> List.choose (fun r -> r.Write |> Option.map (fun write -> r.Var, write)))
+                    @ frameValueWrites
+
                 let rewrittenContents, checkedBodies =
-                    bindFrameValues
-                        g
-                        frameTypars
-                        frameVals
-                        ((fieldVariables |> List.map (fun (v, read, _) -> v, read))
-                         @ (contentsVariables |> List.map (fun (_, v, read, _) -> v, read))
-                         @ aliasVariables
-                         @ shadowedVariables)
-                        ((fieldVariables |> List.map (fun (v, _, write) -> v, write))
-                         @ (contentsVariables |> List.map (fun (_, v, _, write) -> v, write))
-                         @ frameValueWrites)
-                        contents
+                    bindFrameValues g frameTypars frameVals reads writes contents
 
                 CheckedImplFile(
                     qualifiedNameOfFile,
@@ -2599,11 +2581,11 @@ type EvaluationSession
             let assignable =
                 [
                     yield! frameVals
-                    yield! fieldVariables |> List.map (fun (v, _, _) -> v)
-                    yield! contentsVariables |> List.map (fun (_, v, _, _) -> v)
-                    for alias, (v, _) in List.zip frame.Aliases aliasVariables do
+                    yield! fieldVariables |> List.map _.Var
+                    yield! contentsVariables |> List.map (fun (_, contents) -> contents.Var)
+                    for alias, variable in List.zip frame.Aliases aliasVariables do
                         if alias.Kind = AliasKind.Variable then
-                            v
+                            variable.Var
                 ]
                 |> List.map _.Stamp
                 |> set

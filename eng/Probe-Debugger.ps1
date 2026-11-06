@@ -21,9 +21,14 @@ param(
     [string] $Tracepoint,
     # At each break, assignments 'name=value' to the names that evaluate there, then read back.
     [string[]] $Assign = @(),
+    # Edits of Locals rows ('break: row = value', or 'break: row / child = value' for a row under it),
+    # read back from a fresh Locals list. An edit compiles an assignment to the row's full name.
+    [string[]] $AssignLocal = @(),
     # Checks 'break: expression => value': the expression's value at that break, before any assignment,
     # as the Watch window shows it. The value '!error' expects the expression not to evaluate.
     [string[]] $Expect = @(),
+    # Checks 'break: expression => value' as -Expect does, with the debugger's Hexadecimal Display on.
+    [string[]] $ExpectHex = @(),
     # Checks 'break: expression => type': the expression's type at that break, as the Watch window shows it.
     [string[]] $ExpectType = @(),
     # Checks 'break: name => type': the type of that Locals row at that break.
@@ -58,6 +63,14 @@ $Expressions = @($Expressions | ForEach-Object { $_ -split ';;' } | Where-Object
 $Assign = @($Assign | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $expectations = @($Expect | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-Expect '$_' is not 'break: expression => value'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Value = $Matches[3] }
+})
+$localAssignments = @($AssignLocal | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*([^/=]+?)\s*(?:/\s*([^=]+?)\s*)?=\s*(.*?)\s*$') { throw "-AssignLocal '$_' is not 'break: row [/ child] = value'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Row = $Matches[2]; Child = $Matches[3]; Value = $Matches[4] }
+})
+$hexExpectations = @($ExpectHex | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectHex '$_' is not 'break: expression => value'." }
     [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Value = $Matches[3] }
 })
 $expansions = @($Expand | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
@@ -256,6 +269,11 @@ $assigned = @{}
         Write-Host ''
         Write-Host "=== Break $i : $($frame.FunctionName)  [language: $($frame.Language)]"
         Write-Host '--- Call stack'
+        # The Call Stack window asks for every frame's name with its parameters (-ExpectLog checks
+        # them); DTE's StackFrames ask only the top frame's. Open it, as the window layout may not.
+        if ($ExpectLog -and $i -eq 1) {
+            try { $dte.ExecuteCommand('Debug.CallStack') } catch { Write-Host "  (no Call Stack window: $_)" }
+        }
         foreach ($f in @(Get-Items $dte.Debugger.CurrentThread.StackFrames ([EnvDTE.StackFrames]) | Select-Object -First 4)) {
             Write-Host "  $($f.FunctionName)  : $($f.ReturnType)"
         }
@@ -319,6 +337,16 @@ $assigned = @{}
                 Test-Check "break $i : $($check.Text) => $($check.Value)" ($e.IsValidValue -and $e.Value -ceq $check.Value) $e.Value
             }
         }
+        $hereHex = @($hexExpectations | Where-Object { $_.Break -eq $i })
+        if ($hereHex) {
+            $dte.Debugger.HexDisplayMode = $true
+            try {
+                foreach ($check in $hereHex) {
+                    $e = $dte.Debugger.GetExpression($check.Text, $true, 10000)
+                    Test-Check "break $i : $($check.Text) => $($check.Value) (hex)" ($e.IsValidValue -and $e.Value -ceq $check.Value) $e.Value
+                }
+            } finally { $dte.Debugger.HexDisplayMode = $false }
+        }
         foreach ($assignment in $Assign) {
             $name, $value = $assignment -split '=', 2
             $e = $dte.Debugger.GetExpression($name, $true, 10000)
@@ -332,6 +360,28 @@ $assigned = @{}
             } catch {
                 Write-Host "--- Assigning $name = $value failed"
                 Test-Check "break $i : $name = $value" $false $_.Exception.InnerException.Message
+            }
+        }
+        foreach ($check in @($localAssignments | Where-Object { $_.Break -eq $i })) {
+            $what = if ($check.Child) { "$($check.Row) / $($check.Child)" } else { $check.Row }
+            # The row (or the child of a row) in a Locals list.
+            $find = {
+                param($list)
+                $row = @($list | Where-Object { $_.Name -ceq $check.Row } | Select-Object -First 1)
+                if (-not $row) { return $null }
+                if (-not $check.Child) { return $row[0] }
+                @(Get-Items $row[0].DataMembers ([EnvDTE.Expressions]) | Where-Object { $_.Name -ceq $check.Child } | Select-Object -First 1)[0]
+            }
+            $edited = & $find $locals
+            if (-not $edited) { Test-Check "break $i : Locals edit $what = $($check.Value)" $false 'no such row'; continue }
+            try {
+                [EnvDTE.Expression].GetProperty('Value').SetValue($edited, $check.Value, $null)
+                $after = & $find @(Get-Items $dte.Debugger.CurrentStackFrame.Locals ([EnvDTE.Expressions]))
+                $actual = if ($after) { $after.Value } else { 'no such row after the edit' }
+                Write-Host "--- Edited Locals $what = $($check.Value) -> $actual"
+                Test-Check "break $i : Locals edit $what = $($check.Value) reads back" ($after -and $actual -ceq $check.Value) $actual
+            } catch {
+                Test-Check "break $i : Locals edit $what = $($check.Value)" $false $_.Exception.InnerException.Message
             }
         }
         Write-Host '--- Watch'

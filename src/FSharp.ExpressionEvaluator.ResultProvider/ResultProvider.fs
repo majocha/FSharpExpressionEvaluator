@@ -67,7 +67,8 @@ type ResultProvider() =
     static let log = Log.write "RP"
     static do log "ResultProvider loaded"
 
-    static let options = FSharpValues.defaultOptions
+    /// The preview options for an inspection context: hex integers when the debugger's hex display is on.
+    static let optionsFor (context: DkmInspectionContext) = FSharpValues.defaultOptions |> FSharpValues.withRadix context.Radix
     static let noFormatSpecifiers = ReadOnlyCollection<string>([||])
 
     static let hasSpecifier (name: string) (specifiers: ReadOnlyCollection<string>) =
@@ -160,7 +161,7 @@ type ResultProvider() =
         let value = ConcordValue(clrValue, context) :> IValue
         let declared = lmrType declaredType
 
-        FSharpValues.tryPreview options declared value
+        FSharpValues.tryPreview (optionsFor context) declared value
         |> Option.map (fun preview ->
             let flags =
                 DkmEvaluationResultFlags.ReadOnly
@@ -195,7 +196,7 @@ type ResultProvider() =
 
             let typeName =
                 FSharpValues.csharpTypeColumn fsharpName (lmrType declaredType) value |> Option.defaultValue s.Type
-            let seqPreview = FSharpValues.trySeqPreview options value
+            let seqPreview = FSharpValues.trySeqPreview (optionsFor context) value
             let preview = seqPreview |> Option.defaultValue s.Value
 
             let sequence =
@@ -225,9 +226,9 @@ type ResultProvider() =
                 result
         | _ -> result
 
-    static let rows (data: FSharpResultData) =
+    static let rows context (data: FSharpResultData) =
         let fullName = Option.ofObj data.FullName
-        let children = FSharpValues.tryChildren options fullName data.Value |> Option.defaultValue []
+        let children = FSharpValues.tryChildren (optionsFor context) fullName data.Value |> Option.defaultValue []
         let raw = if FSharpValues.hasRawView data.Value then [ RawViewRow ] else []
         [| yield! children |> List.map ChildRow; yield! raw |]
 
@@ -452,7 +453,7 @@ type ResultProvider() =
             | null, raw -> rawViewChildren raw workList initialRequestSize inspectionContext completionRoutine
             | data, _ ->
                 try
-                    let rows = rows data
+                    let rows = rows inspectionContext data
                     let enumContext = DkmEvaluationResultEnumContext.Create(rows.Length, result.StackFrame, inspectionContext, RowsData(data, rows))
                     let initial = Array.truncate initialRequestSize rows
 

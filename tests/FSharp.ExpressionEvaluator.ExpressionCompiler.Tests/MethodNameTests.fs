@@ -142,3 +142,10 @@ let ``serialized type names`` () =
         parse "System.Collections.Generic.Dictionary`2[[System.String, System.Private.CoreLib],[Microsoft.FSharp.Core.FSharpOption`1[[System.Int32, System.Private.CoreLib]], FSharp.Core]], System.Private.CoreLib"
     )
     Assert.Equal(Some "Outer.Inner", parse "Outer+Inner, Asm")
+
+[<Fact>]
+let ``names in double backticks`` () =
+    Assert.Equal(
+        $"{ns}.``odd function`` (``my value``: int) (box: {ns}.``Odd Box``)",
+        frame (methodOf fixtures "odd function") namesAndTypes
+    )

@@ -414,12 +414,14 @@ let private rangeInExpression (text: string) (quoted: string) (origins: int[]) (
     | Some startPos, Some endPos -> Some(mkRange "expression" startPos endPos)
     | _ -> None
 
-/// Format specifiers the debugger knows (as for C#), besides `view(...)`.
-let private knownFormatSpecifiers =
-    set [ "ac"; "d"; "dynamic"; "h"; "hidden"; "nq"; "nse"; "raw"; "results" ]
+/// The format specifiers that the debugger and the result providers write into full names
+/// themselves: Raw View (`x, raw`), Results View (`x, results`) and Dynamic View rows. They come
+/// back here on Add Watch and re-evaluation. Users' specifiers (`h`, `nq`, `nse`, `view(...)`) are
+/// not F#, so they aren't accepted: `x, h` is a tuple (docs/DESIGN.md §6.7).
+let private knownFormatSpecifiers = set [ "dynamic"; "raw"; "results" ]
 
-/// Splits trailing format specifiers off an expression: `x, h, nq` is `x` with `h` and `nq`. A
-/// trailing run of known specifiers after top-level commas counts, so `(x, h)` stays a tuple.
+/// Splits trailing format specifiers off an expression: `x, raw` is `x` with `raw`. A trailing run
+/// of known specifiers after top-level commas counts, so `(x, raw)` stays a tuple.
 let private splitFormatSpecifiers (text: string) =
     // Top-level commas, outside brackets, literals and comments
     let commas =
@@ -439,8 +441,7 @@ let private splitFormatSpecifiers (text: string) =
 
         go 0 0 []
 
-    let isSpecifier (s: string) =
-        knownFormatSpecifiers.Contains s || (s.StartsWith "view(" && s.EndsWith ")")
+    let isSpecifier (s: string) = knownFormatSpecifiers.Contains s
 
     // Walk the segments after the commas from the end while they are specifiers.
     let ends = commas @ [ text.Length ]
@@ -569,6 +570,32 @@ let private niceType (g: TcGlobals.TcGlobals) ty =
 
     nice ty
 
+/// NicePrint's text of a type, with the names of types, modules, namespaces and anonymous record
+/// fields in double backticks where F# needs them (`` ``Odd Box`` list ``). NicePrint adds them to
+/// generic types' names only (`Entity.GetDisplayName` quotes just those).
+let private typeText denv ty =
+    NicePrint.prettyLayoutOfTypeNoCx denv ty
+    |> LayoutRender.toArray
+    |> Array.map (fun t ->
+        match t.Tag with
+        | TextTag.Class
+        | TextTag.Union
+        | TextTag.Record
+        | TextTag.Struct
+        | TextTag.Interface
+        | TextTag.Enum
+        | TextTag.Delegate
+        | TextTag.Alias
+        | TextTag.Module
+        | TextTag.Namespace
+        | TextTag.RecordField
+        | TextTag.UnknownEntity
+        | TextTag.UnknownType when not (t.Text.StartsWith "``") && not (t.Text.Contains ".") ->
+            PrettyNaming.NormalizeIdentifierBackticks t.Text
+        | TextTag.LineBreak -> " "
+        | _ -> t.Text)
+    |> String.concat ""
+
 /// The F# name of a result's type when it says more than its CLR type, from which the result
 /// provider names types on its own (docs/DESIGN.md §6.8): units of measure (`float<m>`) and type
 /// abbreviations outside FSharp.Core (`type Ids = int list`). Laid out as the result provider
@@ -592,7 +619,7 @@ let private fsharpTypeName (g: TcGlobals.TcGlobals) (denv: DisplayEnv) ty =
     if saysMore ty then
         let name =
             Text.RegularExpressions.Regex.Replace(
-                NicePrint.prettyStringOfTyNoCx denv ty,
+                typeText denv ty,
                 @" array(\d+)d\b",
                 fun m -> "[" + String(',', int m.Groups[1].Value - 1) + "]"
             )
@@ -1607,7 +1634,9 @@ type EvaluationSession
                     |> List.map (fun q ->
                         {
                             Name = q.Name
-                            FullName = if q.Shadowed then $"``{q.Name}``" else q.Name
+                            // As F# names it: in double backticks when it isn't an identifier
+                            // (`the sum`, `type`, `x (shadowed)`).
+                            FullName = if q.Shadowed then $"``{q.Name}``" else PrettyNaming.NormalizeIdentifierBackticks q.Name
                             MethodName = q.MethodName
                             ResultType = q.ResultType
                             FSharpType = q.FSharpType
@@ -2600,7 +2629,7 @@ type EvaluationSession
                         {
                             Name = name
                             MethodName = methodName
-                            ResultType = NicePrint.prettyStringOfTyNoCx denv ty
+                            ResultType = typeText denv ty
                             FSharpType = fsharpTypeName g denv ty
                             PotentialSideEffect = mayHaveSideEffects g body
                             Shadowed = shadowedNames.Contains name

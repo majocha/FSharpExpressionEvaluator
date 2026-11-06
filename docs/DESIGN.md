@@ -199,8 +199,9 @@ DataTips, conditional breakpoints, tracepoints (`{expr}`) and value editing:
   declare `mutable` can still be changed (see §6.6);
 - pseudo-variables `$exception`, `$ReturnValue`, `$ReturnValueN`, `$1`… and
   `$stowedexception`;
-- format specifiers (`, h`, `, d`, `, nq`, `, raw`, `, results`, `, hidden`,
-  `, nse`, `, ac`), with F#'s tuple comma handled as in §6.7.
+- only the format specifiers the debugger writes into full names itself
+  (`, raw`, `, results`, `, dynamic`). The C# debugger's other specifiers
+  (`, h`, `, nq`, `, nse`…) are not F#, and are not accepted (§6.7).
 
 **Call stack (frame and instruction decoders).** F#-shaped names, see §7.
 
@@ -581,11 +582,15 @@ exceptions. Every assignment sets `PotentialSideEffect`.
   `$N` (object id), `$stowedexception` and `$user-defined` into reserved
   identifiers (`` ``$exception`` ``…). These bind to intrinsic calls:
   `GetException`, `GetReturnValue`, `GetObjectByAlias`.
-- **Format specifiers vs tuples.** `x, h` is also an F# tuple. Rule: a
-  trailing comma-separated run of **known specifier tokens** (`h`, `d`, `nq`,
-  `raw`, `results`, `hidden`, `ac`, `nse`, `s8`, `su`, `view(…)`, …) counts as
-  specifiers. Users write `(a, h)` to get a tuple. Same parsing as Roslyn's
-  `TrimAndGetFormatSpecifiers`.
+- **No format specifiers of the user's.** Expressions are F# only: `x, h`
+  is a tuple. A formatted value is written in F# (`$"%x{v}"`), and hex
+  display is the debugger's Hexadecimal Display setting (the context's
+  radix), not syntax. The only specifiers split off are those the debugger
+  and the result providers write into full names themselves, which come
+  back on Add Watch and re-evaluation: `raw` (Raw View rows), `results`
+  (Results View rows) and `dynamic` (Dynamic View rows). A trailing
+  comma-separated run of these counts as specifiers; `(x, raw)` in
+  parentheses stays a tuple. Decided in §17, item 26.
 - **Multi-line text** (Immediate) is parsed as an expression with offside
   rules relaxed from column 0.
 - **Conditions** must have type `bool` (`BoolResult` flag). F# has no
@@ -887,7 +892,14 @@ the `dotnet/fsharp` branch.
 5. **Where the compiler core lives long term.** An upstream FCS module
    (preferred), or a permanent fork shipped privately? Either way the EE has
    **its own compiler state**; see §8.2, "Its own compiler instance".
-6. ~~**VS version floor.**~~ **Decided: VS 2026 (18.0) and later only.** No
+6. **F# syntax for format specifiers (deferred).** Since §17 item 26, only
+   `raw`, `results` and `dynamic` are accepted, so `nse`, `ac` and a
+   per-expression hex have no syntax. If they turn out to be needed, the
+   preferred option is piping into a `$` pseudo-function (`xs |> $hex`,
+   `f x |> $nse`), which can't be F# and reuses the `$name` scanner. The
+   alternatives considered: fsi's `;;` (`xs ;; h`), a marked trailing comment
+   (`xs //@ h`) and an attribute-style suffix (`xs [<h>]`).
+7. ~~**VS version floor.**~~ **Decided: VS 2026 (18.0) and later only.** No
    17.x support. The VSIX targets `[18.0,)`, and FSharp.Core and FCS are pinned
    against VS 18.0 (§8.1).
 
@@ -1035,9 +1047,10 @@ dialog.
 - The Type column shows `declared {runtime}` when the declared type is not an
   F# shape (`obj {int list}`, `exn {…MyError}`).
 - Not yet covered:
-  - `Lazy<_>`, `seq` (previews since §17 item 16), `bigint` literals and units
-    of measure (§6.8 custom type info);
-  - honouring the hex radix inside previews;
+  - ~~`Lazy<_>`, `seq`, `bigint` literals, the hex radix inside previews~~
+    (`seq` in §17 item 16, the others in §17 item 25);
+  - units of measure on values inside F# values (a record field's
+    `float<m>`): only the expression's own result has its F# type (§6.8);
   - a configurable preview length.
 
 ---
@@ -1284,6 +1297,7 @@ surgery than planned:
     - The known specifiers are `ac`, `d`, `dynamic`, `h`, `hidden`, `nq`,
       `nse`, `raw`, `results` and `view(...)`.
     - Anything else stays an F# tuple, and so does `(x, h)` in parentheses.
+    - Narrowed to `raw`, `results` and `dynamic` in §17, item 26.
     - The scanner that skips literals and comments is shared with the
       `$name` quoting.
 18. **Result properties (§6.8).** Each query reports Concord's
@@ -1363,8 +1377,9 @@ surgery than planned:
   parameter and the class's `let` fields;
 - a `seq` frame: captured and hoisted variables, plumbing and `this` not in
   scope;
-- format specifiers split off (`x, h`, `"a, h", nq`, `view(simple)`), and
-  tuples left alone (`x, y`, `(x, y)`);
+- format specifiers split off (`x, h`, `"a, h", nq`, `view(simple)`; only
+  `raw`, `results` and `dynamic` since §17 item 26), and tuples left alone
+  (`x, y`, `(x, y)`);
 - result properties of field reads, operators, property getters, FSharp.Core
   allowlisted functions, calls, constructors and function applications;
 - assignment:
@@ -1459,7 +1474,7 @@ assignments in F# frames, live in VS.
 - record fields, a closure's captured value and a class `let` field;
 - `this.Increment 0`, a generic frame's `value, pair` and a task frame's
   `delay * 2`;
-- `name.Length, h` shown in hex;
+- `name.Length, h` shown in hex (no longer F#: §17, item 26);
 - F# errors for names not in scope.
 
 6. **Breakpoint conditions, tracepoints, assignment.** All three were checked
@@ -2116,6 +2131,108 @@ assignments in F# frames, live in VS.
       names of `rect`'s second field (`2.5`) and of `result`'s `Error` field
       (`"failed"`), and expands `rect` in Locals. All 3 runs pass on net10.0
       and net48.
+
+25. **Lazy values, bigint literals and hex in previews (§5.3, 2026-11-06).**
+    A Lazy and a bigint were left to C# and shown through their
+    `DebuggerDisplay`, and integers inside F# previews stayed decimal under
+    hex display.
+    - **Lazy.** A new shape, `LazyShape`, read from the fields without
+      forcing the value: on .NET Core `_state` is null once `_value` is set,
+      and a faulted Lazy keeps its exception in the state; on .NET Framework
+      `m_boxed` is null, a `Boxed` with `m_value`, or an exception holder.
+      The preview is the value (as fsi shows it), `<unevaluated>` or
+      `<faulted>`, and a Lazy adds no nesting level. A created Lazy has a
+      `Value` child (full name `x.Value`, which no longer forces anything);
+      every Lazy has a Raw View, for its factory and mode. Another layout
+      goes to C#.
+    - **bigint.** `BigIntShape`: the value from `_sign` and `_bits` (the
+      same on both runtimes), shown as `123I`, at top level too. Values
+      longer than 256 words (about 2,500 digits) go to C#.
+    - **Hex.** `Options.Hex`, from the inspection context's radix
+      (`withRadix`). Integers inside previews then show as the C# provider
+      shows them beside our rows: `0x0000002a`, every digit of the width,
+      two's complement, no F# suffix (§5.3). Floats, chars, strings and
+      bigints keep their literals.
+    - **Tests.** `lazy values show their value once created, without
+      forcing it`, `bigint literals`, `hex display applies to integers inside
+      previews`, `a created lazy value has its value as a child`, `a bigint
+      has no children`. 43 result provider tests and 72 compiler tests pass,
+      built with the private compiler and fsc from a local `dotnet/fsharp`
+      at `9cebc3412e` (Debug).
+    - **Verified live.** TestDebuggee's break 1 has a created Lazy, a
+      pending one and a bigint. `Test-Debugger.ps1` checks their Locals
+      rows, `pending.IsValueCreated` (still `false` after the display),
+      the created Lazy's `Value` child, their Type column, and, with the
+      debugger's Hexadecimal Display on (the probe's new `-ExpectHex`),
+      `[ 10; 255 ]` and `opt` in hex. All 3 runs pass on net10.0 and net48
+      (where the result provider runs in msvsmon and reads .NET Framework's
+      Lazy fields).
+    - **The probe opens the Call Stack window.** Only that window asks for
+      the names of frames below the top one with their parameters, so the
+      `closure (start: float<m>)` check of item 22 failed in an Exp
+      instance whose layout had it closed. The probe now opens it
+      (`Debug.CallStack`) at the first break when it has `-ExpectLog`.
+
+26. **Only the debugger's own format specifiers (§6.7, 2026-11-06).** The
+    expression compiler split off the C# debugger's specifiers (`x, h`,
+    `s, nq`, `x, nse`, `view(...)`), which are not F#, and which made `x, h`
+    mean something else than the F# tuple when a local `h` was in scope.
+    - **Now.** Only `raw`, `results` and `dynamic` are split off: the
+      debugger and the result providers write them into the full names of
+      Raw View, Results View and Dynamic View rows, which come back on Add
+      Watch and re-evaluation. Everything else is F#: `x, h` is a tuple
+      (FS0039 when there is no `h`).
+    - **Instead.** Hex is the debugger's Hexadecimal Display (item 25);
+      other formatting is F# (`$"%x{v}"`, `sprintf`). `nse`, `ac` and
+      `hidden` have no replacement.
+    - **Tests.** `the debugger's own format specifiers are split off,
+      users' are F#`; live, `xs, h` is an error, and the hex checks use
+      `-ExpectHex`.
+
+27. **Names in double backticks in full names (§5.4, 2026-11-06).**
+    Expressions with `` ``my value`` `` already worked: the scanner skips
+    backticked names, and Locals rows are read through them. But the full
+    names that Add Watch and edits use had the bare name, which doesn't
+    parse: the Locals row of `` ``the sum`` `` was `the sum`, a record field
+    `v.my field`, a union case `Ns.U.My Case`.
+    - **Locals.** A row's full name is in backticks where F# needs them
+      (`PrettyNaming.NormalizeIdentifierBackticks`), as the `[compiler
+      generated]` row's names already were.
+    - **The result provider** has no FCS, so `FSharpTypes.fsharpIdent`
+      quotes a name that isn't an identifier or is a keyword (reserved ones
+      included; extra backticks are still valid F#). Member names, union
+      case names and each part of a case's path go through it. A tuple's
+      `Rest.Item1` is built a member at a time, so it isn't quoted whole.
+    - **Tests.** `names in double backticks` (expressions, and the Locals
+      full names), `full names put names in double backticks where F# needs
+      them`, `identifiers are left as they are`.
+    - **Verified live.** TestDebuggee's break 1 has `` ``the sum`` ``, a
+      record with `` ``my field`` `` and `` ``type`` ``, and a `` ``My Case``
+      `` union value. `Test-Debugger.ps1` evaluates them in expressions, and
+      edits their Locals rows with the probe's new `-AssignLocal`, which sets
+      the value of a row (or of a row under it) as the Locals window does:
+      the edit compiles an assignment to the row's full name. All 3 runs
+      pass on net10.0 and net48.
+    - **Type names and call stacks.** Display uses `displayIdent`: as
+      `fsharpIdent`, but compiler-generated names (`f@12`, `work@24`) stay
+      as they are, since no source writes them.
+      - The result provider's type names quote each part of a type's path
+        and anonymous record field names (`` Ns.``Odd Module``.Inner ``,
+        `` {| ``my field``: int |} ``).
+      - The frame decoder quotes type, module, function and parameter names
+        (`` Ns.``odd function`` (``my value``: int) ``); parameter types come
+        from the same type names.
+      - FCS's printer, which names the compiler's result types (an
+        abbreviation's, `` ``My Ids`` ``), adds backticks to generic types'
+        names only (`Entity.GetDisplayName`). So `typeText` renders the type
+        to tagged text (`LayoutRender.toArray`) and quotes the names of
+        types, modules, namespaces and record fields.
+    - **More tests.** `type names in double backticks where F# needs them`,
+      the frame decoder's `names in double backticks`, and a result type
+      (`` ``Odd Box`` list ``). Live, the Type column of `oddBox`, `[ oddBox
+      ]`, its Locals row, and the abbreviation `myIds: ``My Ids``` (a module
+      value: locals other than parameters have no F# type recorded). All 3
+      runs pass on net10.0 and net48.
 
 **Next in M4**
 

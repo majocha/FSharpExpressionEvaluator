@@ -25,12 +25,18 @@ without running code in the debuggee:
 | `struct (1.5, 'c')` | `struct (float * char)` |
 | `{\| Count = 3; Name = "anon" \|}` | `{\| Count: int; Name: string \|}` |
 | `<fun:add@53>` | `int -> int -> int` |
+| `[1; 2]` or `<unevaluated>` | `Lazy<int list>` |
+| `12345678901234567890123I` | `bigint` |
 
 This covers:
 - records, anonymous records and ref cells;
 - unions in every compiled representation, including `option`, `voption` and `Result`;
 - lists, arrays, tuples, `Map` and `Set`;
-- F# exceptions, unit and closures.
+- F# exceptions, unit and closures;
+- `Lazy` values, read without forcing them, and `bigint`.
+
+With the debugger's **Hexadecimal Display** on, integers inside F# values are in hex
+(`Some 0x0000002a`).
 
 Expanding a value shows its F# fields, list items, map entries or captured values. A
 **Raw View** row shows the raw .NET members. Everything else is rendered by the C# result
@@ -50,6 +56,9 @@ also show closures without `.Invoke`, the frame's actual generic arguments and, 
 argument values. When the F# compiler has loaded the debuggee's assemblies (from the first
 break on), units of measure and type abbreviations come from the F# signature.
 
+Names that F# writes in double backticks (``` ``my value`` ```, ``` ``type`` ```) get them in type
+names, call stacks and the expressions that Add Watch and edits use.
+
 **F# expressions in Watch, Immediate and DataTips** (M4, in progress). They are compiled by
 the F# compiler, an unmodified `dotnet/fsharp` built privately into the VSIX:
 
@@ -59,13 +68,16 @@ List.map (fun i -> i * 2) xs        [2; 4; 6]
 captured + x                        6        (in a closure)
 count + by                          14       (a class let field)
 this.Increment 0                    12
-name.Length, h                      0x00000004
 ```
 
 The compiler sees what the debuggee has loaded, read from its memory. That includes
 FSharp.Core's inline functions, private members and module values, F# errors (`FS0039`),
-aliases (`$exception`), format specifiers and assignment. The Locals window comes
-from the F# compiler too.
+aliases (`$exception`) and assignment. The Locals window comes from the F# compiler too.
+
+Expressions are F# only. The C# debugger's format specifiers (`x, h`, `s, nq`) are not
+accepted, so `x, h` is a tuple. Format with F# instead (`$"%x{x}"`), and use Hexadecimal
+Display for hex. The only specifiers split off are the ones Visual Studio writes into the
+names of Raw View and Results View rows itself (`, raw`, `, results`).
 
 **Locals and types in F# frames** (M5). Locals shows the variables as the source has them:
 
@@ -90,7 +102,15 @@ changes to it: the evaluator's code that needs the compiler's internals lives he
 `artifacts\`; `FSHARP_EE_CACHE` moves it). Then it copies the compiler to `artifacts\compiler`, built under its
 own name and with this repo's assemblies as friends (`eng\PrivateCompiler.targets`), and the same
 commit's `fsc` to `artifacts\fsc`, which compiles the tests' fixtures and TestDebuggee. To try another checkout,
-pass `-FSharpRepo <checkout>` (built once with `.\build.cmd -c Debug`).
+pass `-FSharpRepo <checkout>`, built once with `.\build.cmd -c Release` (or with `-c Debug`, then
+pass `-Configuration Debug` too). If the build then can't find the checkout's own outputs (such as
+`fslex.deps.json`), build them once there in the layout `dotnet build` expects:
+`dotnet build src\Compiler\FSharp.Compiler.Service.fsproj -c <configuration> -f netstandard2.0`,
+with `BUILDING_USING_DOTNET=true`.
+
+The released SDKs' F# compiler has Debug-build regressions (resumable state machines,
+inlining). To compile the evaluator itself with the private `fsc` as well, pass
+`-p:DotnetFscCompilerPath="<repo>\artifacts\fsc\fsc.dll"` to `dotnet build` and `dotnet test`.
 
 ## Roadmap
 
@@ -115,7 +135,7 @@ says F#; C# and VB frames are untouched.
 | Component | Concord interfaces | Runs in |
 |---|---|---|
 | `FSharp.ExpressionEvaluator.ResultProvider` (`netstandard2.0`) | `IDkmClrResultProvider` | devenv, and msvsmon for remote or x86 targets |
-| `FSharp.ExpressionEvaluator.ExpressionCompiler` (`net48`) | `IDkmClrExpressionCompiler` (still passes everything to C#), `IDkmLanguageFrameDecoder`, `IDkmLanguageInstructionDecoder` | devenv |
+| `FSharp.ExpressionEvaluator.ExpressionCompiler` (`net48`) | `IDkmClrExpressionCompiler`, `IDkmLanguageFrameDecoder`, `IDkmLanguageInstructionDecoder` | devenv |
 | `FSharp.ExpressionEvaluator.Vsix` | packaging, and a package for the on/off option | devenv |
 
 When a value is not an F# shape, or a frame can't be named, the call is passed to the next
@@ -136,13 +156,15 @@ the environment also turns it off.
 | `src/FSharp.ExpressionEvaluator.Vsix` | The VSIX |
 | `tests/FSharp.ExpressionEvaluator.ResultProvider.Tests` | Value display against live F# values |
 | `tests/FSharp.ExpressionEvaluator.ExpressionCompiler.Tests` | Frame names from F# fixtures read back through System.Reflection.Metadata; expressions compiled against this assembly as the debuggee |
-| `tests/TestDebuggee` | F# app that stops in a module function, a closure, a member, a generic function and a task; net10.0 (x64) and net48 (x86) |
+| `tests/TestDebuggee` | F# app that stops in a module function, a closure, a member, a generic function, a task and a `function`, plus a loop for a conditional breakpoint and a tracepoint; net10.0 (x64) and net48 (x86) |
 | `eng/` | Build the private compiler; install into the Exp instance; drive it through DTE |
 | `docs/DESIGN.md` | Design and milestone results |
 
 ## Build, test, try
 
-Requires Windows, the .NET 10 SDK and Visual Studio 2026 (18.x, Insiders included).
+Requires Windows, the .NET 10 SDK, a .NET 11 runtime (preview: `artifacts\fsc` targets net11.0)
+and Visual Studio 2026 (18.x, Insiders included). Run `eng\Build-Compiler.ps1` first (see
+above).
 
 ```powershell
 dotnet build FSharp.ExpressionEvaluator.slnx
@@ -168,11 +190,22 @@ powershell -File eng\Test-Debugger.ps1 -Target net10.0
 ```
 
 `Test-Debugger.ps1` runs `Probe-Debugger.ps1` three times, with expected values. It checks
-watch values, assignments, a conditional breakpoint and a tracepoint, and exits with 1 when
-a check fails. `Probe-Debugger.ps1` takes the same checks: `-Expect 'break: expression => value'`,
-`-ExpectType 'break: expression => type'`, `-ExpectLocalType 'break: name => type'`,
-`-ExpectLocalChild 'break: row / child => value'`, `-Expand 'break: expression'`, `-ExpectTrace`
-and `-ExpectEnd`.
+watch values, types, Locals rows, assignments, a conditional breakpoint and a tracepoint, and
+exits with 1 when a check fails. Use `-Target net48` too. `Probe-Debugger.ps1` takes the same
+checks:
+
+| Option | Checks |
+|---|---|
+| `-Expect 'break: expression => value'` | a Watch value (`!error` for an expression that must fail) |
+| `-ExpectHex 'break: expression => value'` | the same, with Hexadecimal Display on |
+| `-ExpectType 'break: expression => type'` | a Watch value's Type column |
+| `-ExpectLocalType 'break: name => type'` | a Locals row's Type column |
+| `-ExpectLocalChild 'break: row / child => value'` | a row under a Locals row |
+| `-Expand 'break: expression'` | that a value has children, and lists them |
+| `-Assign 'name=value'` | an assignment, read back |
+| `-AssignLocal 'break: row [/ child] = value'` | an edit of a Locals row, which compiles an assignment to the row's full name |
+| `-ExpectLog 'text'` | a line in the EE log, such as a call stack name |
+| `-Condition`, `-Tracepoint`, `-ExpectTrace`, `-ExpectEnd` | a conditional breakpoint or a tracepoint on the line marked `// probe: breakpoint` |
 
 The components log to `%FSHARP_EE_LOG%` if set, otherwise to
 `%LOCALAPPDATA%\FSharpExpressionEvaluator\ee.log`. `Probe-Debugger.ps1` sets

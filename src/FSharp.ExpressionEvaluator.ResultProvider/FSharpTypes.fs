@@ -46,6 +46,10 @@ type Shape =
     | FunctionShape
     | MapShape
     | SetShape
+    /// `System.Lazy<'T>`, as F# `lazy` creates it.
+    | LazyShape of value: IType
+    /// `System.Numerics.BigInteger`, F#'s `bigint`.
+    | BigIntShape
     | NotFSharp
 
 let private unionInfoCache = Types.cache ()
@@ -103,6 +107,8 @@ let shape (t: IType) : Shape =
         elif tupleArity "System.ValueTuple`" definition then TupleShape true
         elif definition = "Microsoft.FSharp.Collections.FSharpMap`2" then MapShape
         elif definition = "Microsoft.FSharp.Collections.FSharpSet`1" then SetShape
+        elif definition = "System.Lazy`1" then LazyShape t.GenericArguments[0]
+        elif definition = "System.Numerics.BigInteger" then BigIntShape
         elif hasDefinition "Microsoft.FSharp.Core.FSharpFunc`2" t then FunctionShape
         else
             match mappingKind t with
@@ -211,6 +217,36 @@ let private renamed =
           "Microsoft.FSharp.Control.FSharpAsync`1", "Async"
           "System.Lazy`1", "Lazy" ]
 
+/// F#'s keywords, including the reserved ones, which a name must be in double backticks to use. A
+/// name in backticks that doesn't need them is still valid F#, so the list errs on the long side.
+let private keywords =
+    set
+        [ "abstract"; "and"; "as"; "assert"; "base"; "begin"; "class"; "default"; "delegate"; "do"; "done"
+          "downcast"; "downto"; "elif"; "else"; "end"; "exception"; "extern"; "false"; "finally"; "fixed"
+          "for"; "fun"; "function"; "global"; "if"; "in"; "inherit"; "inline"; "interface"; "internal"
+          "lazy"; "let"; "match"; "member"; "module"; "mutable"; "namespace"; "new"; "not"; "null"; "of"
+          "open"; "or"; "override"; "private"; "public"; "rec"; "return"; "select"; "sig"; "static"
+          "struct"; "then"; "to"; "true"; "try"; "type"; "upcast"; "use"; "val"; "void"; "when"; "while"
+          "with"; "yield"; "const"; "break"; "checked"; "component"; "constraint"; "continue"; "event"
+          "external"; "include"; "mixin"; "parallel"; "process"; "protected"; "pure"; "sealed"
+          "tailcall"; "trait"; "virtual"; "asr"; "land"; "lor"; "lsl"; "lsr"; "lxor"; "mod" ]
+
+/// A name as F# source writes it: as it is when it is an identifier, otherwise in double
+/// backticks (``my field``, ``type``, ``x@5``).
+let fsharpIdent (name: string) =
+    let isIdentifier =
+        name.Length > 0
+        && (Char.IsLetter name[0] || name[0] = '_')
+        && name |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_' || c = '\'')
+        && not (keywords.Contains name)
+
+    if isIdentifier then name else $"``{name}``"
+
+/// A name as the Type column and the call stack show it: as `fsharpIdent` does, except that
+/// compiler-generated names (`f@12`, `work@24`) are shown as they are, since no source writes them.
+let displayIdent (name: string) =
+    if name.Contains "@" then name else fsharpIdent name
+
 /// Precedence of a rendered type, to decide where parentheses are needed.
 type private Precedence =
     | Arrow = 0
@@ -295,7 +331,7 @@ let rec private render (t: IType) : string * Precedence =
                 String.concat " -> " (domains @ [ fst (render (List.last fargs)) ]), Precedence.Arrow
             | None when t.Name.StartsWith "<>f__AnonymousType" ->
                 let fields =
-                    recordFields t |> List.map (fun f -> $"{f.Name}: {fst (render f.Type)}") |> String.concat "; "
+                    recordFields t |> List.map (fun f -> $"{displayIdent f.Name}: {fst (render f.Type)}") |> String.concat "; "
 
                 $"{{| {fields} |}}", Precedence.Atom
             | None -> nominal t args, Precedence.Atom
@@ -324,7 +360,7 @@ and private tupleElementTypes (t: IType) =
 /// Namespace- and module-qualified name with F#-style generic arguments. For nested generic types
 /// the CLR repeats the enclosing type's arguments first; each level takes its own arity.
 and private nominal (t: IType) (args: IType list) =
-    let name = sourceName t
+    let name = displayIdent (sourceName t)
 
     let arity = ownArity t.Name
     let outerArgs = List.take (args.Length - arity) args
@@ -334,17 +370,25 @@ and private nominal (t: IType) (args: IType list) =
         match t.DeclaringType with
         | Some d -> nominal d outerArgs + "."
         | None when String.IsNullOrEmpty t.Namespace -> ""
-        | None -> t.Namespace + "."
+        | None -> String.Join(".", t.Namespace.Split '.' |> Array.map displayIdent) + "."
 
     prefix + name + genericArgs ownArgs
 
+/// The parts of a type's F# path as source names it: its namespace's, then its enclosing modules
+/// and types, and its own name.
+let rec private sourcePathParts (t: IType) =
+    match t.DeclaringType with
+    | Some d -> sourcePathParts d @ [ sourceName t ]
+    | None when String.IsNullOrEmpty t.Namespace -> [ sourceName t ]
+    | None -> List.ofArray (t.Namespace.Split '.') @ [ sourceName t ]
+
 /// The F# path of a type as source names it, without generic arguments (`Ns.Shape.Kind` for
 /// `Ns.ShapeModule+Kind`).
-let rec sourcePath (t: IType) =
-    match t.DeclaringType with
-    | Some d -> sourcePath d + "." + sourceName t
-    | None when String.IsNullOrEmpty t.Namespace -> sourceName t
-    | None -> t.Namespace + "." + sourceName t
+let sourcePath (t: IType) = String.Join(".", sourcePathParts t)
+
+/// The path of `sourcePath` as an expression names it: each part in double backticks where F#
+/// needs them.
+let sourcePathExpression (t: IType) = String.Join(".", sourcePathParts t |> List.map fsharpIdent)
 
 /// Element types of a tuple type, with System.Tuple`8's Rest flattened.
 let tupleTypes (t: IType) = tupleElementTypes t

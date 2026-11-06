@@ -104,6 +104,19 @@ module EvalFixtures =
     let withUnions (shape: Shape) (rect: Shape) (result: Result<int, string>) (choice: Choice<int, string>) =
         shape, rect, result, choice
 
+    /// Names that F# writes in double backticks: with spaces, and keywords.
+    type Odd = { ``my field``: int; ``type``: string }
+
+    type OddUnion =
+        | ``My Case`` of ``the value``: int
+        | ``Other Case``
+
+    type ``Odd Box`` = { Inside: int }
+
+    let backticks (``my value``: int) (``type``: string) (odd: Odd) (oddUnion: OddUnion) =
+        let ``the sum`` = ``my value`` + odd.``my field``
+        ``the sum``, ``type``, oddUnion
+
     /// Immutable fields: a record's and a class's `val`.
     let withFields (point: Point) (pair: Pair) = point.X + pair.First
 
@@ -721,7 +734,7 @@ let ``variables of a seq state machine`` () =
 
 
 [<Fact>]
-let ``trailing format specifiers are split off`` () =
+let ``the debugger's own format specifiers are split off, users' are F#`` () =
     let add = methodOf fixtures "add"
 
     let specifiers text =
@@ -729,14 +742,21 @@ let ``trailing format specifiers are split off`` () =
         | Ok compiled -> compiled.ResultType, compiled.FormatSpecifiers
         | Error diagnostics -> failwithf "%s: %A" text diagnostics
 
-    Assert.Equal(("int", [ "h" ]), specifiers "x, h")
-    Assert.Equal(("int", [ "h"; "nq" ]), specifiers "x + y , h,nq")
-    Assert.Equal(("string", [ "nq" ]), specifiers "\"a, h\", nq")
-    Assert.Equal(("int list", [ "view(simple)" ]), specifiers "[ x, y ] |> List.map fst, view(simple)")
+    // The full names of Raw View, Results View and Dynamic View rows.
+    Assert.Equal(("int", [ "raw" ]), specifiers "x, raw")
+    Assert.Equal(("int", [ "results"; "raw" ]), specifiers "x + y , results,raw")
+    Assert.Equal(("string", [ "raw" ]), specifiers "\"a, raw\", raw")
+    Assert.Equal(("int list", [ "dynamic" ]), specifiers "[ x, y ] |> List.map fst, dynamic")
     // Not specifiers: a tuple, and a tuple in parentheses
     Assert.Equal(("int * int", []), specifiers "x, y")
     Assert.Equal(("int * int", []), specifiers "(x, y)")
     Assert.Equal((box (3, 4), "int * int"), evaluate add [ 3; 4 ] "x, y")
+
+    // The C# debugger's other specifiers are not F#: `h` is a name here, and not defined.
+    for text in [ "x, h"; "x, nq"; "x, nse"; "x, view(simple)" ] do
+        match compile add text with
+        | Ok compiled -> failwithf "%s compiled, with %A" text compiled.FormatSpecifiers
+        | Error _ -> ()
 
 [<Fact>]
 let ``result properties`` () =
@@ -808,6 +828,37 @@ let ``the result provider's full names of union case fields compile`` () =
     // FSharp.Core's cases, qualified by their F# type name.
     Assert.Equal((box 7, "int"), evaluate withUnions args "(match result with Result.Ok x -> x | _ -> failwith \"not Ok\")")
     Assert.Equal((box "b", "string"), evaluate withUnions args "(match choice with Choice.Choice2Of2 x -> x | _ -> failwith \"not Choice2Of2\")")
+
+[<Fact>]
+let ``names in double backticks`` () =
+    let frameMethod = methodOf fixtures "backticks"
+    let odd: EvalFixtures.Odd = { ``my field`` = 10; ``type`` = "t" }
+    // The parameters, then the local `the sum`.
+    let args = [ box 3; box "kw"; box odd; box (EvalFixtures.``My Case`` 7); box 13 ]
+
+    // In expressions: parameters, a local, a record field and a union case.
+    Assert.Equal((box 4, "int"), evaluate frameMethod args "``my value`` + 1")
+    Assert.Equal((box "kw", "string"), evaluate frameMethod args "``type``")
+    Assert.Equal((box 10, "int"), evaluate frameMethod args "odd.``my field``")
+    Assert.Equal((box "t", "string"), evaluate frameMethod args "odd.``type``")
+
+    let cases = "FSharp.ExpressionEvaluator.Tests.EvaluationTests.EvalFixtures.OddUnion"
+    Assert.Equal((box 7, "int"), evaluate frameMethod args $"(match oddUnion with {cases}.``My Case`` x -> x | _ -> failwith \"not My Case\")")
+
+    // The Locals rows' full names (Add Watch, edits) are F#: in backticks where F# needs them.
+    match session.Value.CompileLocals(frameOf frameMethod, false) with
+    | Ok compiled ->
+        Assert.Equal<(string * string) list>(
+            [ "my value", "``my value``"; "type", "``type``"; "odd", "odd"; "oddUnion", "oddUnion"; "the sum", "``the sum``" ],
+            compiled.Locals |> List.map (fun l -> l.Name, l.FullName)
+        )
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    // And they evaluate.
+    Assert.Equal((box 4, "int"), evaluate frameMethod args "``my value`` + 1")
+
+    // FCS's printer names the result types, in backticks where F# needs them.
+    Assert.Equal("``Odd Box`` list", snd (evaluate frameMethod args "[ { Inside = 1 } ]"))
 
 [<Fact>]
 let ``assignment to a hoisted variable of a state machine`` () =

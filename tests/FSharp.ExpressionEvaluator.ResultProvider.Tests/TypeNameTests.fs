@@ -123,3 +123,12 @@ let ``compiler generated names round-trip, and the F# type's payload is not them
     Assert.Equal(Some names, FSharpTypes.CompilerGenerated.tryDecode FSharpTypes.CompilerGenerated.payloadId payload)
     Assert.Equal(None, FSharpTypes.CompilerGenerated.tryDecode FSharpTypes.TypeInfo.payloadId payload)
     Assert.Equal(None, FSharpTypes.TypeInfo.tryDecode FSharpTypes.CompilerGenerated.payloadId payload)
+
+[<Fact>]
+let ``type names in double backticks where F# needs them`` () =
+    Assert.Equal($"{ns}.Odd", name typeOf<Odd>)
+    Assert.Equal($"{ns}.``Odd Module``.Inner", name typeOf<``Odd Module``.Inner>)
+    Assert.Equal($"{ns}.``Odd Generic``<int>", name typeOf<``Odd Generic``<int>>)
+    Assert.Equal($"{ns}.``Odd Module``.Inner list", name typeOf<``Odd Module``.Inner list>)
+    // F# sorts the fields of an anonymous record by name.
+    Assert.Equal("{| Plain: string; ``my field``: int |}", name (ReflectionType.Of(({| ``my field`` = 1; Plain = "p" |}).GetType())))

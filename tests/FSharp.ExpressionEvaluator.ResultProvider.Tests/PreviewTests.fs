@@ -156,3 +156,45 @@ let ``non-F# values nested in F# values use the fallback display`` () =
 [<Fact>]
 let ``deep nesting is cut`` () =
     shows "[[[...]]]" [ [ [ [ 1 ] ] ] ]
+
+/// A Lazy whose value is created.
+let private forced value =
+    let l = lazy value
+    l.Force() |> ignore
+    l
+
+[<Fact>]
+let ``lazy values show their value once created, without forcing it`` () =
+    let pending = lazy (1 + 1)
+    shows "<unevaluated>" pending
+    Assert.False pending.IsValueCreated
+    pending.Force() |> ignore
+    shows "2" pending
+    shows "[1]" (forced [ 1 ])
+    shows "[<unevaluated>; Some 3]" [ lazy (Some 1); forced (Some 3) ]
+
+    let faulted = lazy (failwith "no": int)
+    (try faulted.Force() |> ignore with _ -> ())
+    shows "<faulted>" faulted
+
+[<Fact>]
+let ``bigint literals`` () =
+    shows "0I" 0I
+    shows "-42I" -42I
+    shows "12345678901234567890123456789I" 12345678901234567890123456789I
+    shows "-18446744073709551616I" -18446744073709551616I
+    shows "[1I; 2I]" [ 1I; 2I ]
+
+let private showsHex<'T> (expected: string) (value: 'T) =
+    let options = FSharpValues.defaultOptions |> FSharpValues.withRadix 16u
+    Assert.Equal(Some expected, FSharpValues.tryPreview options (Some typeOf<'T>) (live (box value)))
+
+[<Fact>]
+let ``hex display applies to integers inside previews`` () =
+    showsHex "[0x0000000a; 0xffffffff]" [ 10; -1 ]
+    showsHex "[0x000000000000000a; 0xff; 0x0010]" [ box 10L; box 255uy; box 16s ]
+    showsHex "[1.5; 'a'; \"s\"; true; 2.5M]" [ box 1.5; box 'a'; box "s"; box true; box 2.5M ]
+    showsHex "Some 0x0000002a" (Some 42)
+    showsHex "[42I]" [ 42I ]
+    Assert.Equal(Some "seq [0x01; 0x02]", FSharpValues.trySeqPreview (FSharpValues.defaultOptions |> FSharpValues.withRadix 16u) (live (seq { 1uy..2uy })))
+    Assert.Equal(Some "[0x00000001]", FSharpValues.tryPreview (FSharpValues.withRadix 16u FSharpValues.defaultOptions) None (live (forced [ 1 ])))

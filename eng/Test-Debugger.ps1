@@ -33,6 +33,16 @@ $runs = @(
                 # C# renders it (its DebuggerDisplay), on the result provider's own work list.
                 '1: dict => Count = 2'
                 '1: undefinedName => !error'
+                '1: xs, h => !error'
+                # Lazy values read without forcing them, and a bigint literal.
+                '1: created => [1; 2]'
+                '1: pending => <unevaluated>'
+                '1: pending.IsValueCreated => false'
+                '1: big => 12345678901234567890123I'
+                # Names in double backticks.
+                '1: ``the sum`` + 1 => 8'
+                '1: odd.``my field`` => 1'
+                '1: (match oddUnion with TestDebuggee.Program.OddUnion.``My Case`` x -> x | _ -> failwith "not My Case") => 7'
                 # A local that shadows the parameter, and the parameter by its Locals row's full name.
                 '1: name => "TEST"'
                 '1: ``name (shadowed)`` => "test"'
@@ -52,6 +62,9 @@ $runs = @(
                 '6: List.map (fun i -> i * 2) xs => [2; 4; 6]'
                 '6: _arg1 => Some [1; 2; 3]'
             )
+            # Integers inside F# previews follow the debugger's Hexadecimal Display. `x, h` is an F#
+            # tuple: the C# debugger's format specifiers are not F#.
+            ExpectHex = @('1: [ 10; 255 ] => [0x0000000a; 0x000000ff]', '1: opt => Some 0x0000002a', '1: big => 12345678901234567890123I')
             # Children from GetChildren: an F# record's fields (each rendered by C#) and its Raw View,
             # C#'s own children of a Dictionary, and a class's fields.
             Expand = @('1: point', '1: dict', '3: this')
@@ -64,15 +77,25 @@ $runs = @(
                 # A parameter, typed from its function's F# signature.
                 '1: trip => float<m>'
                 '1: trip / 2.0 => float<m>'
+                '1: created => Lazy<int list>'
+                '1: big => bigint'
+                # Type names in double backticks: from the result provider, and an abbreviation's
+                # from the expression compiler.
+                '1: oddBox => TestDebuggee.Program.``Odd Box``'
+                '1: [ oddBox ] => TestDebuggee.Program.``Odd Box`` list'
+                '1: myIds => ``My Ids``'
             )
-            ExpectLocalType = @('1: trip => float<m>', '1: xs => int list', '1: name (shadowed) => string', '1: name => string')
+            ExpectLocalType = @('1: oddBox => TestDebuggee.Program.``Odd Box``', '1: trip => float<m>', '1: xs => int list', '1: name (shadowed) => string', '1: name => string')
             # A call stack name with a parameter's F# type, once the session is built (break 2).
             ExpectLog = @('TestDebuggee.Program.closure (start: float<m>)')
             # Compiler temporaries under one Locals row: here `function`'s argument.
-            ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]', '1: rect / Item2 => 2.5')
+            ExpectLocalChild = @('6: [compiler generated] / _arg1 => Some [1; 2; 3]', '1: rect / Item2 => 2.5', '1: created / Value => [1; 2]')
             # A parameter of a unit-of-measure type (edited without the unit), a record's immutable
             # field (as an edit of its row under `point`), a closure's captured value, a parameter and
             # a class let field.
+            # Edits of Locals rows compile an assignment to the row's full name, which needs double
+            # backticks here: a local, and record fields under its row.
+            AssignLocal = @('1: the sum = 10', '1: odd / my field = 5', '1: odd / type = "u"')
             Assign = @('trip=4.5', 'point.X=5', 'captured=42', 'by=5', 'count=100')
         }
     }

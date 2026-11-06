@@ -46,3 +46,8 @@ let numbers () =
     }
 
 let work () = task { return 42 }
+
+/// Names that F# writes in double backticks.
+type ``Odd Box`` = { Inside: int }
+
+let ``odd function`` (``my value``: int) (box: ``Odd Box``) = ``my value`` + box.Inside

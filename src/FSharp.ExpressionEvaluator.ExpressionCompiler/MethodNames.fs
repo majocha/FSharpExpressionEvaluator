@@ -104,7 +104,8 @@ let rec private qualifiedTypeName (md: MetadataReader) (h: TypeDefinitionHandle)
     let display =
         let n = stripArity name
         // Modules compiled with ModuleSuffix are named `XModule`.
-        if representationFlags attributes &&& 4 <> 0 && n.EndsWith "Module" then n.Substring(0, n.Length - 6) else n
+        let n = if representationFlags attributes &&& 4 <> 0 && n.EndsWith "Module" then n.Substring(0, n.Length - 6) else n
+        FSharpTypes.displayIdent n
 
     // CLR nested types redeclare the enclosing type's generic parameters first; show only their own.
     let allParameters = genericNames md (t.GetGenericParameters())
@@ -123,7 +124,7 @@ let rec private qualifiedTypeName (md: MetadataReader) (h: TypeDefinitionHandle)
         else
             match md.GetString t.Namespace with
             | "" -> ""
-            | ns -> ns + "."
+            | ns -> String.Join(".", ns.Split '.' |> Array.map FSharpTypes.displayIdent) + "."
 
     prefix + display + generics
 
@@ -172,9 +173,9 @@ let private memberName (md: MetadataReader) (m: MethodDefinition) (declaring: Ty
         $"{name.Substring 4} ({kind})"
     | _ ->
         match sourceName, operatorName name with
-        | Some n, _ -> n
+        | Some n, _ -> FSharpTypes.displayIdent n
         | None, Some op -> $"({op})"
-        | None, None -> name
+        | None, None -> FSharpTypes.displayIdent name
 
 /// A parameter, with the F# name of its type when the F# signature says more than IL (`float<m>`).
 type private Parameter =
@@ -190,8 +191,8 @@ let private parameterTypeName (p: Parameter) =
 let private formatArgument (format: ArgumentFormat) (p: Parameter) (value: string option) =
     let text =
         match format.Names, format.Types with
-        | true, true -> $"{p.Name}: {parameterTypeName p}"
-        | true, false -> p.Name
+        | true, true -> $"{FSharpTypes.displayIdent p.Name}: {parameterTypeName p}"
+        | true, false -> FSharpTypes.displayIdent p.Name
         | false, true -> parameterTypeName p
         | false, false -> ""
 

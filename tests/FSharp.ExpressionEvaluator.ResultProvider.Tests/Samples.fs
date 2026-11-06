@@ -62,3 +62,15 @@ let makeClosure () =
         captured + x
 
 let curried = fun (x: int) (y: int) -> x + y
+
+/// Names that F# writes in double backticks: with spaces, and keywords.
+type Odd = { ``my field``: int; ``type``: string }
+
+type OddUnion =
+    | ``My Case`` of ``the value``: int
+    | ``Other Case``
+
+module ``Odd Module`` =
+    type Inner = | InA of int | InB
+
+type ``Odd Generic``<'T> = { Item: 'T }

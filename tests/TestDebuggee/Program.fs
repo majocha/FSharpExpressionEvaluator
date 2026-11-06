@@ -36,6 +36,21 @@ type StructUnion =
 
 exception MyError of code: int * string
 
+/// Names that F# writes in double backticks: with spaces, and keywords.
+type Odd = { ``my field``: int; ``type``: string }
+
+type OddUnion =
+    | ``My Case`` of ``the value``: int
+    | ``Other Case``
+
+type ``Odd Box`` = { Inside: int }
+
+/// An abbreviation: the Type column has its name from the expression compiler. A module value,
+/// since locals other than parameters have no F# type recorded.
+type ``My Ids`` = int list
+
+let myIds: ``My Ids`` = [ 4 ]
+
 /// Break 1: a module function with locals of many F# shapes, a parameter whose F# type IL has lost,
 /// and a local that shadows a parameter (Locals shows both).
 let inspect (xs: int list) (name: string) (trip: float<m>) =
@@ -63,6 +78,15 @@ let inspect (xs: int list) (name: string) (trip: float<m>) =
     let unitValue = ()
     let boxed: obj = box [ 1; 2 ]
     let add = fun (a: int) (b: int) -> a + b
+    // A Lazy shows its value once created, and isn't forced by the display.
+    let created = lazy [ 1; 2 ]
+    created.Force() |> ignore
+    let pending = lazy (printfn "forced"; 3)
+    let big = 12345678901234567890123I
+    let ``the sum`` = 3 + 4
+    let odd = { ``my field`` = 1; ``type`` = "t" }
+    let oddUnion = ``My Case`` 7
+    let oddBox = { Inside = 2 }
     // C# renders it, through its DebuggerDisplay.
     let dict = Collections.Generic.Dictionary<string, int>()
     dict.Add("a", 1)
@@ -70,8 +94,10 @@ let inspect (xs: int list) (name: string) (trip: float<m>) =
     Debugger.Break()
 
     printfn
-        "%A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %s %d %d"
+        "%A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %A %s %d %d %A %b %A"
         point shape rect five structUnion opt none someShape result tuple structTuple empty nested array map set anon cell error unitValue boxed (add 1 2) xs name longList.Length dict.Count
+        created.Value pending.IsValueCreated big
+    printfn "%d %A %A %A %A" ``the sum`` odd oddUnion oddBox myIds
 
 /// Break 2: inside a closure that captures an immutable and a mutable local. On the call stack,
 /// `closure` shows its parameter's F# type.

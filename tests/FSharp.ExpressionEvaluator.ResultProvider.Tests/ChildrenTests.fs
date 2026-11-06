@@ -99,3 +99,44 @@ let ``map entries and set items`` () =
 [<Fact>]
 let ``non-F# values have no F# children`` () =
     Assert.Equal(None, children (System.Collections.Generic.List<int>()))
+
+[<Fact>]
+let ``a created lazy value has its value as a child`` () =
+    let pending = lazy 5
+    Assert.Equal(Some [], children pending)
+    Assert.True(FSharpValues.hasChildren (live pending))
+    Assert.True(FSharpValues.hasRawView (live pending))
+    pending.Force() |> ignore
+    Assert.Equal(Some [ "Value", "v.Value", "5" ], children pending)
+
+[<Fact>]
+let ``a bigint has no children`` () =
+    Assert.Equal(Some [], children 5I)
+    Assert.False(FSharpValues.hasChildren (live 5I))
+
+[<Fact>]
+let ``full names put names in double backticks where F# needs them`` () =
+    Assert.Equal(Some [ "my field", "v.``my field``", "1"; "type", "v.``type``", "t" ], children { ``my field`` = 1; ``type`` = "t" })
+
+    let samples = "FSharp.ExpressionEvaluator.Tests.Samples"
+
+    Assert.Equal(
+        Some [ "the value", $"(match v with {samples}.OddUnion.``My Case`` x -> x | _ -> failwith \"not My Case\")", "7" ],
+        children (``My Case`` 7)
+    )
+
+    Assert.Equal(
+        Some [ "Item", $"(match v with {samples}.``Odd Module``.Inner.InA x -> x | _ -> failwith \"not InA\")", "2" ],
+        children (``Odd Module``.InA 2)
+    )
+
+    // A parent in backticks is parenthesized, which F# reads the same.
+    Assert.Equal("(``my value``).X", FSharpValues.FullNames.memberAccess "``my value``" "X")
+
+[<Fact>]
+let ``identifiers are left as they are`` () =
+    for name in [ "x"; "_arg1"; "x'"; "Item1"; "éclair" ] do
+        Assert.Equal(name, FSharpTypes.fsharpIdent name)
+
+    for name in [ "my field"; "type"; "x@5"; "1st"; ""; "base" ] do
+        Assert.Equal($"``{name}``", FSharpTypes.fsharpIdent name)

@@ -17,9 +17,14 @@ type Options =
         MaxLength: int
         /// Items materialized when expanding a list, map or set.
         MaxChildren: int
+        /// Integers in hexadecimal, as the debugger's hex display asks (radix 16).
+        Hex: bool
     }
 
-let defaultOptions = { MaxItems = 10; MaxDepth = 3; MaxLength = 250; MaxChildren = 10000 }
+let defaultOptions = { MaxItems = 10; MaxDepth = 3; MaxLength = 250; MaxChildren = 10000; Hex = false }
+
+/// The options for a radix of the debugger's inspection context (10, or 16 for hex display).
+let withRadix (radix: uint32) (options: Options) = { options with Hex = (radix = 16u) }
 
 // ---------------------------------------------------------------------------------------------
 // Reading shapes
@@ -131,6 +136,65 @@ let rangeItems max (v: IValue) : (obj list * bool) option =
             | _ -> None
         | _ -> None
 
+/// The state of a `Lazy<'T>`, read from its fields without forcing it.
+type LazyState =
+    | Created of IValue
+    | NotCreated
+    | Faulted
+
+/// The state of a Lazy, or None for a field layout this runtime doesn't have.
+let lazyState (v: IValue) =
+    let state = v.Field "_state"
+
+    if not (isError state) then
+        // .NET Core: `_state` is null once the value is in `_value`. A faulted Lazy keeps its
+        // exception in the state.
+        if state.IsNull then
+            Some(Created(v.Field "_value"))
+        else
+            let error = state.Field "_exceptionDispatch"
+            Some(if not (isError error) && not error.IsNull then Faulted else NotCreated)
+    else
+        // .NET Framework: `m_boxed` is null until the value is created, then a `Boxed` holding
+        // `m_value`, or a `LazyInternalExceptionHolder`.
+        let boxed = v.Field "m_boxed"
+
+        if isError boxed then None
+        elif boxed.IsNull then Some NotCreated
+        else
+            let value = boxed.Field "m_value"
+            Some(if isError value then Faulted else Created value)
+
+/// Longest `bigint` read from memory, in 32-bit words (about 2,500 decimal digits).
+let private maxBigIntWords = 256
+
+/// The value of a `bigint` from its fields, on .NET Core and .NET Framework alike: `_sign` alone
+/// for values that fit in an int, otherwise the sign and the magnitude's 32-bit words in `_bits`,
+/// least significant first. None for another layout, and for very long values.
+let bigintValue (v: IValue) : Numerics.BigInteger option =
+    let sign = v.Field "_sign"
+    let bits = v.Field "_bits"
+
+    if isError sign || isError bits || isNull sign.HostValue then
+        None
+    elif bits.IsNull then
+        Some(Numerics.BigInteger(Convert.ToInt32 sign.HostValue))
+    elif bits.ArrayLength > maxBigIntWords then
+        None
+    else
+        let words = [ for i in 0 .. bits.ArrayLength - 1 -> bits.Element i ]
+
+        if words |> List.exists (fun w -> isError w || isNull w.HostValue) then
+            None
+        else
+            // Little-endian bytes, with a zero byte last so that the magnitude reads as positive.
+            let bytes =
+                [| for w in words do yield! BitConverter.GetBytes(Convert.ToUInt32 w.HostValue)
+                   yield 0uy |]
+
+            let magnitude = Numerics.BigInteger bytes
+            Some(if Convert.ToInt32 sign.HostValue < 0 then -magnitude else magnitude)
+
 /// Captured values of a closure: its instance fields, minus the cached `@_instance` singleton.
 let closureFields (t: IType) =
     Types.hierarchy t
@@ -164,11 +228,32 @@ let private formatFloat (text: string) =
     // F# always shows a decimal point or exponent: 1.0, 1.5, 1e+20.
     if text.IndexOfAny [| '.'; 'E'; 'e'; 'n'; 'N'; 'i' |] >= 0 then text else text + ".0"
 
-/// F# literal syntax for primitives (`%A` conventions), or None for other values.
-let formatPrimitive (value: obj) =
+/// An integer in hex as the C# provider shows it beside our rows: `0x` and every digit of its
+/// width, two's complement for negative values (`0xffffffff`), and no F# suffix (docs/DESIGN.md §5.3).
+let private formatHex (value: obj) =
     let inv = CultureInfo.InvariantCulture
 
     match value with
+    | :? int as x -> Some(x.ToString("x8", inv))
+    | :? int64 as x -> Some(x.ToString("x16", inv))
+    | :? int16 as x -> Some(x.ToString("x4", inv))
+    | :? sbyte as x -> Some(x.ToString("x2", inv))
+    | :? byte as x -> Some(x.ToString("x2", inv))
+    | :? uint16 as x -> Some(x.ToString("x4", inv))
+    | :? uint32 as x -> Some(x.ToString("x8", inv))
+    | :? uint64 as x -> Some(x.ToString("x16", inv))
+    | :? nativeint as x -> Some((int64 x).ToString("x16", inv))
+    | :? unativeint as x -> Some((uint64 x).ToString("x16", inv))
+    | _ -> None
+    |> Option.map (fun digits -> "0x" + digits)
+
+/// F# literal syntax for primitives (`%A` conventions), or None for other values. With `hex`,
+/// integers are in hex; other primitives keep their literals.
+let formatPrimitive (hex: bool) (value: obj) =
+    let inv = CultureInfo.InvariantCulture
+
+    match value with
+    | _ when hex && (formatHex value).IsSome -> formatHex value
     | :? int as x -> Some(x.ToString inv)
     | :? int64 as x -> Some(x.ToString inv + "L")
     | :? int16 as x -> Some(x.ToString inv + "s")
@@ -222,7 +307,7 @@ let trySeqPreview (options: Options) (v: IValue) =
     else
         match rangeItems options.MaxItems v with
         | Some(items, truncated) ->
-            let text (item: obj) = formatPrimitive item |> Option.defaultValue (string item)
+            let text (item: obj) = formatPrimitive options.Hex item |> Option.defaultValue (string item)
             Some("seq [" + join "; " (items |> List.map text |> withMore truncated) + "]")
         | None -> Some "seq [...]"
 
@@ -239,12 +324,23 @@ let rec private preview (options: Options) depth (declared: IType option) (v: IV
     else
         match shape v.Type with
         | NotFSharp ->
-            match formatPrimitive v.HostValue, trySeqPreview options v with
+            match formatPrimitive options.Hex v.HostValue, trySeqPreview options v with
             | Some s, _ when not v.Type.IsEnum -> s
             | _, Some s -> s
             | _ -> v.FallbackDisplay()
         | UnitShape -> "()"
         | FunctionShape -> $"<fun:{closureName v.Type}>"
+        | BigIntShape ->
+            match bigintValue v with
+            | Some n -> n.ToString(CultureInfo.InvariantCulture) + "I"
+            | None -> v.FallbackDisplay()
+        | LazyShape valueType ->
+            // As fsi shows it: the value once created, without a level of nesting of its own.
+            match lazyState v with
+            | Some(Created value) -> preview options depth (Some valueType) value
+            | Some NotCreated -> "<unevaluated>"
+            | Some Faulted -> "<faulted>"
+            | None -> v.FallbackDisplay()
         | _ when depth >= options.MaxDepth -> "..."
         | ListShape element ->
             let items, truncated = listItems options.MaxItems v
@@ -304,8 +400,15 @@ let tryPreview (options: Options) (declared: IType option) (v: IValue) =
             | Some(UnionShape { NullCase = Some _ })
             | Some UnitShape -> true
             | _ -> false
+        elif isError v then
+            false
         else
-            isError v |> not && shape v.Type <> NotFSharp
+            // A Lazy or bigint whose fields this runtime names differently goes to C#.
+            match shape v.Type with
+            | NotFSharp -> false
+            | LazyShape _ -> (lazyState v).IsSome
+            | BigIntShape -> (bigintValue v).IsSome
+            | _ -> true
 
     if fsharp then
         let text = preview options 0 declared v
@@ -361,7 +464,7 @@ module FullNames =
     let private parenthesize (expression: string) =
         if isSimple expression then expression else $"({expression})"
 
-    let memberAccess (parent: string) (name: string) = $"{parenthesize parent}.{name}"
+    let memberAccess (parent: string) (name: string) = $"{parenthesize parent}.{fsharpIdent name}"
 
     let index (parent: string) (i: int) = $"{parenthesize parent}[{i}]"
 
@@ -377,9 +480,9 @@ module FullNames =
                 | -1 -> name
                 | i -> name.Substring(0, i)
             else
-                sourcePath union.Type
+                sourcePathExpression union.Type
 
-        let casePath = $"{unionPath}.{case.Name}"
+        let casePath = $"{unionPath}.{fsharpIdent case.Name}"
 
         let pattern =
             if count = 1 then
@@ -430,10 +533,14 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
             [ for i in 0 .. v.ArrayLength - 1 -> child $"[{i}]" (Some element) (indexName i) (lazy (v.Element i)) ] |> Some
         | TupleShape _ ->
             let types = tupleTypes v.Type
-            let rec memberPath i = if i < 7 then $"Item{i + 1}" else "Rest." + memberPath (i - 7)
+            // Items past the seventh are in `Rest`: `v.Rest.Item1`.
+            let rec memberPath (parent: string) i =
+                if i < 7 then FullNames.memberAccess parent $"Item{i + 1}"
+                else memberPath (FullNames.memberAccess parent "Rest") (i - 7)
 
             tupleItems v
-            |> List.mapi (fun i item -> child $"Item{i + 1}" (List.tryItem i types) (memberName (memberPath i)) (Lazy<IValue>.CreateFromValue item))
+            |> List.mapi (fun i item ->
+                child $"Item{i + 1}" (List.tryItem i types) (parentFullName |> Option.map (fun p -> memberPath p i)) (Lazy<IValue>.CreateFromValue item))
             |> Some
         | UnionShape u ->
             match unionCase u v with
@@ -454,6 +561,15 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
                         parentFullName |> Option.map (fun p -> FullNames.caseField p u case index fields.Length))
                 |> Some
         | RecordShape _ -> fieldChildren (recordFields v.Type) (fun f -> memberName f.Name) |> Some
+        | BigIntShape -> Some []
+        | LazyShape valueType ->
+            // The value read from its field once created: never `.Value`, which would force it. The
+            // Raw View has the rest (the factory, the thread safety mode).
+            match lazyState v with
+            | Some(Created value) -> Some [ child "Value" (Some valueType) (memberName "Value") (Lazy<IValue>.CreateFromValue value) ]
+            | Some NotCreated
+            | Some Faulted -> Some []
+            | None -> None
         | MapShape ->
             let items, _ = treeItems options.MaxChildren v true
             let args = v.Type.GenericArguments
@@ -484,7 +600,10 @@ let hasChildren (v: IValue) =
        | FunctionShape -> not (closureFields v.Type).IsEmpty
        | MapShape
        | SetShape -> treeField v |> Option.exists (fun tree -> not tree.IsNull)
+       // The Raw View, at least.
+       | LazyShape _ -> true
        | UnitShape
+       | BigIntShape
        | NotFSharp -> false
 
 /// Whether a Raw View row (the C# provider's view with the `raw` specifier) is worth adding.
@@ -495,5 +614,6 @@ let hasRawView (v: IValue) =
        | RecordShape _
        | FunctionShape
        | MapShape
-       | SetShape -> true
+       | SetShape
+       | LazyShape _ -> true
        | _ -> false

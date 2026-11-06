@@ -58,6 +58,29 @@ type internal RowsData(parent: FSharpResultData, rows: Row[]) =
     member _.Parent = parent
     member _.Rows = rows
 
+/// A result by the data item this component attached to it, if any (a result has one at most).
+type internal ResultKind =
+    | FSharpResult of FSharpResultData
+    | RawViewResult of RawViewData
+    | CompilerGeneratedResult of CompilerGeneratedData
+    | RetypedResult of RetypedData
+    /// Created by another provider (C#).
+    | OtherResult
+
+    static member Of(result: DkmEvaluationResult) =
+        match result.GetDataItem<FSharpResultData>() with
+        | null ->
+            match result.GetDataItem<RawViewData>() with
+            | null ->
+                match result.GetDataItem<CompilerGeneratedData>() with
+                | null ->
+                    match result.GetDataItem<RetypedData>() with
+                    | null -> OtherResult
+                    | retyped -> RetypedResult retyped
+                | data -> CompilerGeneratedResult data
+            | raw -> RawViewResult raw
+        | data -> FSharpResult data
+
 /// F# result provider (docs/DESIGN.md §5.1): renders F# shapes from memory and chains every other
 /// value to the next IDkmClrResultProvider (Roslyn's C# one). Children of F# values are created
 /// through Concord again, so each lands with whichever provider owns its shape. While the F# EE is
@@ -77,36 +100,31 @@ type ResultProvider() =
     static let lmrType (t: DkmClrType) =
         if isNull t then None else Lmr.safe None (fun () -> Some(LmrType.Of(t.GetLmrType())))
 
-    /// The F# type of an expression's result, from the expression compiler (docs/DESIGN.md §6.8).
-    static let fsharpTypeName (customTypeInfo: DkmClrCustomTypeInfo) =
+    /// A payload of the expression compiler's custom type info, decoded by `tryDecode`.
+    static let decodeTypeInfo what (tryDecode: System.Guid -> byte[] -> 'T option) (customTypeInfo: DkmClrCustomTypeInfo) =
         match customTypeInfo with
         | null -> None
         | info ->
             try
-                FSharpTypes.TypeInfo.tryDecode info.PayloadTypeId (Seq.toArray info.Payload)
+                tryDecode info.PayloadTypeId (Seq.toArray info.Payload)
             with e ->
-                Log.exn "RP" "F# type info" e
+                Log.exn "RP" what e
                 None
+
+    /// The F# type of an expression's result, from the expression compiler (docs/DESIGN.md §6.8).
+    static let fsharpTypeName = decodeTypeInfo "F# type info" FSharpTypes.TypeInfo.tryDecode
 
     /// The compiler temporaries of the `[compiler generated]` row, from the expression compiler.
-    static let compilerGeneratedNames (customTypeInfo: DkmClrCustomTypeInfo) =
-        match customTypeInfo with
-        | null -> None
-        | info ->
-            try
-                FSharpTypes.CompilerGenerated.tryDecode info.PayloadTypeId (Seq.toArray info.Payload)
-            with e ->
-                Log.exn "RP" "compiler generated names" e
-                None
+    static let compilerGeneratedNames =
+        decodeTypeInfo "compiler generated names" FSharpTypes.CompilerGenerated.tryDecode
 
-    /// The `[compiler generated]` row: no value and no type of its own, and no full name, as no
-    /// expression stands for the group.
-    static let compilerGeneratedRow (clrValue: DkmClrValue) context name names =
+    /// A row that only groups the rows under it: no value and no type of its own.
+    static let groupRow context frame name fullName (data: DkmDataItem) =
         DkmSuccessEvaluationResult.Create(
             context,
-            clrValue.StackFrame,
+            frame,
             name,
-            null,
+            fullName,
             DkmEvaluationResultFlags.ReadOnly ||| DkmEvaluationResultFlags.Expandable,
             "",
             null,
@@ -118,8 +136,22 @@ type ResultProvider() =
             null,
             null,
             null,
-            CompilerGeneratedData(clrValue, names)
+            data
         )
+
+    /// Rows created up front as the children of a result: the first `initialRequestSize` of them
+    /// now, the rest through GetItems.
+    static let staticRows (rows: DkmEvaluationResult[]) initialRequestSize frame context =
+        let enumContext = DkmEvaluationResultEnumContext.Create(rows.Length, frame, context, SequenceRowsData rows)
+        DkmGetChildrenAsyncResult(Array.truncate initialRequestSize rows, enumContext)
+
+    /// The `count` rows from `startIndex` on, as GetItems asks for them.
+    static let page startIndex count (rows: 'T[]) =
+        rows |> Array.skip (min startIndex rows.Length) |> Array.truncate count
+
+    /// The `[compiler generated]` row: no full name, as no expression stands for the group.
+    static let compilerGeneratedRow (clrValue: DkmClrValue) context name names =
+        groupRow context clrValue.StackFrame name null (CompilerGeneratedData(clrValue, names))
 
     /// Children of the `[compiler generated]` row: each temporary as an expression for the debugger
     /// to evaluate, as the Watch window does, so each row has its value, its full name and edits. This
@@ -144,8 +176,7 @@ type ResultProvider() =
                 :> DkmEvaluationResult)
             |> Array.ofList
 
-        let enumContext = DkmEvaluationResultEnumContext.Create(children.Length, frame, context, SequenceRowsData children)
-        DkmGetChildrenAsyncResult(Array.truncate initialRequestSize children, enumContext)
+        staticRows children initialRequestSize frame context
 
     /// The Type column; `fsharpName`, the expression's F# type, replaces the declared type's name.
     static let typeColumn (fsharpName: string option) (declared: IType option) (value: IValue) =
@@ -242,22 +273,7 @@ type ResultProvider() =
 
     /// The same inspection context with ShowValueRaw: the C# provider then skips proxies and
     /// DebuggerDisplay, and our GetResult steps aside (as for `x, raw`).
-    static let rawContext (c: DkmInspectionContext) =
-        DkmInspectionContext.Create(
-            c.InspectionSession,
-            c.RuntimeInstance,
-            c.Thread,
-            c.Timeout,
-            c.EvaluationFlags ||| DkmEvaluationFlags.ShowValueRaw,
-            c.FuncEvalFlags,
-            c.Radix,
-            c.Language,
-            c.ReturnValue,
-            c.AdditionalVisualizationData,
-            c.AdditionalVisualizationDataPriority,
-            c.ReturnValues,
-            c.SymbolsConnection
-        )
+    static let rawContext = WorkLists.withEvaluationFlags DkmEvaluationFlags.ShowValueRaw
 
     /// Children of a Raw View row: the C# provider's children of the value in a raw context.
     static let rawViewChildren (raw: RawViewData) (workList: DkmWorkList) initialRequestSize context (k: DkmCompletionRoutine<DkmGetChildrenAsyncResult>) =
@@ -280,25 +296,7 @@ type ResultProvider() =
 
     /// The Raw View row of a value. It has no value of its own; its children come from rawViewChildren.
     static let rawViewRow context frame (parent: FSharpResultData) =
-        DkmSuccessEvaluationResult.Create(
-            context,
-            frame,
-            "Raw View",
-            rawFullName parent,
-            DkmEvaluationResultFlags.ReadOnly ||| DkmEvaluationResultFlags.Expandable,
-            "",
-            null,
-            "",
-            DkmEvaluationResultCategory.Data,
-            DkmEvaluationResultAccessType.None,
-            DkmEvaluationResultStorageType.None,
-            DkmEvaluationResultTypeModifierFlags.None,
-            null,
-            null,
-            null,
-            RawViewData parent
-        )
-        :> DkmEvaluationResult
+        groupRow context frame "Raw View" (rawFullName parent) (RawViewData parent) :> DkmEvaluationResult
 
     /// Children of an F# sequence: C#'s Results View, then a Raw View holding the fields of its
     /// closure class (`start`/`stop` of a range, `pc`/`current` of a `seq { }`), which C# lists first.
@@ -314,8 +312,7 @@ type ResultProvider() =
                 k.Invoke r
             else
                 let rows = [| yield! r.InitialChildren |> Array.filter isResultsView; rawViewRow context frame parent |]
-                let enumContext = DkmEvaluationResultEnumContext.Create(rows.Length, frame, context, SequenceRowsData rows)
-                k.Invoke(DkmGetChildrenAsyncResult(Array.truncate initialRequestSize rows, enumContext))
+                k.Invoke(staticRows rows initialRequestSize frame context)
 
         // A closure has a handful of fields, so one request returns C#'s Results View row.
         WorkLists.complete "RP" "sequence children" workList (fun workList k -> retyped.Original.GetChildren(workList, 100, context, k)) complete
@@ -363,22 +360,13 @@ type ResultProvider() =
 
         next 0
 
-    /// The completion routine, logging the call and its completion with FSHARP_EE_TRACE=1.
-    static let traced (what: string) (completionRoutine: DkmCompletionRoutine<'T>) =
-        let call = Log.trace "RP" what
-
-        call,
-        DkmCompletionRoutine<'T>(fun r ->
-            call.Completed()
-            completionRoutine.Invoke r)
-
     interface IDkmClrResultProvider with
 
         member _.GetResult
             (clrValue, workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
             =
-            let call, completionRoutine = traced $"GetResult '{resultName}'" completionRoutine
-            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+            let call, completionRoutine = WorkLists.traced "RP" $"GetResult '{resultName}'" completionRoutine
+            use _ = call
 
             let fsharp =
                 Settings.enabled ()
@@ -424,73 +412,62 @@ type ResultProvider() =
                     completionRoutine.Invoke(if fsharp then retyped r else r))
 
         member _.GetChildren(result, workList, initialRequestSize, inspectionContext, completionRoutine) =
-            let call, completionRoutine = traced $"GetChildren '{result.Name}'" completionRoutine
-            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+            let call, completionRoutine = WorkLists.traced "RP" $"GetChildren '{result.Name}'" completionRoutine
+            use _ = call
 
-            match result.GetDataItem<FSharpResultData>(), result.GetDataItem<RawViewData>() with
-            | null, null when not (isNull (result.GetDataItem<CompilerGeneratedData>())) ->
+            let orError f =
                 try
-                    completionRoutine.Invoke(
-                        compilerGeneratedChildren (result.GetDataItem<CompilerGeneratedData>()) initialRequestSize inspectionContext
-                    )
+                    f ()
                 with e ->
                     Log.exn "RP" $"GetChildren '{result.Name}'" e
                     completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
-            | null, null ->
-                match result.GetDataItem<RetypedData>() with
-                | null ->
-                    WorkLists.complete "RP" "GetChildren" workList (fun workList k ->
-                        result.GetChildren(workList, initialRequestSize, inspectionContext, k)) completionRoutine.Invoke
-                | retyped when isNull retyped.Sequence ->
-                    WorkLists.complete "RP" "GetChildren" workList (fun workList k ->
-                        retyped.Original.GetChildren(workList, initialRequestSize, inspectionContext, k)) completionRoutine.Invoke
-                | retyped ->
-                    try
-                        sequenceChildren retyped workList initialRequestSize inspectionContext completionRoutine
-                    with e ->
-                        Log.exn "RP" $"GetChildren '{result.Name}'" e
-                        completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
-            | null, raw -> rawViewChildren raw workList initialRequestSize inspectionContext completionRoutine
-            | data, _ ->
-                try
+
+            let passOn (original: DkmEvaluationResult) =
+                WorkLists.complete "RP" "GetChildren" workList (fun workList k ->
+                    original.GetChildren(workList, initialRequestSize, inspectionContext, k)) completionRoutine.Invoke
+
+            match ResultKind.Of result with
+            | OtherResult -> passOn result
+            | RetypedResult retyped when isNull retyped.Sequence -> passOn retyped.Original
+            | RetypedResult retyped ->
+                orError (fun () -> sequenceChildren retyped workList initialRequestSize inspectionContext completionRoutine)
+            | CompilerGeneratedResult data ->
+                orError (fun () -> completionRoutine.Invoke(compilerGeneratedChildren data initialRequestSize inspectionContext))
+            | RawViewResult raw -> rawViewChildren raw workList initialRequestSize inspectionContext completionRoutine
+            | FSharpResult data ->
+                orError (fun () ->
                     let rows = rows inspectionContext data
                     let enumContext = DkmEvaluationResultEnumContext.Create(rows.Length, result.StackFrame, inspectionContext, RowsData(data, rows))
                     let initial = Array.truncate initialRequestSize rows
 
                     evaluateRows workList inspectionContext data initial (fun children ->
-                        completionRoutine.Invoke(DkmGetChildrenAsyncResult(children, enumContext)))
-                with e ->
-                    Log.exn "RP" $"GetChildren '{result.Name}'" e
-                    completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
+                        completionRoutine.Invoke(DkmGetChildrenAsyncResult(children, enumContext))))
 
         member _.GetItems(enumContext, workList, startIndex, count, completionRoutine) =
-            let call, completionRoutine = traced $"GetItems {startIndex}+{count}" completionRoutine
-            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
+            let call, completionRoutine = WorkLists.traced "RP" $"GetItems {startIndex}+{count}" completionRoutine
+            use _ = call
 
             match enumContext.GetDataItem<RowsData>(), enumContext.GetDataItem<SequenceRowsData>() with
             | null, null ->
                 WorkLists.complete "RP" "GetItems" workList (fun workList k ->
                     enumContext.GetItems(workList, startIndex, count, k)) completionRoutine.Invoke
             | null, sequence ->
-                let items = sequence.Rows |> Array.skip (min startIndex sequence.Rows.Length) |> Array.truncate count
-                completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items))
+                completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(page startIndex count sequence.Rows))
             | data, _ ->
                 try
-                    let rows = data.Rows |> Array.skip (min startIndex data.Rows.Length) |> Array.truncate count
-
-                    evaluateRows workList enumContext.InspectionContext data.Parent rows (fun items ->
+                    evaluateRows workList enumContext.InspectionContext data.Parent (page startIndex count data.Rows) (fun items ->
                         completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items)))
                 with e ->
                     Log.exn "RP" "GetItems" e
                     completionRoutine.Invoke(DkmEvaluationEnumAsyncResult.CreateErrorResult e)
 
         member _.GetClrValue(successResult) =
-            match successResult.GetDataItem<FSharpResultData>(), successResult.GetDataItem<RetypedData>() with
-            | null, null when not (isNull (successResult.GetDataItem<CompilerGeneratedData>())) ->
-                successResult.GetDataItem<CompilerGeneratedData>().ClrValue
-            | null, null -> successResult.GetClrValue()
-            | null, retyped -> (retyped.Original :?> DkmSuccessEvaluationResult).GetClrValue()
-            | data, _ -> data.ClrValue
+            match ResultKind.Of successResult with
+            | FSharpResult data -> data.ClrValue
+            | CompilerGeneratedResult data -> data.ClrValue
+            | RetypedResult retyped -> (retyped.Original :?> DkmSuccessEvaluationResult).GetClrValue()
+            | RawViewResult _
+            | OtherResult -> successResult.GetClrValue()
 
         member _.GetUnderlyingString(result) =
             match result.GetDataItem<RetypedData>() with

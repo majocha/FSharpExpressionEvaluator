@@ -86,7 +86,7 @@ let private isAnonymousRecord (t: IType) = t.Name.StartsWith "<>f__AnonymousType
 
 let private shapeCache = Types.cache ()
 
-let rec private hasDefinition name (t: IType) =
+let private hasDefinition name (t: IType) =
     Types.hierarchy t |> Seq.exists (fun t -> t.DefinitionName = name)
 
 let private tupleArity (prefix: string) (name: string) =
@@ -253,7 +253,8 @@ type private Precedence =
     | Star = 1
     | Atom = 2
 
-let private stripArity (name: string) =
+/// A type name without its generic arity: `List` for ``List`1``.
+let stripArity (name: string) =
     match name.IndexOf '`' with
     | -1 -> name
     | i -> name.Substring(0, i)
@@ -293,9 +294,10 @@ let private sourceName (t: IType) =
 let private functionTypeArgs (t: IType) =
     Types.hierarchy t
     |> Seq.tryPick (fun t ->
-        if t.DefinitionName = "Microsoft.FSharp.Core.FSharpFunc`2" then
-            Some t.GenericArguments
-        elif t.DefinitionName <> null && t.DefinitionName.StartsWith "Microsoft.FSharp.Core.OptimizedClosures+FSharpFunc`" then
+        let d = t.DefinitionName
+
+        if d = "Microsoft.FSharp.Core.FSharpFunc`2"
+           || (not (isNull d) && d.StartsWith "Microsoft.FSharp.Core.OptimizedClosures+FSharpFunc`") then
             Some t.GenericArguments
         else
             None)
@@ -320,7 +322,7 @@ let rec private render (t: IType) : string * Precedence =
         | d when postfix.ContainsKey d -> atom (render args[0]) + " " + postfix[d], Precedence.Atom
         | d when tupleArity "System.Tuple`" d || tupleArity "System.ValueTuple`" d ->
             let isStruct = d.StartsWith "System.ValueTuple"
-            let elements = tupleElementTypes t |> List.map (render >> starOperand) |> String.concat " * "
+            let elements = tupleTypes t |> List.map (render >> atom) |> String.concat " * "
             (if isStruct then $"struct ({elements})", Precedence.Atom else elements, Precedence.Star)
         | d when renamed.ContainsKey d -> renamed[d] + genericArgs args, Precedence.Atom
         | _ ->
@@ -339,21 +341,18 @@ let rec private render (t: IType) : string * Precedence =
 and private atom (name, precedence) =
     if precedence = Precedence.Atom then name else $"({name})"
 
-and private starOperand (name, precedence) =
-    if precedence = Precedence.Atom then name else $"({name})"
-
 and private arrowDomain (name, precedence) =
     if precedence = Precedence.Arrow then $"({name})" else name
 
 and private genericArgs (args: IType list) =
     if args.IsEmpty then "" else "<" + (args |> List.map (render >> fst) |> String.concat ", ") + ">"
 
-/// System.Tuple`8 nests elements 8+ in its Rest argument.
-and private tupleElementTypes (t: IType) =
+/// Element types of a tuple type: System.Tuple`8 nests elements 8+ in its Rest argument.
+and tupleTypes (t: IType) =
     let args = t.GenericArguments
 
     if args.Length = 8 then
-        List.take 7 args @ tupleElementTypes args[7]
+        List.take 7 args @ tupleTypes args[7]
     else
         args
 
@@ -390,9 +389,6 @@ let sourcePath (t: IType) = String.Join(".", sourcePathParts t)
 /// needs them.
 let sourcePathExpression (t: IType) = String.Join(".", sourcePathParts t |> List.map fsharpIdent)
 
-/// Element types of a tuple type, with System.Tuple`8's Rest flattened.
-let tupleTypes (t: IType) = tupleElementTypes t
-
 /// The F# name of a type: `int list`, `int * string`, `int -> int`, `Shape`, `{| A: int |}`.
 let typeName (t: IType) = fst (render t)
 
@@ -419,6 +415,21 @@ let displayType (t: IType) =
     | UnionShape u -> u.Type
     | _ -> seqType t |> Option.defaultValue t
 
+/// Custom type info payloads from the expression compiler: a version byte, then UTF-8 text.
+module private Payload =
+
+    let private version = 1uy
+
+    let encode (text: string) =
+        Array.append [| version |] (Text.Encoding.UTF8.GetBytes text)
+
+    /// The text of a payload with the expected id, or None for another id or an unknown version.
+    let tryDecode (expected: Guid) (id: Guid) (payload: byte[]) =
+        if id = expected && not (isNull payload) && payload.Length > 1 && payload[0] = version then
+            Some(Text.Encoding.UTF8.GetString(payload, 1, payload.Length - 1))
+        else
+            None
+
 /// The F# type of an expression's result, when it says more than the CLR type: units of measure
 /// (`float<m>`) and the user's type abbreviations (docs/DESIGN.md §6.8). The expression compiler
 /// sends it as Concord custom type info with this payload id; other providers ignore the id.
@@ -426,18 +437,11 @@ module TypeInfo =
 
     let payloadId = Guid "6C1B7F2E-3D5A-4E8B-9F0C-2A7D4E6B8C13"
 
-    let private version = 1uy
-
     /// The payload: a version byte, then the type name in UTF-8.
-    let encode (typeName: string) =
-        Array.append [| version |] (Text.Encoding.UTF8.GetBytes typeName)
+    let encode (typeName: string) = Payload.encode typeName
 
     /// The type name of a payload, or None for another id or an unknown version.
-    let tryDecode (id: Guid) (payload: byte[]) =
-        if id = payloadId && not (isNull payload) && payload.Length > 1 && payload[0] = version then
-            Some(Text.Encoding.UTF8.GetString(payload, 1, payload.Length - 1))
-        else
-            None
+    let tryDecode (id: Guid) (payload: byte[]) = Payload.tryDecode payloadId id payload
 
 /// The compiler temporaries under the Locals window's `[compiler generated]` row (docs/DESIGN.md
 /// §6.4), as expressions name them. The expression compiler sends them as Concord custom type info
@@ -446,15 +450,9 @@ module CompilerGenerated =
 
     let payloadId = Guid "EDC0AEE5-090B-4926-AC47-0804F46C5132"
 
-    let private version = 1uy
-
     /// The payload: a version byte, then the names in UTF-8, one per line (no F# name has a line break).
-    let encode (names: string list) =
-        Array.append [| version |] (Text.Encoding.UTF8.GetBytes(String.concat "\n" names))
+    let encode (names: string list) = Payload.encode (String.concat "\n" names)
 
     /// The names of a payload, or None for another id or an unknown version.
     let tryDecode (id: Guid) (payload: byte[]) =
-        if id = payloadId && not (isNull payload) && payload.Length > 1 && payload[0] = version then
-            Some(Text.Encoding.UTF8.GetString(payload, 1, payload.Length - 1).Split '\n' |> List.ofArray)
-        else
-            None
+        Payload.tryDecode payloadId id payload |> Option.map (fun text -> text.Split '\n' |> List.ofArray)

@@ -42,8 +42,7 @@ let unionCase (u: UnionInfo) (v: IValue) =
         Some u.Cases[0]
     elif v.Type.DefinitionName <> u.Type.DefinitionName then
         // A nested case subclass: `Circle` for cases with fields, `_Empty` for nullary ones.
-        let name = v.Type.Name.TrimStart '_'
-        let name = match name.IndexOf '`' with -1 -> name | i -> name.Substring(0, i)
+        let name = stripArity (v.Type.Name.TrimStart '_')
         u.Cases |> Array.tryFind (fun c -> c.Name = name)
     else
         // UseNullAsTrueValue unions (option) are their own type for the non-null case.
@@ -252,8 +251,10 @@ let private formatHex (value: obj) =
 let formatPrimitive (hex: bool) (value: obj) =
     let inv = CultureInfo.InvariantCulture
 
+    let hexText = if hex then formatHex value else None
+
     match value with
-    | _ when hex && (formatHex value).IsSome -> formatHex value
+    | _ when hexText.IsSome -> hexText
     | :? int as x -> Some(x.ToString inv)
     | :? int64 as x -> Some(x.ToString inv + "L")
     | :? int16 as x -> Some(x.ToString inv + "s")
@@ -295,9 +296,6 @@ let private isUnionWithFields (v: IValue) =
        | RecordShape FSharpException -> not (recordFields v.Type).IsEmpty
        | _ -> false
 
-/// Name of a closure for `<fun:...>`: the compiler-generated class name, e.g. `f@34`.
-let closureName (t: IType) = t.Name
-
 /// `seq [1; 2; 3]` for an F# sequence. Ranges are computed from their bounds; other sequences
 /// would have to run (func-eval) to produce items, so they show as `seq [...]` and the C#
 /// Results View enumerates them on request. None for values that are not F# sequences.
@@ -329,7 +327,8 @@ let rec private preview (options: Options) depth (declared: IType option) (v: IV
             | _, Some s -> s
             | _ -> v.FallbackDisplay()
         | UnitShape -> "()"
-        | FunctionShape -> $"<fun:{closureName v.Type}>"
+        // The closure's compiler-generated class name, e.g. `<fun:f@34>`.
+        | FunctionShape -> $"<fun:{v.Type.Name}>"
         | BigIntShape ->
             match bigintValue v with
             | Some n -> n.ToString(CultureInfo.InvariantCulture) + "I"
@@ -454,8 +453,7 @@ let csharpTypeColumn (fsharpName: string option) (declared: IType option) (v: IV
 // ---------------------------------------------------------------------------------------------
 // Children and full names
 
-/// Full names for "Add Watch" and re-evaluation. They target the active expression compiler, which
-/// is still C# until the F# compiler lands (M4); member access and indexers read the same in both.
+/// Full names for "Add Watch" and re-evaluation, as F# expressions.
 module FullNames =
 
     let private isSimple (expression: string) =
@@ -514,7 +512,7 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
     let indexName i = parentFullName |> Option.map (fun p -> FullNames.index p i)
 
     let fieldChildren (fields: ShapeField list) fullName =
-        fields |> List.map (fun f -> child f.Name (Some f.Type) (fullName f) (lazy (v.Field f.BackingField)))
+        fields |> List.mapi (fun i f -> child f.Name (Some f.Type) (fullName i f) (lazy (v.Field f.BackingField)))
 
     if v.IsNull || isError v then
         None
@@ -553,14 +551,13 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
                     u.Type.DefinitionName = "Microsoft.FSharp.Core.FSharpOption`1"
                     || u.Type.DefinitionName = "Microsoft.FSharp.Core.FSharpValueOption`1"
 
-                fieldChildren fields (fun f ->
+                fieldChildren fields (fun index _ ->
                     if hasValueMember then
                         memberName "Value"
                     else
-                        let index = fields |> List.findIndex (fun g -> g.Name = f.Name)
                         parentFullName |> Option.map (fun p -> FullNames.caseField p u case index fields.Length))
                 |> Some
-        | RecordShape _ -> fieldChildren (recordFields v.Type) (fun f -> memberName f.Name) |> Some
+        | RecordShape _ -> fieldChildren (recordFields v.Type) (fun _ f -> memberName f.Name) |> Some
         | BigIntShape -> Some []
         | LazyShape valueType ->
             // The value read from its field once created: never `.Value`, which would force it. The

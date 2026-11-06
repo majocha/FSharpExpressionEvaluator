@@ -38,7 +38,7 @@ type FrameDecoder() =
         MetadataReader(NativePtr.ofNativeInt ptr, int size)
 
     static let hasGenericParameters (md: MetadataReader) (token: int) =
-        let m = md.GetMethodDefinition(Ecma335.MetadataTokens.MethodDefinitionHandle(token &&& 0xFFFFFF))
+        let m = md.GetMethodDefinition(MetadataTypes.methodHandle token)
         m.GetGenericParameters().Count > 0 || (md.GetTypeDefinition(m.GetDeclaringType())).GetGenericParameters().Count > 0
 
     /// The frame's actual generic arguments (type's, then method's), when the method is generic.
@@ -66,22 +66,7 @@ type FrameDecoder() =
         =
         if flags.HasFlag DkmVariableInfoFlags.Values then
             // Argument values are one-line previews from the result providers (ours for F# values).
-            let context =
-                DkmInspectionContext.Create(
-                    context.InspectionSession,
-                    context.RuntimeInstance,
-                    context.Thread,
-                    context.Timeout,
-                    context.EvaluationFlags ||| DkmEvaluationFlags.NoExpansion,
-                    context.FuncEvalFlags,
-                    context.Radix,
-                    context.Language,
-                    context.ReturnValue,
-                    context.AdditionalVisualizationData,
-                    context.AdditionalVisualizationDataPriority,
-                    context.ReturnValues,
-                    context.SymbolsConnection
-                )
+            let context = WorkLists.withEvaluationFlags DkmEvaluationFlags.NoExpansion context
 
             WorkLists.complete "FD" "argument values" workList (fun workList k -> context.GetFrameArguments(workList, frame, k)) (fun r ->
                 if r.ErrorCode = 0 && not (isNull r.Arguments) then
@@ -100,16 +85,18 @@ type FrameDecoder() =
         else
             k None
 
+    static let argumentFormat (flags: DkmVariableInfoFlags) values =
+        {
+            Names = flags.HasFlag DkmVariableInfoFlags.Names
+            Types = flags.HasFlag DkmVariableInfoFlags.Types
+            Values = values
+        }
+
     interface IDkmLanguageFrameDecoder with
 
         member _.GetFrameName(inspectionContext, workList, frame, argumentFlags, completionRoutine) =
-            let call = Log.trace "FD" $"GetFrameName [{argumentFlags}]"
-            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
-
-            let completionRoutine =
-                DkmCompletionRoutine<DkmGetFrameNameAsyncResult>(fun r ->
-                    call.Completed()
-                    completionRoutine.Invoke r)
+            let call, completionRoutine = WorkLists.traced "FD" $"GetFrameName [{argumentFlags}]" completionRoutine
+            use _ = call
 
             // C#'s name, run to completion before we return, as every call we pass on (WorkLists.fs).
             let csharpName () =
@@ -126,12 +113,7 @@ type FrameDecoder() =
 
                     withTypeArguments frame workList md token (fun typeArguments ->
                         withArgumentValues inspectionContext workList frame argumentFlags (fun values ->
-                            let format =
-                                {
-                                    Names = argumentFlags.HasFlag DkmVariableInfoFlags.Names
-                                    Types = argumentFlags.HasFlag DkmVariableInfoFlags.Types
-                                    Values = values
-                                }
+                            let format = argumentFormat argumentFlags values
 
                             let fsharpTypes =
                                 if format.Types then fst (signatureTypeNames address) else []
@@ -154,13 +136,8 @@ type FrameDecoder() =
             | _ -> csharpName ()
 
         member _.GetFrameReturnType(inspectionContext, workList, frame, completionRoutine) =
-            let call = Log.trace "FD" "GetFrameReturnType"
-            use _ = { new System.IDisposable with member _.Dispose() = call.Returned() }
-
-            let completionRoutine =
-                DkmCompletionRoutine<DkmGetFrameReturnTypeAsyncResult>(fun r ->
-                    call.Completed()
-                    completionRoutine.Invoke r)
+            let call, completionRoutine = WorkLists.traced "FD" "GetFrameReturnType" completionRoutine
+            use _ = call
 
             let csharpReturnType () =
                 WorkLists.complete "FD" "C# return type" workList (fun workList k ->
@@ -189,12 +166,7 @@ type FrameDecoder() =
             match languageInstructionAddress.Address with
             | :? DkmClrInstructionAddress as address when Settings.enabled () ->
                 try
-                    let format =
-                        {
-                            Names = argumentFlags.HasFlag DkmVariableInfoFlags.Names
-                            Types = argumentFlags.HasFlag DkmVariableInfoFlags.Types
-                            Values = None
-                        }
+                    let format = argumentFormat argumentFlags None
 
                     let fsharpTypes =
                         if format.Types then fst (signatureTypeNames address) else []

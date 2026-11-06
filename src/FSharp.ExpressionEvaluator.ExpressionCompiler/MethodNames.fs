@@ -84,17 +84,27 @@ let operatorName (name: string) =
 // ---------------------------------------------------------------------------------------------
 // Frame names
 
-let private stripArity (name: string) =
-    match name.IndexOf '`' with
-    | -1 -> name
-    | i -> name.Substring(0, i)
-
 let private representationFlags (attributes: AttributeData list) =
     match Types.attribute "Microsoft.FSharp.Core.CompilationRepresentationAttribute" attributes with
     | Some { Args = flags :: _ } -> Convert.ToInt32 flags
     | _ -> 0
 
 /// `Ns.Module.Type<'T>` for a type definition, with generic arguments when the frame supplies them.
+/// `<int, 'T>`: the frame's actual argument for each generic parameter, or the parameter.
+let private genericArguments (args: Map<string, SigType>) (parameters: string[]) =
+    if parameters.Length = 0 then
+        ""
+    else
+        let shown = parameters |> Array.map (fun p -> args |> Map.tryFind p |> Option.map typeName |> Option.defaultValue ("'" + p))
+        "<" + String.Join(", ", shown) + ">"
+
+/// The frame's actual generic arguments by parameter name, when there is one for each parameter.
+let private substitutionOf (typeArguments: SigType list option) (typeParameters: string[]) (methodParameters: string[]) =
+    match typeArguments with
+    | Some args when args.Length = typeParameters.Length + methodParameters.Length ->
+        Seq.zip (Array.append typeParameters methodParameters) args |> Map.ofSeq
+    | _ -> Map.empty
+
 let rec private qualifiedTypeName (md: MetadataReader) (h: TypeDefinitionHandle) (args: Map<string, SigType>) =
     let t = md.GetTypeDefinition h
     let declaring = t.GetDeclaringType()
@@ -102,7 +112,7 @@ let rec private qualifiedTypeName (md: MetadataReader) (h: TypeDefinitionHandle)
     let attributes = attributes md (t.GetCustomAttributes())
 
     let display =
-        let n = stripArity name
+        let n = FSharpTypes.stripArity name
         // Modules compiled with ModuleSuffix are named `XModule`.
         let n = if representationFlags attributes &&& 4 <> 0 && n.EndsWith "Module" then n.Substring(0, n.Length - 6) else n
         FSharpTypes.displayIdent n
@@ -112,13 +122,6 @@ let rec private qualifiedTypeName (md: MetadataReader) (h: TypeDefinitionHandle)
     let outerCount = if declaring.IsNil then 0 else (md.GetTypeDefinition declaring).GetGenericParameters().Count
     let own = allParameters |> Array.skip (min outerCount allParameters.Length)
 
-    let generics =
-        if own.Length = 0 then
-            ""
-        else
-            let shown = own |> Array.map (fun p -> args |> Map.tryFind p |> Option.map typeName |> Option.defaultValue ("'" + p))
-            "<" + String.Join(", ", shown) + ">"
-
     let prefix =
         if not declaring.IsNil then qualifiedTypeName md declaring args + "."
         else
@@ -126,7 +129,7 @@ let rec private qualifiedTypeName (md: MetadataReader) (h: TypeDefinitionHandle)
             | "" -> ""
             | ns -> String.Join(".", ns.Split '.' |> Array.map FSharpTypes.displayIdent) + "."
 
-    prefix + display + generics
+    prefix + display + genericArguments args own
 
 let private isClosure (md: MetadataReader) (t: TypeDefinition) =
     // Closures are compiler-generated `name@line` classes deriving from (OptimizedClosures.)FSharpFunc.
@@ -156,7 +159,7 @@ let private baseTypeName (md: MetadataReader) (t: TypeDefinition) =
     | _ -> ""
 
 /// The member part of a frame name, or None when the method name says it all (state machines).
-let private memberName (md: MetadataReader) (m: MethodDefinition) (declaring: TypeDefinition) =
+let private memberName (md: MetadataReader) (m: MethodDefinition) =
     let name = md.GetString m.Name
     let special = m.Attributes.HasFlag MethodAttributes.SpecialName
 
@@ -214,7 +217,7 @@ let private tupleParameter (group: Parameter list) =
 
         if group |> List.mapi (fun i p -> p.Name = $"{prefix}_{i}") |> List.forall id then
             let tupleType =
-                Named({ Namespace = "System"; Name = $"Tuple`{group.Length}"; Declaring = None; Attributes = [] }, group |> List.map _.Type)
+                Named(typeRef "System" $"Tuple`{group.Length}", group |> List.map _.Type)
 
             // With an F# name for any element, the tuple is named from its elements' names.
             let fsharpType =
@@ -303,18 +306,13 @@ let frameNameWithTypes
     (typeArguments: SigType list option)
     (fsharpTypes: string option list)
     =
-    let handle = MetadataTokens.MethodDefinitionHandle(methodToken &&& 0xFFFFFF)
-    let m = md.GetMethodDefinition handle
+    let m = md.GetMethodDefinition(methodHandle methodToken)
     let declaringHandle = m.GetDeclaringType()
     let declaring = md.GetTypeDefinition declaringHandle
     let typeParameters = genericNames md (declaring.GetGenericParameters())
     let methodParameters = genericNames md (m.GetGenericParameters())
 
-    let substitution =
-        match typeArguments with
-        | Some args when args.Length = typeParameters.Length + methodParameters.Length ->
-            Seq.zip (Array.append typeParameters methodParameters) args |> Map.ofSeq
-        | _ -> Map.empty
+    let substitution = substitutionOf typeArguments typeParameters methodParameters
 
     let typeName = qualifiedTypeName md declaringHandle substitution
     let name = md.GetString m.Name
@@ -344,21 +342,11 @@ let frameNameWithTypes
                 })
             |> List.ofSeq
 
-        let generics =
-            if methodParameters.Length = 0 then
-                ""
-            else
-                let shown =
-                    methodParameters
-                    |> Array.map (fun p -> substitution |> Map.tryFind p |> Option.map MetadataTypes.typeName |> Option.defaultValue ("'" + p))
-
-                "<" + String.Join(", ", shown) + ">"
-
         let groups = argumentGroups md m declaring parameters.Length
 
         // Closures: `Program.f@66 (x: int)` rather than `Program.f@66.Invoke(...)`.
         let member' =
-            if isClosure md declaring && name = "Invoke" then "" else "." + memberName md m declaring + generics
+            if isClosure md declaring && name = "Invoke" then "" else "." + memberName md m + genericArguments substitution methodParameters
 
         typeName + member' + formatArguments format groups parameters
 
@@ -368,16 +356,12 @@ let frameName (md: MetadataReader) (methodToken: int) (format: ArgumentFormat) (
 
 /// The F# name of a method's return type (`unit` for void).
 let returnTypeName (md: MetadataReader) (methodToken: int) (typeArguments: SigType list option) =
-    let m = md.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(methodToken &&& 0xFFFFFF))
+    let m = md.GetMethodDefinition(methodHandle methodToken)
     let declaring = md.GetTypeDefinition(m.GetDeclaringType())
     let typeParameters = genericNames md (declaring.GetGenericParameters())
     let methodParameters = genericNames md (m.GetGenericParameters())
 
-    let substitution =
-        match typeArguments with
-        | Some args when args.Length = typeParameters.Length + methodParameters.Length ->
-            Seq.zip (Array.append typeParameters methodParameters) args |> Map.ofSeq
-        | _ -> Map.empty
+    let substitution = substitutionOf typeArguments typeParameters methodParameters
 
     let signature = m.DecodeSignature(signatureTypes md, { TypeParameters = typeParameters; MethodParameters = methodParameters })
     MetadataTypes.typeName (substitute substitution signature.ReturnType)

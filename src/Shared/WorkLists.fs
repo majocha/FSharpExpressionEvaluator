@@ -35,3 +35,31 @@ let complete (source: string) (what: string) (workList: DkmWorkList) (start: Dkm
     match runToCompletion source what start with
     | Some r -> k r
     | None -> start workList (DkmCompletionRoutine<'T>(k))
+
+/// Starts tracing a call (Log.trace) and wraps its completion routine to log the completion. Dispose
+/// the call when the method that started it returns.
+let traced (source: string) (what: string) (completionRoutine: DkmCompletionRoutine<'T>) =
+    let call = Log.trace source what
+
+    call,
+    DkmCompletionRoutine<'T>(fun r ->
+        call.Completed()
+        completionRoutine.Invoke r)
+
+/// The same inspection context with more evaluation flags.
+let withEvaluationFlags (flags: Evaluation.DkmEvaluationFlags) (c: Evaluation.DkmInspectionContext) =
+    Evaluation.DkmInspectionContext.Create(
+        c.InspectionSession,
+        c.RuntimeInstance,
+        c.Thread,
+        c.Timeout,
+        c.EvaluationFlags ||| flags,
+        c.FuncEvalFlags,
+        c.Radix,
+        c.Language,
+        c.ReturnValue,
+        c.AdditionalVisualizationData,
+        c.AdditionalVisualizationDataPriority,
+        c.ReturnValues,
+        c.SymbolsConnection
+    )

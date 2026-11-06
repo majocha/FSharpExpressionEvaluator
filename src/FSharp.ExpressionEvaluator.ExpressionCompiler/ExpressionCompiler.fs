@@ -80,6 +80,20 @@ type ExpressionCompiler() =
         | d :: _ -> $"error FS{d.Number:D4}: {d.Message}"
         | [] -> "error: the expression could not be compiled"
 
+    /// Runs `run` in the frame. Errors outside the text come from the PDB's opens, which may name
+    /// namespaces of assemblies the debuggee has not loaded: then it runs again without them.
+    static let withoutFailingOpens (frame: FrameContext) (run: FrameContext -> Result<'T, EvaluationDiagnostic list>) =
+        match run frame with
+        | Error diagnostics when not frame.Opens.IsEmpty && diagnostics |> List.exists (fun d -> d.Range.IsNone) ->
+            run { frame with Opens = [] }
+        | result -> result
+
+    /// The error text and query of a compilation, as the out parameters take them.
+    static let outputs (compiled: Result<DkmCompiledClrInspectionQuery, string>) =
+        match compiled with
+        | Ok query -> null, query
+        | Error text -> text, null
+
     /// Compiles with F#: Some(Ok query) or Some(Error message) for the user, or None when the F#
     /// compiler failed internally, so the caller falls back to C#.
     static let compile
@@ -99,17 +113,7 @@ type ExpressionCompiler() =
                 | Some session ->
                     let frame = Debuggee.frame address inspectionContext
 
-                    let result =
-                        match run session frame with
-                        // Errors outside the text come from the PDB's opens, which may name namespaces of
-                        // assemblies the debuggee has not loaded: try again without them.
-                        | Error diagnostics when
-                            not frame.Opens.IsEmpty && diagnostics |> List.exists (fun d -> d.Range.IsNone)
-                            ->
-                            run session { frame with Opens = [] }
-                        | result -> result
-
-                    match result with
+                    match withoutFailingOpens frame (run session) with
                     | Ok compiled ->
                         let fsharpType =
                             compiled.FSharpType |> Option.map (fun t -> $" (Type column {t})") |> Option.defaultValue ""
@@ -168,13 +172,7 @@ type ExpressionCompiler() =
                             Aliases = frame.Aliases |> List.filter listed
                         }
 
-                    let result =
-                        match session.CompileLocals(frame, argumentsOnly) with
-                        | Error diagnostics when not frame.Opens.IsEmpty && diagnostics |> List.exists (fun d -> d.Range.IsNone) ->
-                            session.CompileLocals({ frame with Opens = [] }, argumentsOnly)
-                        | result -> result
-
-                    match result with
+                    match withoutFailingOpens frame (fun frame -> session.CompileLocals(frame, argumentsOnly)) with
                     | Ok compiled ->
                         log
                             $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}, {sw.ElapsedMilliseconds} ms"
@@ -220,12 +218,10 @@ type ExpressionCompiler() =
                     session.CompileExpression(frame, expression.Text))
 
             match compiled with
-            | Some(Ok query) ->
-                error <- null
-                result <- query
-            | Some(Error text) ->
+            | Some compiled ->
+                let text, query = outputs compiled
                 error <- text
-                result <- null
+                result <- query
             | None -> expression.CompileExpression(instructionAddress, inspectionContext, &error, &result)
 
         member _.CompileAssignment(expression, instructionAddress, lValue, error, result) =
@@ -237,12 +233,10 @@ type ExpressionCompiler() =
                     (fun session frame -> session.CompileAssignment(frame, lValue.FullName, expression.Text))
 
             match compiled with
-            | Some(Ok query) ->
-                error <- null
-                result <- query
-            | Some(Error text) ->
+            | Some compiled ->
+                let text, query = outputs compiled
                 error <- text
-                result <- null
+                result <- query
             | None -> expression.CompileAssignment(instructionAddress, lValue, &error, &result)
 
         member _.GetClrLocalVariableQuery(inspectionContext, instructionAddress, argumentsOnly) =

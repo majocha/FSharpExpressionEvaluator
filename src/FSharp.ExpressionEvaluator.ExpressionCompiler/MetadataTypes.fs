@@ -24,7 +24,13 @@ and TypeRef =
         Attributes: AttributeData list
     }
 
-let private named ns name = Named({ Namespace = ns; Name = name; Declaring = None; Attributes = [] }, [])
+/// A top-level type, with no attributes known.
+let typeRef ns name = { Namespace = ns; Name = name; Declaring = None; Attributes = [] }
+
+let private named ns name = Named(typeRef ns name, [])
+
+/// The method definition handle of a method token.
+let methodHandle (token: int) = Ecma335.MetadataTokens.MethodDefinitionHandle(token &&& 0xFFFFFF)
 
 // ---------------------------------------------------------------------------------------------
 // Custom attributes: only the F# ones with simple arguments are decoded.
@@ -63,7 +69,7 @@ type private AttributeTypes() =
         member _.GetTypeFromReference(_, _, _) = box "enum"
         member _.GetTypeFromSerializedName name = box name
         member _.GetUnderlyingEnumType _ = PrimitiveTypeCode.Int32
-        member _.IsSystemType t = (t :? string) && (t :?> string) = "System.Type"
+        member _.IsSystemType t = "System.Type".Equals t
 
 let private attributeTypes = AttributeTypes()
 
@@ -126,26 +132,8 @@ let rec private typeRefRef (md: MetadataReader) (h: TypeReferenceHandle) =
 
 type private SignatureTypes(md: MetadataReader) =
     interface ISignatureTypeProvider<SigType, GenericContext> with
-        member _.GetPrimitiveType code =
-            match code with
-            | PrimitiveTypeCode.Void -> named "System" "Void"
-            | PrimitiveTypeCode.Boolean -> named "System" "Boolean"
-            | PrimitiveTypeCode.Char -> named "System" "Char"
-            | PrimitiveTypeCode.SByte -> named "System" "SByte"
-            | PrimitiveTypeCode.Byte -> named "System" "Byte"
-            | PrimitiveTypeCode.Int16 -> named "System" "Int16"
-            | PrimitiveTypeCode.UInt16 -> named "System" "UInt16"
-            | PrimitiveTypeCode.Int32 -> named "System" "Int32"
-            | PrimitiveTypeCode.UInt32 -> named "System" "UInt32"
-            | PrimitiveTypeCode.Int64 -> named "System" "Int64"
-            | PrimitiveTypeCode.UInt64 -> named "System" "UInt64"
-            | PrimitiveTypeCode.Single -> named "System" "Single"
-            | PrimitiveTypeCode.Double -> named "System" "Double"
-            | PrimitiveTypeCode.String -> named "System" "String"
-            | PrimitiveTypeCode.IntPtr -> named "System" "IntPtr"
-            | PrimitiveTypeCode.UIntPtr -> named "System" "UIntPtr"
-            | PrimitiveTypeCode.TypedReference -> named "System" "TypedReference"
-            | _ -> named "System" "Object"
+        // Each code is named as its System type: Int32, String, Void, TypedReference, ...
+        member _.GetPrimitiveType code = named "System" (string code)
 
         member _.GetTypeFromDefinition(_, h, _) = Named(typeDefRef md h, [])
         member _.GetTypeFromReference(_, h, _) = Named(typeRefRef md h, [])
@@ -200,8 +188,8 @@ type private SigIType(t: SigType) =
     static member Of(t: SigType) : IType =
         match t with
         // F# spells these byref<'T> and nativeptr<'T>.
-        | ByRef e -> SigIType(Named({ Namespace = ""; Name = "byref`1"; Declaring = None; Attributes = [] }, [ e ])) :> IType
-        | Pointer e -> SigIType(Named({ Namespace = ""; Name = "nativeptr`1"; Declaring = None; Attributes = [] }, [ e ])) :> IType
+        | ByRef e -> SigIType(Named(typeRef "" "byref`1", [ e ])) :> IType
+        | Pointer e -> SigIType(Named(typeRef "" "nativeptr`1", [ e ])) :> IType
         | t -> SigIType t :> IType
 
     interface IType with

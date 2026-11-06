@@ -41,6 +41,11 @@ let private copyBlob (ptr: nativeint) (size: uint32) =
 let private metadataReader (metadata: byte[]) =
     MetadataReaderProvider.FromMetadataImage(ImmutableArray.Create<byte>(metadata))
 
+/// A copy of a loaded module's metadata.
+let private moduleMetadata (m: DkmClrModuleInstance) =
+    let mutable size = 0u
+    copyBlob (m.GetMetaDataBytesPtr(&size)) size
+
 /// Reads a range of a module's image from debuggee memory. Reading the whole image at once fails
 /// (unmapped gaps between sections), so only what is needed is read.
 let private readImage (m: DkmClrModuleInstance) (offset: int) (size: int) =
@@ -54,8 +59,7 @@ let private readImage (m: DkmClrModuleInstance) (offset: int) (size: int) =
 
 /// The simple name of a loaded module's assembly.
 let private assemblyName (m: DkmClrModuleInstance) =
-    let mutable size = 0u
-    use provider = metadataReader (copyBlob (m.GetMetaDataBytesPtr(&size)) size)
+    use provider = metadataReader (moduleMetadata m)
     let md = provider.GetMetadataReader()
     md.GetString(md.GetAssemblyDefinition().Name)
 
@@ -68,8 +72,7 @@ let private assemblyAndReferences (md: MetadataReader) =
 /// (manifest resources), read from the loaded image. Modules without F# data need no resources.
 /// Also gives the assembly's simple name and its references.
 let private debuggeeModule (m: DkmClrModuleInstance) =
-    let mutable size = 0u
-    let metadata = copyBlob (m.GetMetaDataBytesPtr(&size)) size
+    let metadata = moduleMetadata m
     use provider = metadataReader metadata
     let md = provider.GetMetadataReader()
 
@@ -174,14 +177,14 @@ type private SessionItem(modules: string, session: Task<EvaluationSession>) =
                 (t.Result :> IDisposable).Dispose())
         |> ignore
 
-/// The session item of the frame's AppDomain for the modules loaded in it now. A new one copies the
-/// modules out of the debuggee here, while it is stopped (the debugger's buffers of referenced
-/// assemblies go away when they load), then builds the session and warms it up in the frame on a
-/// thread-pool thread.
 /// What a session item is built for: the modules loaded in the AppDomain.
 let private modulesKey (modules: DkmClrModuleInstance[]) =
     modules |> Array.map (fun m -> string m.Mvid) |> Array.sort |> String.concat ","
 
+/// The session item of the frame's AppDomain for the modules loaded in it now. A new one copies the
+/// modules out of the debuggee here, while it is stopped (the debugger's buffers of referenced
+/// assemblies go away when they load), then builds the session and warms it up in the frame on a
+/// thread-pool thread.
 let private sessionItem (address: DkmClrInstructionAddress) =
     let appDomain = address.ModuleInstance.AppDomain
     let modules = modulesInAppDomain address
@@ -281,7 +284,7 @@ let private pdbScope (address: DkmClrInstructionAddress) =
 
             let scopes =
                 [
-                    for h in md.GetLocalScopes(MetadataTokens.MethodDefinitionHandle(token &&& 0xFFFFFF)) do
+                    for h in md.GetLocalScopes(MetadataTypes.methodHandle token) do
                         let scope = md.GetLocalScope h
 
                         if scope.StartOffset <= il && il < scope.EndOffset then

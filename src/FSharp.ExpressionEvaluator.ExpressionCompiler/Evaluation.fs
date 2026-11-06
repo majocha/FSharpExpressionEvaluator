@@ -1021,6 +1021,22 @@ type private CompiledQuery =
         CompilerGenerated: string list
     }
 
+/// The compiled expression of a query module holding a single query.
+let private compiledExpression (formatSpecifiers: string list) (assembly: byte[], queries: CompiledQuery list) =
+    let query = List.exactlyOne queries
+
+    {
+        Assembly = assembly
+        TypeName = QueryTypeName
+        MethodName = query.MethodName
+        ResultType = query.ResultType
+        FSharpType = query.FSharpType
+        FormatSpecifiers = formatSpecifiers
+        PotentialSideEffect = query.PotentialSideEffect
+        ReadOnlyResult = query.ReadOnlyResult
+        BoolResult = query.BoolResult
+    }
+
 /// A PE image holding only a metadata blob and embedded managed resources (at their original
 /// offsets in the resources directory): enough for the IL reader to import a reference.
 type private MetadataOnlyPEBuilder(metadata: byte[], resources: byte[]) =
@@ -1376,7 +1392,7 @@ let private ignoresAccessChecksTo (g: TcGlobals.TcGlobals) (assemblyNames: strin
 let private localSignatureTokenOf (image: byte[]) (methodToken: int) =
     use pe = new PEReader(ImmutableArray.Create<byte>(image))
     let md = pe.GetMetadataReader()
-    let methodDef = md.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(methodToken &&& 0xFFFFFF))
+    let methodDef = md.GetMethodDefinition(MetadataTypes.methodHandle methodToken)
 
     if methodDef.RelativeVirtualAddress = 0 then
         0
@@ -1394,8 +1410,7 @@ let private metadataOf (image: DebuggeeImage) =
     | DebuggeeImage.Metadata(metadata, _) -> metadata
     | DebuggeeImage.PE image ->
         use pe = new PEReader(ImmutableArray.Create<byte>(image))
-        let content = pe.GetMetadata().GetContent()
-        Array.init content.Length (fun i -> content[i])
+        pe.GetMetadata().GetContent().AsSpan().ToArray()
 
 /// The core library the queries reference, as the debuggee's runtime has it: System.Runtime on .NET
 /// (Core), mscorlib on .NET Framework. A .NET Framework process doesn't load the System.Runtime facade,
@@ -1589,39 +1604,13 @@ type EvaluationSession
         let text, formatSpecifiers = splitFormatSpecifiers text
 
         this.CompileText(frame, text, defaultArg localsAsParameters false, false)
-        |> Result.map (fun (assembly, queries) ->
-            let query = List.exactlyOne queries
-
-            {
-                Assembly = assembly
-                TypeName = QueryTypeName
-                MethodName = query.MethodName
-                ResultType = query.ResultType
-                FSharpType = query.FSharpType
-                FormatSpecifiers = formatSpecifiers
-                PotentialSideEffect = query.PotentialSideEffect
-                ReadOnlyResult = query.ReadOnlyResult
-                BoolResult = query.BoolResult
-            })
+        |> Result.map (compiledExpression formatSpecifiers)
 
     member this.CompileAssignment(frame: FrameContext, target: string, value: string, ?localsAsParameters: bool) =
         let text = $"{target} <- (\n{value}\n)"
 
         this.CompileText(frame, text, defaultArg localsAsParameters false, true)
-        |> Result.map (fun (assembly, queries) ->
-            let query = List.exactlyOne queries
-
-            {
-                Assembly = assembly
-                TypeName = QueryTypeName
-                MethodName = query.MethodName
-                ResultType = query.ResultType
-                FSharpType = query.FSharpType
-                FormatSpecifiers = []
-                PotentialSideEffect = query.PotentialSideEffect
-                ReadOnlyResult = query.ReadOnlyResult
-                BoolResult = query.BoolResult
-            })
+        |> Result.map (compiledExpression [])
 
     member this.CompileLocals(frame: FrameContext, argumentsOnly: bool, ?localsAsParameters: bool) =
         this.Compile(frame, QueryRequest.Locals argumentsOnly, defaultArg localsAsParameters false, false, true, true)

@@ -204,7 +204,7 @@ the environment also turns it off.
 
 ## Build, test, try
 
-Requires Windows and the .NET 11 SDK (`artifacts\fsc` targets net11.0)
+Requires Windows and the .NET 11 SDK
 and Visual Studio 2026 (18.x, Insiders included). Run `eng\Build-Compiler.ps1` first (see
 above).
 
@@ -218,6 +218,12 @@ To install into the Exp instance and see it in action:
 ```powershell
 powershell -File eng\Deploy-Experimental.ps1 -SkipBuild
 powershell -File eng\Probe-Debugger.ps1 -Target net11.0
+```
+
+To reinstall into the normal VS instance (Release by default; close VS first):
+
+```powershell
+powershell -File eng\Install-Vsix.ps1
 ```
 
 `Probe-Debugger.ps1` starts the Exp instance and attaches to the test debuggee. At each

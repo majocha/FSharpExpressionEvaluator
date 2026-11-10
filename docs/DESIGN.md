@@ -836,6 +836,7 @@ src/
   FSharp.ExpressionEvaluator.Vsix/   net48, VSSDK packaging only; DebuggerEngineExtension assets
 eng/
   Deploy-Experimental.ps1            builds the VSIX and installs it into the VS 18 Exp instance
+  Install-Vsix.ps1                   builds the VSIX and reinstalls it into the normal VS 18 instance
   Probe-Debugger.ps1                 drives Exp through DTE: attach to TestDebuggee, dump frames/locals/watches, check expected values
   Test-Debugger.ps1                  live checks of watch, assignment, a breakpoint condition and a tracepoint
   DialogWatchdog.ps1                 dismisses the modal "unsafe abort" func-eval dialog that blocks DTE

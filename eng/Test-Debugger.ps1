@@ -7,8 +7,8 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('net10.0', 'net48')]
-    [string] $Target = 'net10.0',
+    [ValidateSet('net11.0', 'net48')]
+    [string] $Target = 'net11.0',
     [switch] $KeepVsOpen
 )
 

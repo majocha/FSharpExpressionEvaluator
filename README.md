@@ -198,13 +198,13 @@ the environment also turns it off.
 | `src/FSharp.ExpressionEvaluator.Vsix` | The VSIX |
 | `tests/FSharp.ExpressionEvaluator.ResultProvider.Tests` | Value display against live F# values |
 | `tests/FSharp.ExpressionEvaluator.ExpressionCompiler.Tests` | Frame names from F# fixtures read back through System.Reflection.Metadata; expressions compiled against this assembly as the debuggee |
-| `tests/TestDebuggee` | F# app that stops in a module function, a closure, a member, a generic function, a task and a `function`, plus a loop for a conditional breakpoint and a tracepoint; net10.0 (x64) and net48 (x86) |
+| `tests/TestDebuggee` | F# app that stops in a module function, a closure, a member, a generic function, a task and a `function`, plus a loop for a conditional breakpoint and a tracepoint; net11.0 (x64) and net48 (x86) |
 | `eng/` | Build the private compiler; install into the Exp instance; drive it through DTE |
 | `docs/DESIGN.md` | Design and milestone results |
 
 ## Build, test, try
 
-Requires Windows, the .NET 10 SDK, a .NET 11 runtime (preview: `artifacts\fsc` targets net11.0)
+Requires Windows and the .NET 11 SDK (`artifacts\fsc` targets net11.0)
 and Visual Studio 2026 (18.x, Insiders included). Run `eng\Build-Compiler.ps1` first (see
 above).
 
@@ -217,7 +217,7 @@ To install into the Exp instance and see it in action:
 
 ```powershell
 powershell -File eng\Deploy-Experimental.ps1 -SkipBuild
-powershell -File eng\Probe-Debugger.ps1 -Target net10.0
+powershell -File eng\Probe-Debugger.ps1 -Target net11.0
 ```
 
 `Probe-Debugger.ps1` starts the Exp instance and attaches to the test debuggee. At each
@@ -228,7 +228,7 @@ also open `tests\TestDebuggee` in the Exp instance and debug it by hand.
 To check the deployed evaluator in the live debugger:
 
 ```powershell
-powershell -File eng\Test-Debugger.ps1 -Target net10.0
+powershell -File eng\Test-Debugger.ps1 -Target net11.0
 ```
 
 `Test-Debugger.ps1` runs `Probe-Debugger.ps1` four times, with expected values. It checks

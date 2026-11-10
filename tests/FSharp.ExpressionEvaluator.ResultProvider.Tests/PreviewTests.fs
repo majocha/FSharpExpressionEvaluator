@@ -151,7 +151,8 @@ let ``non-F# values are left to the next provider`` () =
 
 [<Fact>]
 let ``non-F# values nested in F# values use the fallback display`` () =
-    shows "[{System.Collections.Generic.List`1[[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]}]" [ System.Collections.Generic.List<int>() ]
+    let coreLib = typeof<obj>.Assembly.GetName().Version
+    shows $"[{{System.Collections.Generic.List`1[[System.Int32, System.Private.CoreLib, Version={coreLib}, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]}}]" [ System.Collections.Generic.List<int>() ]
 
 [<Fact>]
 let ``deep nesting is cut`` () =

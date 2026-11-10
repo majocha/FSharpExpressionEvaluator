@@ -6,7 +6,7 @@
     back through System.Reflection.Metadata; for expressions, this assembly is the debuggee.
   -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <RootNamespace>FSharp.ExpressionEvaluator.Tests</RootNamespace>
     <Optimize>false</Optimize>
@@ -27,19 +27,6 @@
     <Compile Include="NamespaceStartupFixture.fs" />
     <Compile Include="EvaluationTests.fs" />
   </ItemGroup>
-
-  <!--
-    This assembly is compiled by the fsc of the private compiler's checkout (eng/Build-Compiler.ps1):
-    its fixtures need task state machines lowered, which released SDKs skip in Debug builds.
-  -->
-  <PropertyGroup>
-    <FSharpEEFsc>$(MSBuildThisFileDirectory)..\..\artifacts\fsc\fsc.dll</FSharpEEFsc>
-    <DotnetFscCompilerPath>"$(FSharpEEFsc)"</DotnetFscCompilerPath>
-  </PropertyGroup>
-
-  <Target Name="CheckFSharpEEFsc" BeforeTargets="CoreCompile">
-    <Error Condition="!Exists('$(FSharpEEFsc)')" Text="The checkout's fsc is missing: run eng\Build-Compiler.ps1." />
-  </Target>
 
   <!-- The private F# compiler, built by eng/Build-Compiler.ps1; it makes this assembly a friend. -->
   <ItemGroup>

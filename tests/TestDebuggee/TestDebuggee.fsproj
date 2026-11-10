@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    F# program for F5 / DTE-driven testing of the EE. net10.0 runs as x64 (debugged in devenv);
+    F# program for F5 / DTE-driven testing of the EE. net11.0 runs as x64 (debugged in devenv);
     net48 runs as x86, which makes VS 64-bit debug it through the x86 msvsmon.
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFrameworks>net10.0;net48</TargetFrameworks>
+    <TargetFrameworks>net11.0;net48</TargetFrameworks>
     <IsPackable>false</IsPackable>
     <Optimize>false</Optimize>
     <DebugType>portable</DebugType>
@@ -15,19 +15,6 @@
   <PropertyGroup Condition="'$(TargetFramework)' == 'net48'">
     <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
-
-  <!--
-    Compiled by the fsc of the private compiler's checkout (eng/Build-Compiler.ps1), as the tests'
-    fixtures are: released SDKs don't lower task state machines in Debug builds (docs/DESIGN.md §16).
-  -->
-  <PropertyGroup>
-    <FSharpEEFsc>$(MSBuildThisFileDirectory)..\..\artifacts\fsc\fsc.dll</FSharpEEFsc>
-    <DotnetFscCompilerPath>"$(FSharpEEFsc)"</DotnetFscCompilerPath>
-  </PropertyGroup>
-
-  <Target Name="CheckFSharpEEFsc" BeforeTargets="CoreCompile">
-    <Error Condition="!Exists('$(FSharpEEFsc)')" Text="The checkout's fsc is missing: run eng\Build-Compiler.ps1." />
-  </Target>
 
   <ItemGroup>
     <Compile Include="Startup.fs" />

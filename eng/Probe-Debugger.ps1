@@ -8,8 +8,8 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('net10.0', 'net48')]
-    [string] $Target = 'net10.0',
+    [ValidateSet('net11.0', 'net48')]
+    [string] $Target = 'net11.0',
     [string[]] $Expressions = @('point', 'shape', 'someShape', 'map', 'captured', 'count'),
     [int] $Breaks = 5,
     # At these breaks, step over $Steps times and list the locals after each step (return values show there).

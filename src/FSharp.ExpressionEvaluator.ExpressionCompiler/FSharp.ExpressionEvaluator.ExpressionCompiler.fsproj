@@ -6,6 +6,8 @@
     <RootNamespace>FSharp.ExpressionEvaluator</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>$(NoWarn);9</NoWarn>
+    <!-- MSB3277: VS SDK packages declare v10 dependencies that are not shipped; devenv supplies them. -->
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
   </PropertyGroup>
 
   <ItemGroup>

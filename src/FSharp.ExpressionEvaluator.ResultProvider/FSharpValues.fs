@@ -187,8 +187,16 @@ let bigintValue (v: IValue) : Numerics.BigInteger option =
             None
         else
             // Little-endian bytes, with a zero byte last so that the magnitude reads as positive.
+            // Words are uint32 on .NET Framework and up to .NET 10; .NET 11 stores them as UIntPtr.
+            let wordBytes (w: IValue) : byte[] =
+                match w.HostValue with
+                | :? uint32 as u -> BitConverter.GetBytes u
+                | :? unativeint as n when UIntPtr.Size = 8 -> BitConverter.GetBytes(uint64 n)
+                | :? unativeint as n -> BitConverter.GetBytes(uint32 n)
+                | o -> BitConverter.GetBytes(Convert.ToUInt32 o)
+
             let bytes =
-                [| for w in words do yield! BitConverter.GetBytes(Convert.ToUInt32 w.HostValue)
+                [| for w in words do yield! wordBytes w
                    yield 0uy |]
 
             let magnitude = Numerics.BigInteger bytes

@@ -21,6 +21,8 @@
     <StartAction>Program</StartAction>
     <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
     <StartArguments>/RootSuffix Exp /Log</StartArguments>
+    <!-- MSB3277: VS SDK packages declare v10 dependencies that are not shipped; devenv supplies them. -->
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
   </PropertyGroup>
 
   <ItemGroup>

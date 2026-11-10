@@ -230,6 +230,18 @@ To reinstall into the normal VS instance (Release by default; close VS first):
 powershell -File eng\Install-Vsix.ps1
 ```
 
+To publish to the Visual Studio Marketplace, commit all changes first. Then run:
+
+```powershell
+$env:VS_MARKETPLACE_PAT = '<token>'
+powershell -File eng\Publish-Vsix.ps1
+```
+
+The token is an Azure DevOps personal access token with the **Marketplace (Manage)** scope and
+**All accessible organizations**. The listing is in `src\FSharp.ExpressionEvaluator.Vsix\publishManifest.json`,
+and the Marketplace page is `overview.md` in the same folder. The Marketplace does not accept a
+version again, so each upload needs a new commit.
+
 `Probe-Debugger.ps1` starts the Exp instance and attaches to the test debuggee. At each
 break it prints the call stack, the locals and some watch values. Use `-Target net48` for an
 x86 process debugged through msvsmon. Run the scripts with Windows PowerShell 5.1. You can
@@ -265,3 +277,7 @@ checks:
 The components log to `%FSHARP_EE_LOG%` if set, otherwise to
 `%LOCALAPPDATA%\FSharpExpressionEvaluator\ee.log`. `Probe-Debugger.ps1` sets
 `FSHARP_EE_LOG` to `artifacts\logs\ee.log` (its `-Log` parameter changes that).
+
+## License
+
+[MIT](LICENSE).

@@ -38,6 +38,15 @@
     <Content Include="registration.json">
       <IncludeInVSIX>true</IncludeInVSIX>
     </Content>
+    <Content Include="Resources\icon.png">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+    <Content Include="..\..\LICENSE" Link="LICENSE">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+    <!-- Marketplace page and listing, read by eng/Publish-Vsix.ps1. They are not in the VSIX. -->
+    <None Include="publishManifest.json" />
+    <None Include="overview.md" />
   </ItemGroup>
 
   <ItemGroup>

@@ -4,6 +4,12 @@
     <Identity Id="FSharp.ExpressionEvaluator.f049de54-75e7-4bb4-9839-fb6993919394" Version="|%CurrentProject%;GetVsixVersion|" Language="en-US" Publisher="Jakub Majocha" />
     <DisplayName>F# Expression Evaluator</DisplayName>
     <Description xml:space="preserve">F# expression evaluation, value display and call stack names for the Visual Studio debugger. Written entirely in F#.</Description>
+    <MoreInfo>https://github.com/majocha/FSharpExpressionEvaluator</MoreInfo>
+    <License>LICENSE</License>
+    <Icon>Resources\icon.png</Icon>
+    <PreviewImage>Resources\icon.png</PreviewImage>
+    <Tags>F#;FSharp;debugger;debugging;expression evaluator;watch;locals;call stack</Tags>
+    <Preview>true</Preview>
   </Metadata>
   <Installation>
     <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[18.0,)">

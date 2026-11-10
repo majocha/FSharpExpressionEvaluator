@@ -1,0 +1,13 @@
+{
+  "$schema": "https://www.schemastore.org/vsix-publish.json",
+  "categories": [ "programming languages", "coding" ],
+  "identity": {
+    "internalName": "FSharpExpressionEvaluator"
+  },
+  "overview": "overview.md",
+  "priceCategory": "free",
+  "publisher": "majocha",
+  "private": false,
+  "qna": true,
+  "repo": "https://github.com/majocha/FSharpExpressionEvaluator"
+}

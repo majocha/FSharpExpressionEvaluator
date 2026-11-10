@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    Version: $(VersionMajorMinor) (Directory.Build.props) and the number of commits to HEAD, e.g. 0.1.57.
+    Each commit makes a newer version, so the VSIX updates over the installed one; builds of
+    uncommitted changes keep the version of HEAD. Without git (or outside a repository) the commit
+    count is 0. Pass -p:GitHeight=<n> to set it.
+    AssemblyVersion stays at Major.Minor.0.0, so a new commit does not change assembly identities.
+  -->
+  <Target Name="SetGitVersion" BeforeTargets="GetAssemblyVersion">
+    <Exec Condition="'$(GitHeight)' == ''" Command="git rev-list --count HEAD" WorkingDirectory="$(MSBuildThisFileDirectory)"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" StandardErrorImportance="low"
+          IgnoreExitCode="true" EchoOff="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitHeightOutput" />
+      <Output TaskParameter="ExitCode" PropertyName="_GitExitCode" />
+    </Exec>
+
+    <PropertyGroup>
+      <GitHeight Condition="'$(GitHeight)' == '' and '$(_GitExitCode)' == '0'">$(_GitHeightOutput.Trim())</GitHeight>
+      <GitHeight Condition="'$(GitHeight)' == ''">0</GitHeight>
+      <Version>$(VersionMajorMinor).$(GitHeight)</Version>
+      <AssemblyVersion>$(VersionMajorMinor).0.0</AssemblyVersion>
+      <FileVersion>$(Version).0</FileVersion>
+    </PropertyGroup>
+  </Target>
+
+</Project>

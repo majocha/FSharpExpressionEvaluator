@@ -213,6 +213,10 @@ dotnet build FSharp.ExpressionEvaluator.slnx
 dotnet test FSharp.ExpressionEvaluator.slnx
 ```
 
+Versions are `Major.Minor.Commits`: `VersionMajorMinor` in `Directory.Build.props` (set by hand),
+then the number of commits to HEAD (`Directory.Build.targets`). The VSIX and the file versions use
+it; assembly versions stay at `Major.Minor.0.0`. Pass `-p:GitHeight=<n>` to set the last part.
+
 To install into the Exp instance and see it in action:
 
 ```powershell

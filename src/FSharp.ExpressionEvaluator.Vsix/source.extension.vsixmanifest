@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="FSharp.ExpressionEvaluator.f049de54-75e7-4bb4-9839-fb6993919394" Version="0.0.1" Language="en-US" Publisher="Jakub Majocha" />
+    <Identity Id="FSharp.ExpressionEvaluator.f049de54-75e7-4bb4-9839-fb6993919394" Version="|%CurrentProject%;GetVsixVersion|" Language="en-US" Publisher="Jakub Majocha" />
     <DisplayName>F# Expression Evaluator</DisplayName>
     <Description xml:space="preserve">F# expression evaluation, value display and call stack names for the Visual Studio debugger. Written entirely in F#.</Description>
   </Metadata>

@@ -7,7 +7,9 @@
     <!-- FSharp.Core is pinned explicitly per project (see docs/DESIGN.md §8). -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>0.0.1</Version>
+    <!-- Set by hand. The third part is the git commit count (Directory.Build.targets). -->
+    <VersionMajorMinor>0.1</VersionMajorMinor>
+    <Version>$(VersionMajorMinor).0</Version>
     <Authors>Jakub Majocha</Authors>
   </PropertyGroup>
 </Project>

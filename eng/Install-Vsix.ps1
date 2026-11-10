@@ -6,8 +6,8 @@ param(
 )
 
 # Builds the VSIX and reinstalls it into the normal instance (not Exp) of the latest VS 2026 or later,
-# Insiders included. The manifest version does not change between builds, so the installed copy is
-# removed first: VSIXInstaller does not install over the same version.
+# Insiders included. The version changes only with a new commit (Directory.Build.targets), so the
+# installed copy is removed first: VSIXInstaller does not install over the same version.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest

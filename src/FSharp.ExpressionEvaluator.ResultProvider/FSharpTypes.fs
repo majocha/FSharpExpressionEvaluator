@@ -456,3 +456,22 @@ module CompilerGenerated =
     /// The names of a payload, or None for another id or an unknown version.
     let tryDecode (id: Guid) (payload: byte[]) =
         Payload.tryDecode payloadId id payload |> Option.map (fun text -> text.Split '\n' |> List.ofArray)
+
+/// A variable declared in the Immediate window (`let mutable x = ...`): whether it is mutable, and
+/// its F# type. The expression compiler passes it to the debugger's `CreateVariable` as the
+/// variable's custom type info, and reads it back from the debugger's aliases.
+module Variable =
+
+    let payloadId = Guid "3F0B6E1D-8C2A-4B57-A9E4-71D5C0F2B6A8"
+
+    /// The payload: a version byte, then `mutable` or nothing, a line break and the F# type, in UTF-8.
+    let encode (isMutable: bool) (fsharpType: string) =
+        Payload.encode ((if isMutable then "mutable" else "") + "\n" + fsharpType)
+
+    /// Whether the variable is mutable and its F# type, or None for another id or an unknown version.
+    let tryDecode (id: Guid) (payload: byte[]) =
+        Payload.tryDecode payloadId id payload
+        |> Option.bind (fun text ->
+            match text.IndexOf '\n' with
+            | -1 -> None
+            | i -> Some(text.Substring(0, i) = "mutable", text.Substring(i + 1)))

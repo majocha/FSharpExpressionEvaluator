@@ -52,6 +52,13 @@ type internal CompilerGeneratedData(clrValue: DkmClrValue, names: string list) =
     member _.ClrValue = clrValue
     member _.Names = names
 
+/// The full name of the result whose rows another provider (C#) lists, kept on its enumeration
+/// context to log the rows' full names (Log.fullNames).
+[<AllowNullLiteral>]
+type internal ParentNameData(fullName: string) =
+    inherit DkmDataItem()
+    member _.FullName = fullName
+
 [<AllowNullLiteral>]
 type internal RowsData(parent: FSharpResultData, rows: Row[]) =
     inherit DkmDataItem()
@@ -227,13 +234,32 @@ type ResultProvider() =
 
             let typeName =
                 FSharpValues.csharpTypeColumn fsharpName (lmrType declaredType) value |> Option.defaultValue s.Type
-            let seqPreview = FSharpValues.trySeqPreview (optionsFor context) value
-            let preview = seqPreview |> Option.defaultValue s.Value
+            let options = optionsFor context
+            let seqPreview = FSharpValues.trySeqPreview options value
+
+            // A primitive keeps C#'s result (its flags, string visualizer and underlying string) with
+            // F# literals as its value and editable value.
+            let primitive =
+                if seqPreview.IsSome || s.Flags.HasFlag DkmEvaluationResultFlags.ExceptionThrown then
+                    None
+                else
+                    FSharpValues.tryPrimitiveColumns options.Hex value
+
+            let preview =
+                match seqPreview, primitive with
+                | Some p, _ -> p
+                | None, Some(p, _) -> p
+                | None, None -> s.Value
+
+            let editableValue =
+                match primitive with
+                | Some(_, editable) when not (isNull s.EditableValue) -> editable
+                | _ -> s.EditableValue
 
             let sequence =
                 if seqPreview.IsSome then FSharpResultData(clrValue, value, declaredType, s.FullName) else null
 
-            if typeName <> s.Type || preview <> s.Value then
+            if typeName <> s.Type || preview <> s.Value || editableValue <> s.EditableValue then
                 DkmSuccessEvaluationResult.Create(
                     s.InspectionContext,
                     s.StackFrame,
@@ -241,7 +267,7 @@ type ResultProvider() =
                     s.FullName,
                     s.Flags,
                     preview,
-                    s.EditableValue,
+                    editableValue,
                     typeName,
                     s.Category,
                     s.Access,
@@ -317,6 +343,57 @@ type ResultProvider() =
         // A closure has a handful of fields, so one request returns C#'s Results View row.
         WorkLists.complete "RP" "sequence children" workList (fun workList k -> retyped.Original.GetChildren(workList, 100, context, k)) complete
 
+    /// Logs the full names of the rows listed under a result, for eng\Probe-Debugger.ps1 (Log.fullNames).
+    static let logFullNames (parentFullName: string) (rows: DkmEvaluationResult[]) =
+        let parent = if isNull parentFullName then "(none)" else parentFullName
+
+        if Log.fullNames.Value && not (isNull rows) then
+            for r in rows do
+                if not (isNull r) then
+                    let readOnly =
+                        match r with
+                        | :? DkmSuccessEvaluationResult as s when s.Flags.HasFlag DkmEvaluationResultFlags.ReadOnly -> " (read-only)"
+                        | _ -> ""
+
+                    let fullName = if isNull r.FullName then "(none)" else $"<{r.FullName}>"
+                    log $"full name of '{parent}' / '{r.Name}'{readOnly}: {fullName}"
+
+    /// A row that can't be edited: the same result with the ReadOnly flag, for a C# result (a
+    /// primitive under an F# value) whose full name is no target of an assignment. Its children, CLR
+    /// value and underlying string still come from the original.
+    static let readOnly (result: DkmEvaluationResult) =
+        match result with
+        | :? DkmSuccessEvaluationResult as s when not (s.Flags.HasFlag DkmEvaluationResultFlags.ReadOnly) ->
+            let data =
+                match ResultKind.Of s with
+                | RetypedResult retyped -> Some(RetypedData(retyped.Original, retyped.Sequence))
+                | OtherResult -> Some(RetypedData(s, null))
+                | _ -> None
+
+            match data with
+            | None -> result
+            | Some data ->
+                DkmSuccessEvaluationResult.Create(
+                    s.InspectionContext,
+                    s.StackFrame,
+                    s.Name,
+                    s.FullName,
+                    s.Flags ||| DkmEvaluationResultFlags.ReadOnly,
+                    s.Value,
+                    s.EditableValue,
+                    s.Type,
+                    s.Category,
+                    s.Access,
+                    s.StorageType,
+                    s.TypeModifierFlags,
+                    s.Address,
+                    s.CustomUIVisualizers,
+                    s.ExternalModules,
+                    data
+                )
+                :> DkmEvaluationResult
+        | _ -> result
+
     /// Creates the results for some rows one after another through Concord, then calls k.
     static let evaluateRows (workList: DkmWorkList) context (parent: FSharpResultData) (rows: Row[]) (k: DkmEvaluationResult[] -> unit) =
         let results = Array.zeroCreate rows.Length
@@ -329,11 +406,12 @@ type ResultProvider() =
             if i = rows.Length then
                 k results
             else
-                let complete (r: DkmEvaluationAsyncResult) =
+                let complete editable (r: DkmEvaluationAsyncResult) =
                     results[i] <-
                         match r.Result with
                         | null -> failed "?" null $"error 0x{r.ErrorCode:X8}"
-                        | result -> result
+                        | result when editable -> result
+                        | result -> readOnly result
 
                     next (i + 1)
 
@@ -353,7 +431,7 @@ type ResultProvider() =
                             $"row '{child.Name}'"
                             workList
                             (fun workList k -> v.Value.GetResult(workList, declared, null, context, noFormatSpecifiers, child.Name, fullName, k))
-                            complete
+                            (complete child.Editable)
                     | v ->
                         results[i] <- failed child.Name fullName v.Error
                         next (i + 1)
@@ -424,7 +502,12 @@ type ResultProvider() =
 
             let passOn (original: DkmEvaluationResult) =
                 WorkLists.complete "RP" "GetChildren" workList (fun workList k ->
-                    original.GetChildren(workList, initialRequestSize, inspectionContext, k)) completionRoutine.Invoke
+                    original.GetChildren(workList, initialRequestSize, inspectionContext, k)) (fun r ->
+                    if Log.fullNames.Value && not (isNull r.EnumContext) then
+                        logFullNames result.FullName r.InitialChildren
+                        r.EnumContext.SetDataItem(DkmDataCreationDisposition.CreateAlways, ParentNameData result.FullName)
+
+                    completionRoutine.Invoke r)
 
             match ResultKind.Of result with
             | OtherResult -> passOn result
@@ -441,6 +524,7 @@ type ResultProvider() =
                     let initial = Array.truncate initialRequestSize rows
 
                     evaluateRows workList inspectionContext data initial (fun children ->
+                        logFullNames result.FullName children
                         completionRoutine.Invoke(DkmGetChildrenAsyncResult(children, enumContext))))
 
         member _.GetItems(enumContext, workList, startIndex, count, completionRoutine) =
@@ -450,12 +534,18 @@ type ResultProvider() =
             match enumContext.GetDataItem<RowsData>(), enumContext.GetDataItem<SequenceRowsData>() with
             | null, null ->
                 WorkLists.complete "RP" "GetItems" workList (fun workList k ->
-                    enumContext.GetItems(workList, startIndex, count, k)) completionRoutine.Invoke
+                    enumContext.GetItems(workList, startIndex, count, k)) (fun r ->
+                    match enumContext.GetDataItem<ParentNameData>() with
+                    | null -> ()
+                    | parent -> logFullNames parent.FullName r.Items
+
+                    completionRoutine.Invoke r)
             | null, sequence ->
                 completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(page startIndex count sequence.Rows))
             | data, _ ->
                 try
                     evaluateRows workList enumContext.InspectionContext data.Parent (page startIndex count data.Rows) (fun items ->
+                        logFullNames data.Parent.FullName items
                         completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items)))
                 with e ->
                     Log.exn "RP" "GetItems" e

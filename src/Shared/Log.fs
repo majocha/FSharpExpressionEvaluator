@@ -35,6 +35,10 @@ let write (source: string) (message: string) =
 
 let exn (source: string) (context: string) (e: exn) = write source $"{context} failed: {e}"
 
+/// With FSHARP_EE_LOG_FULL_NAMES=1 the result provider logs the full name of each row it lists, the
+/// expression that Add Watch and edits use (eng\Probe-Debugger.ps1's -ExpectFullName reads them).
+let fullNames = lazy (Environment.GetEnvironmentVariable "FSHARP_EE_LOG_FULL_NAMES" = "1")
+
 let private tracing = lazy (Environment.GetEnvironmentVariable "FSHARP_EE_TRACE" = "1")
 
 let mutable private nextCall = 0

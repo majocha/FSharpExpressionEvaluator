@@ -27,6 +27,10 @@ param(
     # Checks 'break: expression => value': the expression's value at that break, before any assignment,
     # as the Watch window shows it. The value '!error' expects the expression not to evaluate.
     [string[]] $Expect = @(),
+    # Statements of the Immediate window ('break: statement', or 'break: statement => value' to check
+    # what it shows; '!error' for one that must fail), run before the other checks of that break, in
+    # order. A declaration (`let x = ...`) makes a variable later expressions and breaks can read.
+    [string[]] $Immediate = @(),
     # Checks 'break: expression => value' as -Expect does, with the debugger's Hexadecimal Display on.
     [string[]] $ExpectHex = @(),
     # Checks 'break: expression => type': the expression's type at that break, as the Watch window shows it.
@@ -35,9 +39,18 @@ param(
     [string[]] $ExpectLocalType = @(),
     # Checks 'break: row / child => value': the value of a child of that Locals row at that break.
     [string[]] $ExpectLocalChild = @(),
+    # Checks 'break: row / child [/ child...] => full name': the full name of a row under a Locals row, the
+    # expression Add Watch puts in the Watch window, read from the EE log (FSHARP_EE_LOG_FULL_NAMES). It
+    # must evaluate to the row's value. The full name '*' takes any, '!none' expects none (no Add Watch).
+    # A trailing ' [read-only]' or ' [editable]' checks whether the row can be edited.
+    [string[]] $ExpectFullName = @(),
     # At these breaks ('break: expression'), expand the expression and list its children; fails without any.
     [string[]] $Expand = @(),
-    # Text the EE log must have, in a line written during this run (e.g. a call stack name).
+    # Checks 'break: name': the name of the frame at that break, as DTE has it (names only, no arguments).
+    # `*` matches anything, such as the line in a closure's compiled name (`f@*`).
+    [string[]] $ExpectFrame = @(),
+    # Text the EE log must have, in a line written during this run (e.g. a call stack name); `*` matches
+    # anything within the line.
     [string[]] $ExpectLog = @(),
     # Lines the tracepoint must have written to the Debug pane.
     [string[]] $ExpectTrace = @(),
@@ -46,6 +59,9 @@ param(
     # Run TestDebuggee with --startup: two breaks in top-level code (Startup.fs, StartupNamespace.fs)
     # come before break 1, so pass -Breaks 7 to reach break 5.
     [switch] $Startup,
+    # Run TestDebuggee with --frames: only the breaks F1-F5 in compiler-generated code (lambdas, an
+    # inner function, `async`, `seq`), for their call stack names.
+    [switch] $Frames,
     # Defaults to artifacts\logs\ee.log.
     [string] $Log,
     [switch] $KeepVsOpen,
@@ -88,6 +104,24 @@ $localTypeExpectations = @($ExpectLocalType | ForEach-Object { $_ -split ';;' } 
 $localChildExpectations = @($ExpectLocalChild | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*/\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectLocalChild '$_' is not 'break: row / child => value'." }
     [pscustomobject]@{ Break = [int]$Matches[1]; Row = $Matches[2]; Child = $Matches[3]; Value = $Matches[4] }
+})
+$fullNameExpectations = @($ExpectFullName | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectFullName '$_' is not 'break: row / child => full name'." }
+    $path = @($Matches[2] -split '\s+/\s+')
+    if ($path.Count -lt 2) { throw "-ExpectFullName '$_' names no row under a Locals row." }
+    $break = [int]$Matches[1]
+    $fullName = $Matches[3]
+    $editable = $null
+    if ($fullName -match '^(.*?)\s*\[(read-only|editable)\]$') { $fullName = $Matches[1]; $editable = $Matches[2] -eq 'editable' }
+    [pscustomobject]@{ Break = $break; Path = $path; FullName = $fullName; Editable = $editable }
+})
+$statements = @($Immediate | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*(?:=>\s*(.*?))?\s*$') { throw "-Immediate '$_' is not 'break: statement [=> value]'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Text = $Matches[2]; Value = $Matches[3] }
+})
+$frameExpectations = @($ExpectFrame | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*$') { throw "-ExpectFrame '$_' is not 'break: name'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Name = $Matches[2] }
 })
 $ExpectTrace = @($ExpectTrace | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
 $failures = New-Object System.Collections.Generic.List[string]
@@ -145,6 +179,7 @@ $devenv = Join-Path $instance.installationPath 'Common7\IDE\devenv.exe'
 
 Add-Type -Path (Join-Path $instance.installationPath 'Common7\IDE\PublicAssemblies\envdte.dll')
 Add-Type -Path (Join-Path $instance.installationPath 'Common7\IDE\PublicAssemblies\envdte80.dll')
+Add-Type -Path (Join-Path $instance.installationPath 'Common7\IDE\PublicAssemblies\envdte90.dll')
 
 function Invoke-Com($target, [type] $interface, [string] $name, [object[]] $arguments = @()) {
     # PowerShell binds COM objects to their default interface (Debugger, Process), so call the
@@ -172,6 +207,8 @@ function Wait-Until([scriptblock] $condition, [int] $seconds, [string] $what) {
 # Start (or reuse) the Exp instance, with the EE's spike switches in its environment.
 $env:FSHARP_EE_SPIKE_MARKERS = '1'
 $env:FSHARP_EE_LOG = $Log
+# Full names of rows, for -ExpectFullName. A VS that was already running keeps its environment.
+$env:FSHARP_EE_LOG_FULL_NAMES = '1'
 # -ExpectLog reads only what this run writes.
 $logStart = if (Test-Path $Log) { (Get-Item $Log).Length } else { 0 }
 $vs = Get-CimInstance Win32_Process -Filter "Name='devenv.exe'" |
@@ -224,7 +261,8 @@ if ($Reuse) {
 
     # Start the debuggee; it prints its PID once the runtime is up, then spins until a debugger attaches.
     $stdout = [IO.Path]::GetTempFileName()
-    $debuggee = Start-Process $exe -ArgumentList $(if ($Startup) { '--wait --startup' } else { '--wait' }) -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout
+    $debuggeeArguments = '--wait' + $(if ($Startup) { ' --startup' } else { '' }) + $(if ($Frames) { ' --frames' } else { '' })
+    $debuggee = Start-Process $exe -ArgumentList $debuggeeArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout
     Wait-Until { (Get-Content $stdout -Raw -ErrorAction SilentlyContinue) -match 'PID' } 30 'debuggee start'
 
     $transports = Invoke-Com $dte.Debugger ([EnvDTE80.Debugger2]) 'Transports'
@@ -255,6 +293,16 @@ function Show-Value($e, [string] $indent) {
     Write-Host "$indent$(& $p 'Name') = $(& $p 'Value') : $(& $p 'Type')$valid"
 }
 
+# What this run has written to the EE log so far.
+function Read-Log {
+    if (-not (Test-Path $Log)) { return '' }
+    $stream = [IO.File]::Open($Log, 'Open', 'Read', 'ReadWrite')
+    try {
+        [void]$stream.Seek([Math]::Min($logStart, $stream.Length), 'Begin')
+        (New-Object IO.StreamReader($stream)).ReadToEnd()
+    } finally { $stream.Dispose() }
+}
+
 function Test-Check([string] $what, [bool] $passed, [string] $actual) {
     $script:checks++
     if ($passed) { Write-Host "  PASS $what" }
@@ -268,6 +316,9 @@ $assigned = @{}
         $frame = $dte.Debugger.CurrentStackFrame
         Write-Host ''
         Write-Host "=== Break $i : $($frame.FunctionName)  [language: $($frame.Language)]"
+        foreach ($check in @($frameExpectations | Where-Object { $_.Break -eq $i })) {
+            Test-Check "break $i : frame $($check.Name)" ($frame.FunctionName -clike $check.Name) $frame.FunctionName
+        }
         Write-Host '--- Call stack'
         # The Call Stack window asks for every frame's name with its parameters (-ExpectLog checks
         # them); DTE's StackFrames ask only the top frame's. Open it, as the window layout may not.
@@ -298,7 +349,63 @@ $assigned = @{}
         $hereExpand = @($expansions | Where-Object { $_.Break -eq $i })
         $hereLocalTypes = @($localTypeExpectations | Where-Object { $_.Break -eq $i })
         $hereLocalChildren = @($localChildExpectations | Where-Object { $_.Break -eq $i })
-        if ($here -or $hereTypes -or $hereExpand -or $hereLocalTypes -or $hereLocalChildren) { Write-Host '--- Checks' }
+        $hereFullNames = @($fullNameExpectations | Where-Object { $_.Break -eq $i })
+        $hereStatements = @($statements | Where-Object { $_.Break -eq $i })
+        if ($here -or $hereTypes -or $hereExpand -or $hereLocalTypes -or $hereLocalChildren -or $hereFullNames -or $hereStatements) { Write-Host '--- Checks' }
+        foreach ($check in $hereStatements) {
+            # As the Immediate window runs it: a statement, not an expression (TreatAsStatement).
+            $e = Invoke-Com $dte.Debugger ([EnvDTE90.Debugger3]) 'GetExpression2' @($check.Text, $true, $true, 10000)
+            $what = "break $i : Immediate $($check.Text)"
+            Write-Host "    > $($check.Text) = $($e.Value)"
+            if (-not $check.Value) {
+                Test-Check $what $e.IsValidValue $e.Value
+            } elseif ($check.Value -eq '!error') {
+                Test-Check "$what => !error" (-not $e.IsValidValue) $e.Value
+            } else {
+                Test-Check "$what => $($check.Value)" ($e.IsValidValue -and $e.Value -ceq $check.Value) $e.Value
+            }
+        }
+        # Locals again, for the variables the statements declared.
+        if ($hereStatements) { $locals = @(Get-Items $dte.Debugger.CurrentStackFrame.Locals ([EnvDTE.Expressions])) }
+        foreach ($check in $hereFullNames) {
+            $what = "break $i : full name of $($check.Path -join ' / ') => $($check.FullName)"
+            # Walk down from the Locals row. Listing a row's children has the result provider log each
+            # child's full name under the parent's full name (a Locals row's is its name).
+            $node = @($locals | Where-Object { $_.Name -ceq $check.Path[0] } | Select-Object -First 1)
+            $fullName = $check.Path[0]
+            $readOnly = ''
+            $missing = $null
+            for ($k = 1; $k -lt $check.Path.Count; $k++) {
+                if (-not $node) { $missing = 'no such row'; break }
+                if ($null -eq $fullName) { $missing = "no full name for $($check.Path[$k - 1])"; break }
+                $name = $check.Path[$k]
+                $node = @(Get-Items $node[0].DataMembers ([EnvDTE.Expressions]) | Where-Object { $_.Name -ceq $name } | Select-Object -First 1)
+                $pattern = "full name of '$([regex]::Escape($fullName))' / '$([regex]::Escape($name))'( \(read-only\))?: (\(none\)|<(.*)>)\r?$"
+                $logged = @([regex]::Matches((Read-Log), $pattern, 'Multiline'))
+                if (-not $logged) { $missing = "no full name of $name in the EE log"; break }
+                $last = $logged[$logged.Count - 1]
+                $fullName = if ($last.Groups[3].Success) { $last.Groups[3].Value } else { $null }
+                $readOnly = if ($last.Groups[1].Success) { ' (read-only)' } else { '' }
+            }
+            if (-not $missing -and -not $node) { $missing = 'no such row' }
+            if ($missing) { Test-Check $what $false $missing; continue }
+            Write-Host "    $($check.Path -join ' / ') = $($node[0].Value), full name: $(if ($fullName) { $fullName } else { '(none)' })$readOnly"
+            if ($null -ne $check.Editable) {
+                $kind = if ($check.Editable) { 'editable' } else { 'read-only' }
+                Test-Check "$what, $kind" ($check.Editable -eq (-not $readOnly)) $(if ($readOnly) { 'read-only' } else { 'editable' })
+            }
+            if ($check.FullName -eq '!none') {
+                Test-Check $what ($null -eq $fullName) $fullName
+            } elseif ($null -eq $fullName) {
+                Test-Check $what $false '(none)'
+            } elseif ($check.FullName -ne '*' -and $fullName -cne $check.FullName) {
+                Test-Check $what $false $fullName
+            } else {
+                # Add Watch: the full name evaluates to the row's value.
+                $e = $dte.Debugger.GetExpression($fullName, $true, 10000)
+                Test-Check "$what, evaluates to $($node[0].Value)" ($e.IsValidValue -and $e.Value -ceq $node[0].Value) $e.Value
+            }
+        }
         foreach ($check in $hereLocalChildren) {
             # The children of a Locals row come from the result providers' GetChildren.
             $row = @($locals | Where-Object { $_.Name -ceq $check.Row } | Select-Object -First 1)
@@ -407,16 +514,10 @@ $assigned = @{}
     }
 
     if ($ExpectLog) {
-        $written = ''
-        if (Test-Path $Log) {
-            $stream = [IO.File]::Open($Log, 'Open', 'Read', 'ReadWrite')
-            try {
-                [void]$stream.Seek([Math]::Min($logStart, $stream.Length), 'Begin')
-                $written = (New-Object IO.StreamReader($stream)).ReadToEnd()
-            } finally { $stream.Dispose() }
-        }
+        $written = Read-Log
         foreach ($text in $ExpectLog) {
-            Test-Check "the EE log has '$text'" ($written.Contains($text)) 'not in this run''s log'
+            $found = if ($text.Contains('*')) { @($written -split "`r?`n" | Where-Object { $_ -clike "*$text*" }).Count -gt 0 } else { $written.Contains($text) }
+            Test-Check "the EE log has '$text'" $found 'not in this run''s log'
         }
     }
 

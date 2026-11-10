@@ -47,6 +47,43 @@ let numbers () =
 
 let work () = task { return 42 }
 
+/// Compiler-generated code: lambdas, an inner function that captures a mutable local, a lambda
+/// inside it, and the code of an `async { }`.
+let lambdas (xs: int list) =
+    let one = xs |> List.map (fun i -> i * 2)
+    let two = xs |> List.map (fun i -> i - 1)
+    one, two
+
+let withInner (start: int) =
+    let mutable counter = start
+
+    let step (x: int) =
+        counter <- counter + x
+        [ 1; 2 ] |> List.map (fun y -> y + counter)
+
+    step 1
+
+let fetch (n: int) =
+    async {
+        do! Async.Sleep 1
+        return n + 1
+    }
+
+/// Functions that return an async without being its code: a lambda with a parameter, a lambda
+/// passed on, and a unit lambda whose body is an `async { }`.
+let fetchLength = fun (url: string) -> async { return url.Length }
+
+let fetchAll (urls: string list) = urls |> List.map (fun url -> fetchLength url)
+
+let delayed (n: int) = fun () -> async { return n }
+
+/// The continuation of a `let!` takes the bound value.
+let bound (n: int) =
+    async {
+        let! x = async { return n }
+        return x + 1
+    }
+
 /// Names that F# writes in double backticks.
 type ``Odd Box`` = { Inside: int }
 

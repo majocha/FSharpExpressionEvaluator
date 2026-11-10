@@ -31,6 +31,10 @@ type FrameLocal =
 
         /// Index of the local in the frame method's local signature.
         Slot: int
+
+        /// IL offset where the local's scope starts. In a state machine it orders the local among
+        /// the hoisted variables of the same name: the one that starts later shadows the other.
+        Start: int
     }
 
 /// What a debugger alias stands for (Concord's DkmClrAliasKind).
@@ -62,6 +66,10 @@ type Alias =
         /// The value's runtime type, as a CLR type name (assembly-qualified or not, with generic
         /// arguments in `[[...]]`). A type the session can't find reads as `obj`.
         TypeName: string
+
+        /// An Immediate-window variable declared `let mutable`: expressions can assign to it with
+        /// `<-`. Edits of its row (an assignment) can change any variable, as they can frame values.
+        IsMutable: bool
     }
 
 /// The stopped frame an expression is evaluated in.
@@ -82,6 +90,15 @@ type FrameContext =
 
         /// Locals in scope at the frame's location, innermost last (later names shadow earlier ones).
         Locals: FrameLocal list
+
+        /// The frame's IL offset in its method.
+        ILOffset: int
+
+        /// The IL of the frame's method (the code alone, without header), or empty when it couldn't
+        /// be read. In a state machine's `MoveNext` it tells which hoisted variables are in scope at
+        /// `ILOffset`: the compiler stores each one where it is bound and clears it where its scope
+        /// ends. Without it, all of them are in scope.
+        MethodIL: byte[]
 
         /// The debugger's pseudo-variables.
         Aliases: Alias list
@@ -187,6 +204,16 @@ type EvaluationSession =
     /// In a generic frame the query class takes the frame's class type parameters and the query
     /// method its method type parameters, to be instantiated as the frame's.
     member CompileExpression:
+        frame: FrameContext * text: string * ?localsAsParameters: bool ->
+            Result<CompiledExpression, EvaluationDiagnostic list>
+
+    /// Compiles a statement of the Immediate window: a declaration `let x = ...` or
+    /// `let mutable x: T = ...` declares a debugger variable `x` (docs/DESIGN.md §17, item 31),
+    /// through the debugger's `CreateVariable` and `GetVariableAddress<T>`, and returns its value;
+    /// anything else is an expression, as CompileExpression compiles it. A value whose type the
+    /// expression itself defines (an anonymous record it builds) is declared as `obj`, and the
+    /// query returns a message that says so instead of the value.
+    member CompileStatement:
         frame: FrameContext * text: string * ?localsAsParameters: bool ->
             Result<CompiledExpression, EvaluationDiagnostic list>
 

@@ -125,6 +125,38 @@ let ``sequence and task state machines`` () =
     | Some t -> Assert.Matches(@"\.work@\d+ \(state machine\)$", frame (methodOf t "MoveNext") namesAndTypes)
     | None -> () // task { } compiled without a static state machine in this configuration
 
+let private generatedTypes (prefix: string) =
+    fixtures.GetNestedTypes all |> Array.filter (fun t -> t.Name.StartsWith(prefix + "@")) |> List.ofArray
+
+[<Fact>]
+let ``lambdas and inner functions keep their compiled names`` () =
+    // Named after the innermost `let` they are in, as decompiled code and error messages show them.
+    for t in generatedTypes "one" @ generatedTypes "step" do
+        Assert.Matches($@"^{Text.RegularExpressions.Regex.Escape ns}\.(one|step)@[\d-]+ \((i|x|y): int\)$", frame (methodOf t "Invoke") namesAndTypes)
+
+[<Fact>]
+let ``the closures of an async are marked`` () =
+    // Its code and its continuations, without the builder's arguments.
+    let fetch = generatedTypes "fetch"
+    Assert.NotEmpty fetch
+
+    for t in fetch do
+        Assert.Matches(@"\.fetch@[\d-]+ \(async\)$", frame (methodOf t "Invoke") namesAndTypes)
+
+[<Fact>]
+let ``a lambda that returns an async keeps its name and arguments`` () =
+    // `fun url -> fetchLength url` returns an Async, with a parameter of its own.
+    let lambda = generatedTypes "fetchAll" |> List.exactlyOne
+    Assert.Matches(@"\.fetchAll@\d+ \(url: string\)$", frame (methodOf lambda "Invoke") namesAndTypes)
+
+    // `fun () -> async { ... }` compiles as the async's delayed code does: both are marked.
+    for t in generatedTypes "delayed" do
+        Assert.Matches(@"\.delayed@[\d-]+ \(async\)$", frame (methodOf t "Invoke") namesAndTypes)
+
+    // A `let!` continuation takes the bound value under a name the compiler gives it (`_arg1`).
+    for t in generatedTypes "bound" do
+        Assert.Matches(@"\.bound@[\d-]+ \(async\)$", frame (methodOf t "Invoke") namesAndTypes)
+
 [<Fact>]
 let ``return types`` () =
     Assert.Equal("int", returnTypeName md (methodOf fixtures "add").MetadataToken None)

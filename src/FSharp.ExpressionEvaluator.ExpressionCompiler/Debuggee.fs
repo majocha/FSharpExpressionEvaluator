@@ -293,7 +293,7 @@ let private pdbScope (address: DkmClrInstructionAddress) =
                     for scope in scopes do
                         for h in scope.GetLocalVariables() do
                             let v = md.GetLocalVariable h
-                            { Name = md.GetString v.Name; Slot = v.Index }
+                            { Name = md.GetString v.Name; Slot = v.Index; Start = scope.StartOffset }
                 ]
 
             let opens =
@@ -317,6 +317,29 @@ let private pdbScope (address: DkmClrInstructionAddress) =
 
             locals, opens
     | _ -> [], []
+
+/// The IL of the frame's method when it is a state machine's `MoveNext`, read from the loaded image:
+/// the stores to its fields give the scopes of the hoisted variables. Empty for other methods, for
+/// a method changed by Edit and Continue (the image has its first version) and when it can't be read.
+let private moveNextIL (address: DkmClrInstructionAddress) =
+    let m = address.ModuleInstance
+    use provider = metadataReader (moduleMetadata m)
+    let md = provider.GetMetadataReader()
+    let methodDef = md.GetMethodDefinition(MetadataTypes.methodHandle address.MethodId.Token)
+
+    if
+        md.GetString methodDef.Name <> "MoveNext"
+        || methodDef.RelativeVirtualAddress = 0
+        || address.MethodId.Version > 1u
+    then
+        [||]
+    else
+        let read = readImage m
+
+        let toImageOffset =
+            if string m.MemoryLayout = "MemoryPE" then id else (PeImage.cliResources read false).ToImageOffset
+
+        PeImage.readMethodIL read toImageOffset methodDef.RelativeVirtualAddress
 
 let private aliasKind (kind: DkmClrAliasKind) =
     match kind with
@@ -352,6 +375,13 @@ let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionC
             Log.exn "EE" "PDB scope" e
             [], []
 
+    let methodIL =
+        try
+            moveNextIL address
+        with e ->
+            Log.exn "EE" "Method IL" e
+            [||]
+
     let aliases =
         match runtime.GetAliases inspectionContext with
         | null -> []
@@ -360,10 +390,20 @@ let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionC
                 for a in aliases do
                     match aliasKind a.Kind with
                     | Some kind ->
+                        // A variable declared `let mutable` in the Immediate window says so in the
+                        // custom type info it was created with.
+                        let isMutable =
+                            kind = AliasKind.Variable
+                            && not (isNull a.CustomTypeInfoPayload)
+                            && match FSharpTypes.Variable.tryDecode a.CustomTypeInfoPayloadTypeId (Seq.toArray a.CustomTypeInfoPayload) with
+                               | Some(isMutable, _) -> isMutable
+                               | None -> false
+
                         {
                             Name = a.FullName
                             Kind = kind
                             TypeName = a.Type
+                            IsMutable = isMutable
                         }
                     | None -> ()
             ]
@@ -374,6 +414,8 @@ let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionC
         LocalSignatureToken = localSignatureToken
         Opens = opens
         Locals = locals
+        ILOffset = int address.ILOffset
+        MethodIL = methodIL
         Aliases = aliases
         IntrinsicsAssembly = intrinsicsAssembly runtime
     }

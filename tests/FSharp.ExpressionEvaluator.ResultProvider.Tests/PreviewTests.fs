@@ -198,3 +198,39 @@ let ``hex display applies to integers inside previews`` () =
     showsHex "[42I]" [ 42I ]
     Assert.Equal(Some "seq [0x01; 0x02]", FSharpValues.trySeqPreview (FSharpValues.defaultOptions |> FSharpValues.withRadix 16u) (live (seq { 1uy..2uy })))
     Assert.Equal(Some "[0x00000001]", FSharpValues.tryPreview (FSharpValues.withRadix 16u FSharpValues.defaultOptions) None (live (forced [ 1 ])))
+
+let private columns hex (value: obj) =
+    FSharpValues.tryPrimitiveColumns hex (live value)
+
+[<Fact>]
+let ``primitive rows show F# literals, without integer suffixes in the value column`` () =
+    Assert.Equal(Some("2.0", "2.0"), columns false 2.0)
+    Assert.Equal(Some("nan", "nan"), columns false nan)
+    Assert.Equal(Some("-infinity", "-infinity"), columns false -infinity)
+    Assert.Equal(Some("1.5f", "1.5f"), columns false 1.5f)
+    Assert.Equal(Some("1.5M", "1.5M"), columns false 1.5M)
+    // The value column has no integer suffix; an edit starts from the F# literal.
+    Assert.Equal(Some("42", "42"), columns false 42)
+    Assert.Equal(Some("-1", "-1L"), columns false -1L)
+    Assert.Equal(Some("255", "255uy"), columns false 255uy)
+    Assert.Equal(Some("7", "7UL"), columns false 7UL)
+    Assert.Equal(Some("'a'", "'a'"), columns false 'a')
+    Assert.Equal(Some(@"'\''", @"'\''"), columns false '\'')
+    Assert.Equal(Some(@"""a\tb\000""", @"""a\tb\000"""), columns false "a\tb\000")
+    Assert.Equal(Some("true", "true"), columns false true)
+
+[<Fact>]
+let ``primitive rows in hex keep their F# suffix for edits`` () =
+    Assert.Equal(Some("0x0000002a", "0x0000002a"), columns true 42)
+    Assert.Equal(Some("0xffffffffffffffff", "0xffffffffffffffffL"), columns true -1L)
+    Assert.Equal(Some("0x10", "0x10uy"), columns true 16uy)
+    // Floats, chars and strings keep their literals.
+    Assert.Equal(Some("2.5", "2.5"), columns true 2.5)
+    Assert.Equal(Some("'a'", "'a'"), columns true 'a')
+
+[<Fact>]
+let ``nulls, enums and other values are not primitive rows`` () =
+    Assert.Equal(None, columns false null)
+    Assert.Equal(None, columns false System.DayOfWeek.Monday)
+    Assert.Equal(None, columns false (System.Guid.Empty))
+    Assert.Equal(None, columns false [ 1 ])

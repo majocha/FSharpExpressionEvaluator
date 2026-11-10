@@ -96,7 +96,19 @@ let ``type column of values C# renders names FSharp.Core types in F#`` () =
     // Types without FSharp.Core in them keep C#'s names.
     Assert.Equal(None, column<seq<int>> (List<int>()))
     Assert.Equal(None, column<List<int>> (List<int>()))
-    Assert.Equal(None, column<obj> "s")
+    Assert.Equal(None, column<obj> (List<int>()))
+
+[<Fact>]
+let ``type column of primitives C# renders uses F# names`` () =
+    Assert.Equal(Some "float", column<float> 2.0)
+    Assert.Equal(Some "int64", column<int64> 1L)
+    Assert.Equal(Some "string", column<string> "s")
+    Assert.Equal(Some "string", column<string> null)
+    Assert.Equal(Some "obj {string}", column<obj> "s")
+    Assert.Equal(Some "obj {float32}", column<obj> 1.5f)
+    Assert.Equal(Some "float array", column<float[]> [| 1.0 |])
+    Assert.Equal(Some "System.IComparable {decimal}", column<System.IComparable> 1.5M)
+    Assert.Equal(None, column<System.DayOfWeek> System.DayOfWeek.Monday)
 
 let private columnAs<'T> fsharpName (value: obj) =
     FSharpValues.csharpTypeColumn (Some fsharpName) (Some typeOf<'T>) (live value)

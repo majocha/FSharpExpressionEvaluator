@@ -213,9 +213,17 @@ type ExpressionCompiler() =
     interface IDkmClrExpressionCompiler with
 
         member _.CompileExpression(expression, instructionAddress, inspectionContext, error, result) =
+            // The Immediate window's text is a statement (no TreatAsExpression): it can declare a
+            // variable, `let x = ...` (docs/DESIGN.md §17, item 31). Watch and DataTips are expressions.
+            let isStatement =
+                not (expression.CompilationFlags.HasFlag DkmEvaluationFlags.TreatAsExpression)
+
             let compiled =
                 compile $"CompileExpression '{expression.Text}'" instructionAddress inspectionContext (fun session frame ->
-                    session.CompileExpression(frame, expression.Text))
+                    if isStatement then
+                        session.CompileStatement(frame, expression.Text)
+                    else
+                        session.CompileExpression(frame, expression.Text))
 
             match compiled with
             | Some compiled ->

@@ -38,9 +38,33 @@ This covers:
 With the debugger's **Hexadecimal Display** on, integers inside F# values are in hex
 (`Some 0x0000002a`).
 
+Primitives are F# literals too, at top level and as the rows under F# values, with F# type
+names: `radius = 2.0 : float`, `"a\tb"`, `'q'`, `1.5M`, `nan`. The value column has no integer
+suffix (the Type column is beside it); an edit starts from the F# literal (`5L`) and takes F#
+(`2.5`, `"a\tb"`). Hexadecimal Display works as before, and the rows keep C#'s flags, string
+visualizer and underlying string (the text a visualizer and a raw copy use).
+
 Expanding a value shows its F# fields, list items, map entries or captured values. A
 **Raw View** row shows the raw .NET members. Everything else is rendered by the C# result
 provider.
+
+**Add Watch** on a row under an F# value puts an F# expression in the Watch window, which
+evaluates to the same value:
+
+| Row | Expression |
+|---|---|
+| record or anonymous record field, ref cell | `point.X`, `anon.Count`, `cell.contents` |
+| list item, array element | `xs[1]`, `nested[0][1]`, `grid[1, 2]` |
+| tuple item | `tuple.Item2`, `big.Rest.Item1`; struct tuples `(let struct (_, x) = pair in x)` |
+| union case field | `(match shape with Program.Shape.Circle x -> x \| _ -> failwith "not Circle")` |
+| F# exception field | `(match (error :> exn) with Program.MyError (x, _) -> x \| _ -> failwith "not MyError")` |
+| `option` / `Lazy` value | `opt.Value`, `created.Value` |
+| map entry | `map["two"]` for a key that is a literal, else `(Seq.item 0 points).Value` |
+| set item | `Seq.item 1 set` |
+
+Rows that F# can't assign to (tuple and list items, map entries, union case and anonymous record
+fields) are read-only; record fields and array elements can be edited. A closure's captured
+values have no expression outside the closure's own frame.
 
 **Call stack and breakpoint locations** in F# frames:
 
@@ -48,12 +72,16 @@ provider.
 Program.inspect (xs: int list) (name: string) (trip: float<m>)
 Program.generic<int list> (value: int list) (pair: int * string)
 Program.f@66 (x: int)
+Program.work@24 (state machine)
+Program.fetch@69-2 (async)
+Program.numbers@12 (seq)
 Program.Counter.Increment (by: int)
 ```
 
-Names show curried argument groups, tuple parameters, `()`, operators and source names. They
-also show closures without `.Invoke`, the frame's actual generic arguments and, optionally,
-argument values. When the F# compiler has loaded the debuggee's assemblies (from the first
+Names show curried argument groups, tuple parameters, `()`, operators and source names. Code
+the compiler generates keeps the name F# gives it (`f@66`, as decompiled code and error messages
+show it), without `.Invoke`; the code of `task { }`, `async { }` and `seq { }` is marked. Names
+also show the frame's actual generic arguments and, optionally, argument values. When the F# compiler has loaded the debuggee's assemblies (from the first
 break on), units of measure and type abbreviations come from the F# signature.
 
 Names that F# writes in double backticks (``` ``my value`` ```, ``` ``type`` ```) get them in type
@@ -74,6 +102,19 @@ The compiler sees what the debuggee has loaded, read from its memory. That inclu
 FSharp.Core's inline functions, private members and module values, F# errors (`FS0039`),
 aliases (`$exception`) and assignment. The Locals window comes from the F# compiler too.
 
+In the **Immediate window**, `let` declares a variable that later expressions, in Watch and
+Immediate and at later breaks, read by its name:
+
+```
+let digits = xs |> List.map string     ["1"; "2"; "3"]
+let mutable total = List.sum xs        6
+total <- total + 10
+digits <- []                           error FS0027: This value is not mutable...
+```
+
+A variable is listed in Locals, where its row can be edited. A value whose type the statement
+itself defines (`let r = {| A = 1 |}`) is declared as `obj`, and the statement says so.
+
 Expressions are F# only. The C# debugger's format specifiers (`x, h`, `s, nq`) are not
 accepted, so `x, h` is a tuple. Format with F# instead (`$"%x{x}"`), and use Hexadecimal
 Display for hex. The only specifiers split off are the ones Visual Studio writes into the
@@ -85,6 +126,7 @@ names of Raw View and Results View rows itself (`, raw`, `, results`).
 |---|---|
 | `captured`, `counter` in a closure | a closure's captured values, as variables of the frame |
 | `doubled` in `task { }` or `seq { }` | the hoisted variables of the state machine, without its plumbing fields |
+| in `task { }`: only what is in scope | a hoisted variable shows from its `let` to the end of its scope; one that shadows another keeps its name (`label`, `label (shadowed)`); the builder's awaiters and enumerators are under `[compiler generated]` |
 | `counter = 1 : int` | a captured `let mutable` reads and writes as its value, not as a ref cell |
 | `name (shadowed)`, `name` | a variable that an inner one of the same name hides |
 | `trip : float<m>`, `ids : Ids` | units of measure and type abbreviations, from the F# signature |
@@ -189,9 +231,9 @@ To check the deployed evaluator in the live debugger:
 powershell -File eng\Test-Debugger.ps1 -Target net10.0
 ```
 
-`Test-Debugger.ps1` runs `Probe-Debugger.ps1` three times, with expected values. It checks
-watch values, types, Locals rows, assignments, a conditional breakpoint and a tracepoint, and
-exits with 1 when a check fails. Use `-Target net48` too. `Probe-Debugger.ps1` takes the same
+`Test-Debugger.ps1` runs `Probe-Debugger.ps1` four times, with expected values. It checks
+watch values, types, Locals rows, full names, Immediate-window variables, assignments, call stack
+names, a conditional breakpoint and a tracepoint, and exits with 1 when a check fails. Use `-Target net48` too. `Probe-Debugger.ps1` takes the same
 checks:
 
 | Option | Checks |
@@ -201,6 +243,9 @@ checks:
 | `-ExpectType 'break: expression => type'` | a Watch value's Type column |
 | `-ExpectLocalType 'break: name => type'` | a Locals row's Type column |
 | `-ExpectLocalChild 'break: row / child => value'` | a row under a Locals row |
+| `-ExpectFullName 'break: row / child => expression'` | the expression Add Watch uses for a row under a Locals row (logged with `FSHARP_EE_LOG_FULL_NAMES=1`), and that it evaluates to the row's value; `[read-only]` or `[editable]` at the end checks that too |
+| `-Immediate 'break: statement [=> value]'` | a statement of the Immediate window, such as `let x = ...` |
+| `-ExpectFrame 'break: name'` | the frame's name (`*` matches anything); `-Frames` runs TestDebuggee's breaks in lambdas, an inner function, `async` and `seq` instead |
 | `-Expand 'break: expression'` | that a value has children, and lists them |
 | `-Assign 'name=value'` | an assignment, read back |
 | `-AssignLocal 'break: row [/ child] = value'` | an edit of a Locals row, which compiles an assignment to the row's full name |

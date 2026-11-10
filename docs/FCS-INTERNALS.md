@@ -9,27 +9,29 @@ functions are compiled into the evaluator, so only what they call appears. A uni
 are listed with it; record fields and properties show as `(property)`, mutable ones also as
 `(setter)`, a module's let-bound values as properties too.
 
-53 modules; 187 of the 259 compiler types referenced need internal access (the rest are used only
+59 modules; 207 of the 286 compiler types referenced need internal access (the rest are used only
 through public members).
 
 ## `FSharp.Compiler.AbstractIL.IL`
 
-- module functions and values: `instILType`, `mkILArrTy`, `mkILBoxedTy`, `mkILCustomAttribute`, `mkILFieldSpecInTy`, `mkILNonGenericBoxedTy`, `mkILNonGenericStaticMethSpecInTy`, `mkILParamNamed`, `mkILSimpleClass`, `mkILSimpleStorageCtor`, `mkILTyRef`, `mkILValueTy`, `mkNormalCall`, `mkNormalLdfld`, `mkNormalStfld`, `mkRefForNestedILTypeDef`, `rescopeILType`, `splitILTypeName`
+- module functions and values: `instILType`, `mkILArrTy`, `mkILBoxedTy`, `mkILCustomAttribute`, `mkILFieldSpecInTy`, `mkILMethRef`, `mkILNonGenericBoxedTy`, `mkILNonGenericCtorMethSpec`, `mkILNonGenericStaticMethSpecInTy`, `mkILNonGenericValueTy`, `mkILParamNamed`, `mkILSimpleClass`, `mkILSimpleStorageCtor`, `mkILTyRef`, `mkILTyvarTy`, `mkILValueTy`, `mkNormalCall`, `mkNormalLdfld`, `mkNormalNewobj`, `mkNormalStfld`, `mkRefForNestedILTypeDef`, `rescopeILType`, `rescopeILTypeRef`, `splitILTypeName`
+- `ILAttribute`: `Method (property)`
 - `ILCode` *(internal)*: `(constructor)`, `Exceptions (property)`, `Instrs (property)`, `Labels (property)`, `Locals (property)`
 - `ILDebugPoint` *(internal)*
 - `ILExceptionSpec` *(internal)*
 - `ILFieldDefs`: `AsList`
-- `ILGlobals` *(internal)*: `typ_Attribute (property)`, `typ_Bool (property)`, `typ_Byte (property)`, `typ_Char (property)`, `typ_Double (property)`, `typ_Int16 (property)`, `typ_Int32 (property)`, `typ_Int64 (property)`, `typ_IntPtr (property)`, `typ_Object (property)`, `typ_SByte (property)`, `typ_Single (property)`, `typ_String (property)`, `typ_TypedReference (property)`, `typ_UInt16 (property)`, `typ_UInt32 (property)`, `typ_UInt64 (property)`, `typ_UIntPtr (property)`
+- `ILGlobals` *(internal)*: `primaryAssemblyScopeRef (property)`, `typ_Attribute (property)`, `typ_Bool (property)`, `typ_Byte (property)`, `typ_ByteArray (property)`, `typ_Char (property)`, `typ_Double (property)`, `typ_Int16 (property)`, `typ_Int32 (property)`, `typ_Int64 (property)`, `typ_IntPtr (property)`, `typ_Object (property)`, `typ_SByte (property)`, `typ_Single (property)`, `typ_String (property)`, `typ_Type (property)`, `typ_TypedReference (property)`, `typ_UInt16 (property)`, `typ_UInt32 (property)`, `typ_UInt64 (property)`, `typ_UIntPtr (property)`
 - `ILInstr` *(internal)*: cases `I_call`, `I_callconstraint`, `I_callvirt`, `I_ldarg`, `I_ldarga`, `I_ldloc`, `I_ldloca`, `I_newobj`, `I_starg`, `I_stelem`, `I_stelem_any`, `I_stfld`, `I_stind`, `I_stloc`, `I_stsfld`
 - `ILLocal` *(internal)*: `(constructor)`, `IsPinned (property)`, `Type (property)`
 - `ILLocalDebugInfo` *(internal)*: `(constructor)`, `DebugMappings (property)`, `Range (property)`
 - `ILLocalDebugMapping` *(internal)*: `(constructor)`, `LocalIndex (property)`, `LocalName (property)`
 - `ILMethodBody` *(internal)*: `(constructor)`, `AggressiveInlining (property)`, `Code (property)`, `DebugImports (property)`, `DebugRange (property)`, `IsRuntimeAsync (property)`, `IsZeroInit (property)`, `Locals (property)`, `MaxStack (property)`, `NoInlining (property)`
 - `ILMethodDef`: `With`
+- `ILPropertyDefs`: `AsList`
 - `ILSecurityDecls` *(internal)*
 - `ILTailcall` *(internal)*: `Normalcall (property)`
-- `ILTypeDefs`: `AsList`, `FindByName`
-- `PrimaryAssembly` *(internal)*: `System_Runtime (property)`
+- `ILTypeDefs`: `AsList`, `ExistsByName`, `FindByName`
+- `PrimaryAssembly` *(internal)*: `Mscorlib (property)`, `System_Runtime (property)`
 
 ## `FSharp.Compiler.AbstractIL.ILBinaryWriter` *(internal)*
 
@@ -120,7 +122,7 @@ through public members).
 
 ## `FSharp.Compiler.Import` *(internal)*
 
-- module functions and values: `ImportILType`, `|TryImportILTypeRef|_|`
+- module functions and values: `ImportILType`, `ImportILTypeRef`, `|TryImportILTypeRef|_|`
 - `ImportMap` *(internal)*
 
 ## `FSharp.Compiler.InfoReader` *(internal)*
@@ -139,7 +141,7 @@ through public members).
 
 ## `FSharp.Compiler.NicePrint` *(internal)*
 
-- module functions and values: `prettyStringOfTyNoCx`
+- module functions and values: `prettyLayoutOfTypeNoCx`
 
 ## `FSharp.Compiler.OptimizeInputs` *(internal)*
 
@@ -163,12 +165,20 @@ through public members).
 
 ## `FSharp.Compiler.TcGlobals` *(internal)*
 
-- `TcGlobals` *(internal)*: `CompilerGlobalState (property)`, `bool_ty (property)`, `exn_ty (property)`, `fslibCcu (property)`, `ilg (property)`, `iltyp_Exception (property)`, `knownWithoutNull (property)`, `nativeint_ty (property)`, `obj_ty_ambivalent (property)`, `seq_to_array_vref (property)`, `seq_to_list_vref (property)`, `improveType`
+- `TcGlobals` *(internal)*: `CompilerGlobalState (property)`, `bool_ty (property)`, `byte_ty (property)`, `exn_ty (property)`, `fslibCcu (property)`, `ilg (property)`, `iltyp_Exception (property)`, `knownWithoutNull (property)`, `list_tcr_canon (property)`, `list_tcr_nice (property)`, `nativeint_ty (property)`, `obj_ty_ambivalent (property)`, `option_tcr_canon (property)`, `option_tcr_nice (property)`, `refcell_tcr_canon (property)`, `refcell_tcr_nice (property)`, `seq_to_array_vref (property)`, `seq_to_list_vref (property)`, `string_ty (property)`, `unit_tcr_canon (property)`, `unit_ty (property)`, `valueoption_tcr_canon (property)`, `valueoption_tcr_nice (property)`, `improveType`, `tryRemoveEmbeddedILTypeDefs`
+
+## `FSharp.Compiler.Text.Layout` *(internal)*
+
+- the type itself
+
+## `FSharp.Compiler.Text.LayoutRender` *(internal)*
+
+- module functions and values: `toArray`
 
 ## `FSharp.Compiler.TypedTree` *(internal)*
 
 - module functions and values: `traitCtxtNone (property)`
-- `AnonRecdTypeInfo` *(internal)*
+- `AnonRecdTypeInfo` *(internal)*: `Create`, `Assembly (property)`, `ILTypeRef (property)`
 - `ArgReprInfo` *(internal)*
 - `Attrib` *(internal)*
 - `Binding` *(internal)*: `NewTBind`, `debugPoint (property)`, `expr (property)`, `var (property)`
@@ -178,42 +188,51 @@ through public members).
 - `CheckedImplFileAfterOptimization` *(internal)*: `(constructor)`, `ImplFile (property)`, `OptimizeDuringCodeGen (property)`
 - `CompilationPath` *(internal)*: `NestedCompPath`, `NewCompPath`, `MangledPath (property)`
 - `Construct` *(internal)*: `NewRigidTypar`
-- `Entity` *(internal)*: `CompilationPath (property)`, `DisplayName (property)`, `IsModuleOrNamespace (property)`, `LogicalName (property)`, `MembersOfFSharpTyconSorted (property)`, `ModuleOrNamespaceType (property)`
-- `EntityRef` *(internal)*: `DisplayName (property)`, `Typars (property)`, `nlr (property)`
+- `Entity` *(internal)*: `CompilationPath (property)`, `DisplayName (property)`, `IsModule (property)`, `IsModuleOrNamespace (property)`, `LogicalName (property)`, `MembersOfFSharpTyconSorted (property)`, `ModuleOrNamespaceType (property)`
+- `EntityRef` *(internal)*: `CompiledRepresentationForNamedType (property)`, `DisplayName (property)`, `IsTypeAbbrev (property)`, `Typars (property)`, `nlr (property)`
 - `Expr` *(internal)*: cases `App`, `Lambda`, `Op`, `TyLambda`, `Val`
+- `FreeTyvars` *(internal)*: `FreeTypars (property)`
 - `ITraitContext` *(internal)*
 - `LValueOperation` *(internal)*: `Tag (property)`
 - `ModuleOrNamespaceBinding` *(internal)*: cases `Binding`, `Module`
 - `ModuleOrNamespaceContents` *(internal)*: cases `TMDefDo`, `TMDefLet`, `TMDefOpens`, `TMDefRec`, `TMDefs`
 - `ModuleOrNamespaceKind` *(internal)*: `ModuleOrType (property)`
-- `ModuleOrNamespaceType` *(internal)*: `AllEntitiesByCompiledAndLogicalMangledNames (property)`, `AllValsAndMembers (property)`, `ModulesAndNamespacesByDemangledName (property)`
+- `ModuleOrNamespaceType` *(internal)*: `AllEntitiesByCompiledAndLogicalMangledNames (property)`, `AllValsAndMembers (property)`, `ModuleAndNamespaceDefinitions (property)`, `ModulesAndNamespacesByDemangledName (property)`
 - `NamedDebugPointKey` *(internal)*
 - `NonLocalEntityRef` *(internal)*: `Ccu (property)`, `Path (property)`
 - `NonLocalValOrMemberRef` *(internal)*: `EnclosingEntity (property)`, `ItemKey (property)`
-- `Nullness` *(internal)*
+- `Nullness` *(internal)*: `NewKnown`
+- `NullnessInfo` *(internal)*: `AmbivalentToNull (property)`
 - `OpenDeclaration` *(internal)*
 - `SyntaxAccess` *(internal)*: `Unknown (property)`
 - `TOp` *(internal)*: cases `ExnFieldSet`, `ILAsm`, `ILCall`, `LValueOp`, `UnionCaseFieldSet`, `ValFieldSet`
-- `TType` *(internal)*
+- `TType` *(internal)*: cases `TType_anon`, `TType_app`, `TType_fun`, `TType_measure`, `TType_tuple`
+- `TraitWitnessInfo` *(internal)*
+- `TupInfo` *(internal)*: `NewConst`
 - `Typar` *(internal)*: `SetConstraints`, `Constraints (property)`
 - `TyparConstraint` *(internal)*
 - `TyparReprInfo` *(internal)*
-- `Val` *(internal)*: `CompiledName`, `SetType`, `SetValReprInfo`, `IsMutable (property)`, `LogicalName (property)`, `Range (property)`, `Stamp (property)`, `Typars (property)`, `Type (property)`, `ValReprInfo (property)`
+- `Val` *(internal)*: `CompiledName`, `SetType`, `SetValReprInfo`, `IsMutable (property)`, `LogicalName (property)`, `MemberInfo (property)`, `Range (property)`, `Stamp (property)`, `Typars (property)`, `Type (property)`, `ValReprInfo (property)`
 - `ValLinkageFullKey` *(internal)*: `(constructor)`, `PartialKey (property)`, `TypeForLinkage (property)`
 - `ValLinkagePartialKey` *(internal)*: `(constructor)`, `MemberIsOverride (property)`, `MemberParentMangledName (property)`, `TotalArgCount (property)`
+- `ValMemberInfo` *(internal)*: `MemberFlags (property)`
 - `ValMutability` *(internal)*: `Immutable (property)`, `Mutable (property)`
 - `ValRef` *(internal)*: `DeclaringEntity (property)`, `Deref (property)`, `HasDeclaringEntity (property)`, `IsMutable (property)`, `IsPropertyGetterMethod (property)`, `LogicalName (property)`, `ShouldInline (property)`, `Stamp (property)`, `nlr (property)`
 - `ValReprInfo` *(internal)*: `NewValReprInfo`, `args (property)`
-- `ValUseFlag` *(internal)*
+- `ValUseFlag` *(internal)*: `NormalValUse (property)`
 
 ## `FSharp.Compiler.TypedTreeBasics` *(internal)*
 
-- module functions and values: `ccuEq`, `ccuOfValRef`, `copyTypars`, `mkNonLocalEntityRef`, `mkNonLocalValRef`, `mkTyparTy`
+- module functions and values: `ccuEq`, `ccuOfTyconRef`, `ccuOfValRef`, `copyTypars`, `mkLocalValRef`, `mkNonLocalEntityRef`, `mkNonLocalValRef`, `mkTyparTy`, `stripTyparEqns`, `valEq`
 - `ValReprInfo` *(internal)*: `InferTyparInfo`, `unnamedRetVal (property)`, `unnamedTopArg1 (property)`
 
 ## `FSharp.Compiler.TypedTreeOps.AttributeHelpers` *(internal)*
 
 - module functions and values: `EntityHasWellKnownAttribute`
+
+## `FSharp.Compiler.TypedTreeOps.CommonContainers` *(internal)*
+
+- module functions and values: `destRefCellTy`, `isOptionTy`, `isRefCellTy`
 
 ## `FSharp.Compiler.TypedTreeOps.ExprAnalysis` *(internal)*
 
@@ -221,7 +240,7 @@ through public members).
 
 ## `FSharp.Compiler.TypedTreeOps.ExprConstruction` *(internal)*
 
-- module functions and values: `exprForVal`, `mkAsmExpr`, `mkLambda`, `mkLocal`, `mkLocalAux`, `mkMultiLambdas`, `mkTypeLambda`, `stripDebugPoints`
+- module functions and values: `exprForVal`, `mkAddrSet`, `mkAsmExpr`, `mkLambda`, `mkLocal`, `mkLocalAux`, `mkMultiLambdas`, `mkTypeLambda`, `stripDebugPoints`
 
 ## `FSharp.Compiler.TypedTreeOps.ExprRemapping` *(internal)*
 
@@ -230,19 +249,25 @@ through public members).
 
 ## `FSharp.Compiler.TypedTreeOps.ExprTransforms` *(internal)*
 
-- module functions and values: `mkCoerceIfNeeded`
+- module functions and values: `mkCoerceIfNeeded`, `mkCompGenLetIn`
+
+## `FSharp.Compiler.TypedTreeOps.FreeTypeVars` *(internal)*
+
+- module functions and values: `freeInType`, `CollectTypars (property)`
+- `FreeVarOptions` *(internal)*
 
 ## `FSharp.Compiler.TypedTreeOps.Makers` *(internal)*
 
-- module functions and values: `mkCallUnbox`, `mkInt32`, `mkString`
+- module functions and values: `mkArray`, `mkByte`, `mkCallBox`, `mkCallTypeOf`, `mkCallUnbox`, `mkCompGenSequential`, `mkInt32`, `mkRefCellGet`, `mkRefCellSet`, `mkString`
 
 ## `FSharp.Compiler.TypedTreeOps.MeasureOps` *(internal)*
 
-- module functions and values: `valRefEq`
+- module functions and values: `tyconRefEq`, `valRefEq`
 
 ## `FSharp.Compiler.TypedTreeOps.MemberRepresentation` *(internal)*
 
-- `DisplayEnv` *(internal)*
+- module functions and values: `GetMemberTypeInMemberForm`, `GetValReprTypeInCompiledForm`
+- `DisplayEnv` *(internal)*: `AddOpenPath`, `Empty`
 
 ## `FSharp.Compiler.TypedTreeOps.Rewriting` *(internal)*
 
@@ -259,16 +284,21 @@ through public members).
 
 ## `FSharp.Compiler.TypedTreeOps.TypeDecomposition` *(internal)*
 
-- module functions and values: `mkArrayType`
+- module functions and values: `domainOfFunTy`, `isFunTy`, `mkArrayType`, `stripTyEqns`, `tryTcrefOfAppTy`
+- `Erasure` *(internal)*: `EraseAll (property)`
 
 ## `FSharp.Compiler.TypedTreeOps.TypeEquivalence` *(internal)*
 
-- module functions and values: `typeEquiv`
+- module functions and values: `typeEquiv`, `typeEquivAux`
 
 ## `FSharp.Compiler.TypedTreeOps.TypeRemapping` *(internal)*
 
-- module functions and values: `instTyparConstraints`, `mkTyparInst`
+- module functions and values: `instTyparConstraints`, `instType`, `mkTyparInst`
 - `Remap` *(internal)*: `Empty (property)`
+
+## `FSharp.Compiler.TypedTreeOps.TypeTesters` *(internal)*
+
+- module functions and values: `isUnitTy`
 
 ## `FSharp.Compiler.WellKnownEntityAttributes` *(internal)*
 
@@ -281,6 +311,10 @@ through public members).
 ## `Internal.Utilities.Collections.QueueList`1` *(internal)*
 
 - the type itself
+
+## `Internal.Utilities.Collections.Tagged.Set`2` *(internal)*
+
+- module functions and values: `IsEmpty (property)`
 
 ## `Internal.Utilities.Library.Cancellable` *(internal)*
 

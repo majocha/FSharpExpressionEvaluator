@@ -45,6 +45,11 @@ type OddUnion =
 
 type ``Odd Box`` = { Inside: int }
 
+/// A generic union: its case fields' full names are a match on the case without type arguments.
+type Tree<'T> =
+    | Leaf
+    | Node of 'T * Tree<'T>
+
 /// An abbreviation: the Type column has its name from the expression compiler. A module value,
 /// since locals other than parameters have no F# type recorded.
 type ``My Ids`` = int list
@@ -75,6 +80,8 @@ let inspect (xs: int list) (name: string) (trip: float<m>) =
     let anon = {| Name = "anon"; Count = 3 |}
     let cell = ref 7
     let error = MyError(404, "not found")
+    // Typed as the exception itself, not `exn`.
+    let typedError = MyError(500, "typed")
     let unitValue = ()
     let boxed: obj = box [ 1; 2 ]
     let add = fun (a: int) (b: int) -> a + b
@@ -91,6 +98,18 @@ let inspect (xs: int list) (name: string) (trip: float<m>) =
     let dict = Collections.Generic.Dictionary<string, int>()
     dict.Add("a", 1)
     dict.Add("b", 2)
+    // Primitives, which the C# provider renders: their rows show F# literals.
+    let ratio = 2.0
+    let text = "a\tb"
+    let money = 1.5M
+    let letter = 'q'
+    let count64 = 5L
+    // More rows for Add Watch: a two-dimensional array (C# renders it), a generic union, a map with a
+    // key that is no literal, and a tuple with items in `Rest`.
+    let grid = Array2D.init 2 3 (fun i j -> i * 3 + j)
+    let tree = Node(1, Node(2, Leaf))
+    let points = Map.ofList [ { X = 1; Y = 2 }, "p" ]
+    let big9 = (1, 2, 3, 4, 5, 6, 7, 8, 9)
     Debugger.Break()
 
     printfn
@@ -98,6 +117,7 @@ let inspect (xs: int list) (name: string) (trip: float<m>) =
         point shape rect five structUnion opt none someShape result tuple structTuple empty nested array map set anon cell error unitValue boxed (add 1 2) xs name longList.Length dict.Count
         created.Value pending.IsValueCreated big
     printfn "%d %A %A %A %A" ``the sum`` odd oddUnion oddBox myIds
+    printfn "%f %s %M %c %d %A %A %A %A %A" ratio text money letter count64 grid tree points big9 typedError
 
 /// Break 2: inside a closure that captures an immutable and a mutable local. On the call stack,
 /// `closure` shows its parameter's F# type.
@@ -127,12 +147,23 @@ let generic (value: 'T) (pair: int * string) =
     Debugger.Break()
     value, pair
 
-/// Break 5: inside a task state machine.
-let work (delay: int) =
+/// Break 5: inside a task state machine, after awaits. Its variables are hoisted into fields:
+/// `doubled`, a `label` that shadows the parameter, and `squared`, out of scope after the loop.
+/// The builder's own (the awaiters, the loop's enumerator) are under `[compiler generated]`.
+let work (delay: int) (label: string) =
     task {
+        let doubled = delay * 2
         do! System.Threading.Tasks.Task.Delay delay
+        let label = label + "!"
+
+        for item in [ 1; 2 ] do
+            let squared = item * item
+            do! System.Threading.Tasks.Task.Yield()
+            ignore squared
+
+        do! System.Threading.Tasks.Task.Yield()
         Debugger.Break()
-        return delay
+        return doubled + label.Length
     }
 
 let twice x = x * 2
@@ -158,6 +189,58 @@ let loop () =
 
     total
 
+/// Call stack names of compiler-generated code, with --frames instead of breaks 1-7. Break F1: in a
+/// lambda. F2: in an inner function. F3: in a lambda inside it.
+let lambdaFrames (xs: int list) =
+    let firsts =
+        xs
+        |> List.filter (fun x ->
+            if x = 1 then
+                Debugger.Break()
+
+            x > 0)
+
+    let scale (k: int) =
+        Debugger.Break()
+
+        firsts
+        |> List.map (fun x ->
+            if x = 1 then
+                Debugger.Break()
+
+            x * k)
+
+    scale 2
+
+/// Break F4: in the code of an `async { }`, after a `do!`.
+let asyncFrame (n: int) =
+    async {
+        do! Async.Sleep 1
+        Debugger.Break()
+        return n + 1
+    }
+
+/// Break F5: in a `seq { }`.
+let seqFrame () =
+    seq {
+        yield 1
+        Debugger.Break()
+        yield 2
+    }
+
+/// Break F6: in a lambda that returns an async, with a parameter of its own: not the async's code.
+let asyncLambda (urls: string list) =
+    urls
+    |> List.map (fun url ->
+        Debugger.Break()
+        async { return url.Length })
+
+let private frames () =
+    lambdaFrames [ 1; 2 ] |> ignore
+    asyncFrame 1 |> Async.RunSynchronously |> ignore
+    seqFrame () |> Seq.toList |> ignore
+    asyncLambda [ "abc" ] |> Async.Parallel |> Async.RunSynchronously |> ignore
+
 [<EntryPoint>]
 let main argv =
     if Array.contains "--wait" argv then
@@ -165,6 +248,10 @@ let main argv =
 
         while not Debugger.IsAttached do
             Thread.Sleep 100
+
+    if Array.contains "--frames" argv then
+        frames ()
+        exit 0
 
     // Top-level code of the other files runs on the first use of their values: breaks S1 and S2 with --startup.
     Startup.startupCheck |> ignore
@@ -174,7 +261,7 @@ let main argv =
     closure 1.0<m> |> ignore
     Counter(10).Increment 2 |> ignore
     generic [ 1; 2 ] (3, "c") |> ignore
-    (work 1).Wait()
+    (work 1 "w").Wait()
     returns "a" (Some [ 1; 2; 3 ]) |> ignore
     loop () |> ignore
     0

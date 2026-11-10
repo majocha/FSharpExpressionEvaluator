@@ -104,6 +104,31 @@ module EvalFixtures =
     let withUnions (shape: Shape) (rect: Shape) (result: Result<int, string>) (choice: Choice<int, string>) =
         shape, rect, result, choice
 
+    type Tree<'T> =
+        | Leaf
+        | Node of 'T * Tree<'T>
+
+    exception Boom of code: int * string
+
+    /// Values of the shapes whose rows' full names Add Watch uses (docs/DESIGN.md §5.4).
+    let withShapes
+        (tuple: int * string)
+        (big: int * int * int * int * int * int * int * int * int)
+        (pair: struct (float * char))
+        (anon: {| Count: int; Name: string |})
+        (xs: int list)
+        (array: float[])
+        (grid: int[,])
+        (m: Map<string, int>)
+        (points: Map<Point, string>)
+        (s: Set<int>)
+        (tree: Tree<int>)
+        (error: exn)
+        (cell: int ref)
+        (boom: Boom)
+        =
+        ignore (tuple, big, pair, anon, xs, array, grid, m, points, s, tree, error, cell, boom)
+
     /// Names that F# writes in double backticks: with spaces, and keywords.
     type Odd = { ``my field``: int; ``type``: string }
 
@@ -186,6 +211,48 @@ module EvalFixtures =
             do! System.Threading.Tasks.Task.Yield()
             let label = "n" + string doubled
             return doubled + label.Length + x
+        }
+
+    /// Where the task fixtures were when they called `probe`, by label: `MoveNext` and the IL offset in it.
+    let probes = Collections.Generic.Dictionary<string, MethodBase * int>()
+
+    [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+    let probe (label: string) =
+        let caller = Diagnostics.StackFrame(1, false)
+        lock probes (fun () -> probes[label] <- (caller.GetMethod(), caller.GetILOffset()))
+
+    /// Hoisted variables with scopes of their own, one that shadows a parameter, the variables of
+    /// the builder (`for`, `use!`, the awaiters), and `other`, both a local and a hoisted variable.
+    let taskScopes (delay: int) (name: string) (items: int list) =
+        task {
+            probe "start"
+            let before = delay * 2
+            let mutable counter = 0
+            do! System.Threading.Tasks.Task.Yield()
+            counter <- counter + before
+            let name = name.ToUpperInvariant()
+            do! System.Threading.Tasks.Task.Yield()
+            probe "shadowed"
+
+            for item in items do
+                let squared = item * item
+                do! System.Threading.Tasks.Task.Yield()
+                probe "loop"
+                counter <- counter + squared
+
+            use! other = System.Threading.Tasks.Task.FromResult(new MemoryStream())
+            do! System.Threading.Tasks.Task.Yield()
+            probe "end"
+            return name.Length + counter + int other.Length
+        }
+
+    /// A state machine of a generic function: a generic struct.
+    let taskGeneric (value: 'T) =
+        task {
+            let items = [ value; value ]
+            do! System.Threading.Tasks.Task.Yield()
+            probe "generic"
+            return items
         }
 
     type Box<'T>(value: 'T) =
@@ -276,7 +343,12 @@ let private pdbLocals (frameMethod: MethodBase) =
         for scope in pdb.GetLocalScopes handle do
             for v in (pdb.GetLocalScope scope).GetLocalVariables() do
                 let local = pdb.GetLocalVariable v
-                { Name = pdb.GetString local.Name; Slot = local.Index }
+
+                {
+                    Name = pdb.GetString local.Name
+                    Slot = local.Index
+                    Start = (pdb.GetLocalScope scope).StartOffset
+                }
     ]
 
 let private frameOf (frameMethod: MethodBase) =
@@ -289,6 +361,8 @@ let private frameOf (frameMethod: MethodBase) =
             | body -> body.LocalSignatureMetadataToken
         Opens = []
         Locals = pdbLocals frameMethod
+        ILOffset = 0
+        MethodIL = [||]
         Aliases = []
         // The stand-in IntrinsicMethods is defined in this assembly.
         IntrinsicsAssembly = Assembly.GetExecutingAssembly().FullName
@@ -451,6 +525,8 @@ let private netfxSession =
                  LocalSignatureToken = 0
                  Opens = []
                  Locals = []
+                 ILOffset = 0
+                 MethodIL = [||]
                  Aliases = []
                  IntrinsicsAssembly = ""
              }
@@ -561,6 +637,7 @@ let ``the exception alias`` () =
             Name = "$exception"
             Kind = AliasKind.Exception
             TypeName = typeof<InvalidOperationException>.AssemblyQualifiedName
+            IsMutable = false
         }
 
     let value, ty =
@@ -582,6 +659,7 @@ let ``return value aliases`` () =
             Name = name
             Kind = AliasKind.ReturnValue
             TypeName = "System.Int32"
+            IsMutable = false
         }
 
     Assert.Equal(
@@ -604,11 +682,13 @@ let ``object ids and user variables`` () =
                 Name = "$1"
                 Kind = AliasKind.ObjectId
                 TypeName = typeof<int list>.AssemblyQualifiedName
+                IsMutable = false
             }
             {
                 Name = "total"
                 Kind = AliasKind.Variable
                 TypeName = typeof<int>.FullName
+                IsMutable = false
             }
         ]
 
@@ -616,6 +696,96 @@ let ``object ids and user variables`` () =
     Assert.Equal((box 11, "int"), evaluateWithAliases aliases add [ 1; 2 ] "List.sum $1 + total")
     // `$1` inside literals and comments is left alone
     Assert.Equal((box "$1 3", "string"), evaluateWithAliases aliases add [ 1; 2 ] "\"$1 \" + string $1.Length // $1")
+
+/// A statement of the Immediate window, run in a frame with the debugger's aliases.
+let private executeWithAliases aliases (frameMethod: MethodBase) (args: obj list) (text: string) =
+    let frame = { frameOf frameMethod with Aliases = aliases }
+    run (session.Value.CompileStatement(frame, text, localsAsParameters = true)) args text
+
+/// The alias the debugger lists for a variable declared through CreateVariable: its type and
+/// whether its custom type info says it is mutable.
+let private declaredAlias name =
+    let t, payloadId, payload = IntrinsicMethods.Created[name]
+
+    {
+        Name = name
+        Kind = AliasKind.Variable
+        TypeName = t.AssemblyQualifiedName
+        IsMutable =
+            match FSharp.ExpressionEvaluator.FSharpTypes.Variable.tryDecode payloadId payload with
+            | Some(isMutable, _) -> isMutable
+            | None -> false
+    }
+
+[<Fact>]
+let ``Immediate-window declarations create debugger variables`` () =
+    let add = methodOf fixtures "add"
+
+    // The value is returned, and stored in a variable of its type.
+    Assert.Equal((box [ "1"; "2" ], "string list"), executeWithAliases [] add [ 1; 2 ] "let digits = [ x; y ] |> List.map string")
+    let t, payloadId, payload = IntrinsicMethods.Created["digits"]
+    Assert.Equal(typeof<string list>, t)
+    Assert.Equal(Some(false, "string list"), FSharp.ExpressionEvaluator.FSharpTypes.Variable.tryDecode payloadId payload)
+    Assert.Equal(box [ "1"; "2" ], IntrinsicMethods.GetObjectByAlias "digits")
+
+    // Later expressions read it by name.
+    let digits = declaredAlias "digits"
+    Assert.Equal((box "12", "string"), evaluateWithAliases [ digits ] add [ 1; 2 ] "String.concat \"\" digits")
+
+    // A declared type, and `let mutable`.
+    Assert.Equal((box 5L, "int64"), executeWithAliases [] add [ 1; 2 ] "let mutable count: int64 = 5L")
+    Assert.Equal(Some(true, "int64"), (let _, id, p = IntrinsicMethods.Created["count"] in FSharp.ExpressionEvaluator.FSharpTypes.Variable.tryDecode id p))
+
+    // `let ... in` is an expression, not a declaration.
+    Assert.Equal((box 4, "int"), executeWithAliases [] add [ 1; 2 ] "let z = x + y in z + 1")
+    Assert.False(IntrinsicMethods.Created.ContainsKey "z")
+
+    // An error in the value is the declaration's.
+    match session.Value.CompileStatement(frameOf add, "let bad = undefinedName + 1", localsAsParameters = true) with
+    | Error(d :: _) -> Assert.Equal(39, d.Number)
+    | other -> failwithf "%A" other
+
+[<Fact>]
+let ``assignment to Immediate-window variables`` () =
+    let add = methodOf fixtures "add"
+    executeWithAliases [] add [ 1; 2 ] "let mutable total2 = 10" |> ignore
+    executeWithAliases [] add [ 1; 2 ] "let fixed2 = 20" |> ignore
+    let aliases = [ declaredAlias "total2"; declaredAlias "fixed2" ]
+    Assert.True(aliases[0].IsMutable)
+
+    // A mutable variable is assigned with `<-`, through its address.
+    executeWithAliases aliases add [ 1; 2 ] "total2 <- total2 + x" |> ignore
+    Assert.Equal(box 11, IntrinsicMethods.GetObjectByAlias "total2")
+
+    // An immutable one isn't, as in F#; an edit of its row (an assignment) can change it.
+    match session.Value.CompileStatement({ frameOf add with Aliases = aliases }, "fixed2 <- 1", localsAsParameters = true) with
+    | Error(d :: _) -> Assert.Equal(27, d.Number)
+    | other -> failwithf "%A" other
+
+    let frame = { frameOf add with Aliases = aliases }
+
+    match session.Value.CompileAssignment(frame, "fixed2", "y * 100", localsAsParameters = true) with
+    | Ok compiled -> run (Ok compiled) [ 1; 2 ] "fixed2 <- y * 100" |> ignore
+    | Error d -> failwithf "%A" d
+
+    Assert.Equal(box 200, IntrinsicMethods.GetObjectByAlias "fixed2")
+
+    // A variable's row can be edited: its result is not read-only.
+    match session.Value.CompileExpression(frame, "fixed2", localsAsParameters = true) with
+    | Ok compiled -> Assert.False(compiled.ReadOnlyResult)
+    | Error d -> failwithf "%A" d
+
+[<Fact>]
+let ``a variable of a type its expression defines is declared as obj`` () =
+    let add = methodOf fixtures "add"
+    let message, ty = executeWithAliases [] add [ 1; 2 ] "let point3 = {| X = x; Y = y |}"
+    Assert.Equal("string", ty)
+    Assert.StartsWith("point3 is declared as obj: its type, {| X: int; Y: int |}, is defined by this expression", string message)
+    let t, _, _ = IntrinsicMethods.Created["point3"]
+    Assert.Equal(typeof<obj>, t)
+    // It reads back as obj, and its members are still there through reflection.
+    let point3 = declaredAlias "point3"
+    Assert.Equal((box 1, "obj"), evaluateWithAliases [ point3 ] add [ 1; 2 ] "point3.GetType().GetProperty(\"X\").GetValue point3")
 
 [<Fact>]
 let ``an alias of a type the session can't find reads as obj`` () =
@@ -626,6 +796,7 @@ let ``an alias of a type the session can't find reads as obj`` () =
             Name = "$2"
             Kind = AliasKind.ObjectId
             TypeName = "No.Such.Type, NoSuchAssembly"
+            IsMutable = false
         }
 
     Assert.Equal((box "x", "obj"), evaluateWithAliases [ alias ] (methodOf fixtures "add") [ 1; 2 ] "$2")
@@ -688,7 +859,7 @@ let ``hoisted variables of a task state machine`` () =
     Assert.Equal((box 11, "int"), evaluate moveNext [ machine; "n6" ] "doubled + label.Length + x")
 
     // The state machine's plumbing is not visible.
-    for plumbing in [ "ResumptionPoint"; "Data"; "awaiter"; "this" ] do
+    for plumbing in [ "ResumptionPoint"; "Data"; "this" ] do
         match compile moveNext plumbing with
         | Ok _ -> failwithf "%s should not be in scope" plumbing
         | Error _ -> ()
@@ -830,6 +1001,65 @@ let ``the result provider's full names of union case fields compile`` () =
     Assert.Equal((box "b", "string"), evaluate withUnions args "(match choice with Choice.Choice2Of2 x -> x | _ -> failwith \"not Choice2Of2\")")
 
 [<Fact>]
+let ``the result provider's full names of other rows compile`` () =
+    let withShapes = methodOf fixtures "withShapes"
+    let point x : EvalFixtures.Point = { X = x; Y = 0 }
+
+    // A curried function's tuple parameters are flattened (`tuple_0`, `tuple_1`); the tuples are
+    // locals, after the parameters.
+    let args =
+        [ box 1
+          box "a"
+          yield! [ for i in 1..9 -> box i ]
+          box (struct (1.5, 'c'))
+          box {| Count = 3; Name = "anon" |}
+          box [ 1; 2; 3 ]
+          box [| 1.0; 2.5 |]
+          box (Array2D.init 2 3 (fun i j -> i * 3 + j))
+          box (Map.ofList [ "one", 1; "two", 2 ])
+          box (Map.ofList [ point 2, "b"; point 1, "a" ])
+          box (Set.ofList [ 3; 1; 2 ])
+          box (EvalFixtures.Node(1, EvalFixtures.Node(2, EvalFixtures.Leaf)))
+          box (EvalFixtures.Boom(404, "not found"))
+          box (ref 7)
+          box (EvalFixtures.Boom(500, "typed"))
+          box (1, "a")
+          box (1, 2, 3, 4, 5, 6, 7, 8, 9) ]
+
+    let check (expected: obj) (fullName: string) = Assert.Equal(expected, fst (evaluate withShapes args fullName))
+    // Tuples, the items past the seventh in `Rest`; struct tuples, which have no `Item1` in F#, by
+    // position; anonymous records.
+    check 1 "tuple.Item1"
+    check "a" "tuple.Item2"
+    check 8 "big.Rest.Item1"
+    check 9 "big.Rest.Item2"
+    check 1.5 "(let struct (x, _) = pair in x)"
+    check 'c' "(let struct (_, x) = pair in x)"
+    check 3 "anon.Count"
+    // List items, array elements, and a two-dimensional array's (C# writes them `grid[1, 2]`).
+    check 2 "xs[1]"
+    check 2.5 "array[1]"
+    check 5 "grid[1, 2]"
+    // Map entries by a key that formats as a literal, others by position; Set items by position.
+    check 2 "m[\"two\"]"
+    check "b" "(Seq.item 1 points).Value"
+    check 2 "Seq.item 1 s"
+    // A generic union's case fields, by its path without the arity.
+    let tree = "FSharp.ExpressionEvaluator.Tests.EvaluationTests.EvalFixtures.Tree"
+    check 1 $"(match tree with {tree}.Node (x, _) -> x | _ -> failwith \"not Node\")"
+    // An F# exception's fields, by its pattern, as the value is typed `exn`; a ref cell's contents.
+    let boom = "FSharp.ExpressionEvaluator.Tests.EvaluationTests.EvalFixtures.Boom"
+    // The pattern takes an `exn`: the value is upcast, whether it is typed `exn` or as the exception.
+    check "not found" $"(match (error :> exn) with {boom} (_, x) -> x | _ -> failwith \"not Boom\")"
+    check "typed" $"(match (boom :> exn) with {boom} (_, x) -> x | _ -> failwith \"not Boom\")"
+
+    // Without the upcast, a value typed as the exception doesn't check (FS0001).
+    match compile withShapes $"(match boom with {boom} (_, x) -> x | _ -> failwith \"not Boom\")" with
+    | Error(d :: _) -> Assert.Equal(1, d.Number)
+    | other -> failwithf "%A" other
+    check 7 "cell.contents"
+
+[<Fact>]
 let ``names in double backticks`` () =
     let frameMethod = methodOf fixtures "backticks"
     let odd: EvalFixtures.Odd = { ``my field`` = 10; ``type`` = "t" }
@@ -916,6 +1146,7 @@ let ``diagnostics are positioned in the expression text`` () =
             Name = "$1"
             Kind = AliasKind.ObjectId
             TypeName = "System.Int32"
+            IsMutable = false
         }
 
     let frame = { frameOf add with Aliases = [ objectId ] }
@@ -1156,7 +1387,7 @@ let ``locals list shadowed variables, read-only and named in backticks`` () =
 
     let frame =
         { frameOf twice with
-            Locals = [ { Name = "x (shadowed)"; Slot = 0 }; { Name = "x"; Slot = 1 } ]
+            Locals = [ { Name = "x (shadowed)"; Slot = 0; Start = 0 }; { Name = "x"; Slot = 1; Start = 0 } ]
         }
 
     Assert.Equal<(string * obj * string * bool) list>(
@@ -1206,7 +1437,8 @@ let ``locals of a closure and a state machine are flattened`` () =
 
     let moveNext, machine = stateMachine fixtures "taskSum" [ "x", box 3; "doubled", box 6 ]
     let names = localsOf (frameOf moveNext) moveNext [ machine; "n6" ] false |> List.map (fun (n, _, _, _) -> n)
-    Assert.Equal<string list>([ "x"; "doubled"; "label" ], names)
+    // The awaiter is the builder's variable.
+    Assert.Equal<string list>([ "x"; "doubled"; "label"; CompilerGeneratedRow ], names)
 
     let moveNext, machine =
         stateMachine fixtures "DepositLater" [ "this", box (EvalFixtures.Account "ann"); "amount", box 5 ]
@@ -1262,6 +1494,7 @@ let ``locals start with the debugger's aliases`` () =
                         Name = "$exception"
                         Kind = AliasKind.Exception
                         TypeName = typeof<InvalidOperationException>.AssemblyQualifiedName
+                        IsMutable = false
                     }
                 ]
         }
@@ -1400,3 +1633,125 @@ let ``locals of anonymous record types`` () =
         |> List.map (fun (name, _, ty, _) -> name, ty)
     )
 
+/// The frame of a task fixture where it called `probe label`, as the debugger has it: the locals in
+/// scope at its IL offset, and the IL of `MoveNext`.
+let private probedFrame =
+    let ran =
+        lazy
+            ((EvalFixtures.taskScopes 1 "n" [ 2 ]).Wait()
+             (EvalFixtures.taskGeneric "g").Wait())
+
+    fun label ->
+        ran.Force()
+        let moveNext, offset = lock EvalFixtures.probes (fun () -> EvalFixtures.probes[label])
+        let pdbPath = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".pdb")
+        use provider = MetadataReaderProvider.FromPortablePdbStream(File.OpenRead pdbPath)
+        let pdb = provider.GetMetadataReader()
+
+        let locals =
+            [
+                for h in pdb.GetLocalScopes(MetadataTokens.MethodDefinitionHandle(moveNext.MetadataToken &&& 0xFFFFFF)) do
+                    let scope = pdb.GetLocalScope h
+
+                    if scope.StartOffset <= offset && offset < scope.EndOffset then
+                        for v in scope.GetLocalVariables() do
+                            let local = pdb.GetLocalVariable v
+
+                            {
+                                Name = pdb.GetString local.Name
+                                Slot = local.Index
+                                Start = scope.StartOffset
+                            }
+            ]
+
+        moveNext,
+        { frameOf moveNext with
+            Locals = locals
+            ILOffset = offset
+            MethodIL = moveNext.GetMethodBody().GetILAsByteArray()
+        }
+
+/// The Locals rows of a frame, and the variables under its `[compiler generated]` row.
+let private rowsOf (frame: FrameContext) =
+    match session.Value.CompileLocals(frame, false) with
+    | Error diagnostics -> failwithf "%A" diagnostics
+    | Ok compiled ->
+        compiled.Locals |> List.map _.Name |> List.filter (fun name -> name <> CompilerGeneratedRow),
+        compiled.Locals |> List.collect _.CompilerGenerated
+
+[<Fact>]
+let ``hoisted variables of a task are in scope from their binding to the end of its scope`` () =
+    // Before any binding: the parameters of the function, which it stores in the state machine.
+    let rows, generated = rowsOf (snd (probedFrame "start"))
+    Assert.Equal<string list>([ "delay"; "name"; "items" ], rows)
+    Assert.Empty generated
+
+    // `name` shadows the parameter: its field is `name0`.
+    let rows, _ = rowsOf (snd (probedFrame "shadowed"))
+    Assert.Equal<string list>([ "delay"; "name (shadowed)"; "items"; "before"; "counter"; "name" ], rows)
+
+    // In the loop: its variables, and the builder's under `[compiler generated]`.
+    let rows, generated = rowsOf (snd (probedFrame "loop"))
+    Assert.Equal<string list>([ "delay"; "name (shadowed)"; "items"; "before"; "counter"; "name"; "item"; "squared" ], rows)
+    Assert.Contains("e", generated)
+    Assert.Contains("resource", generated)
+    Assert.All(generated, fun name -> Assert.Contains(name.TrimEnd([| '0' .. '9' |]), [ "awaiter"; "e"; "resource" ]))
+
+    // After it they are gone, and `other` is one row: the local is a copy of the hoisted variable.
+    let rows, generated = rowsOf (snd (probedFrame "end"))
+    Assert.Equal<string list>([ "delay"; "name (shadowed)"; "items"; "before"; "counter"; "name"; "other" ], rows)
+    Assert.DoesNotContain("e", generated)
+
+    // Without the method's IL every hoisted variable is in scope.
+    let _, frame = probedFrame "start"
+    let rows, _ = rowsOf { frame with MethodIL = [||] }
+    Assert.Contains("squared", rows)
+    Assert.Contains("other", rows)
+
+[<Fact>]
+let ``a hoisted variable that shadows another reads and writes under its own name`` () =
+    let _, frame = probedFrame "end"
+    let stream = new MemoryStream()
+
+    let machine =
+        snd (stateMachine fixtures "taskScopes" [ "name", box "n"; "name0", box "N"; "delay", box 1; "other", box stream ])
+
+    // The frame's locals follow the state machine: `other`, a null copy after the await.
+    let args = [| machine; null |]
+
+    let evaluate text =
+        run (session.Value.CompileExpression(frame, text, localsAsParameters = true)) (List.ofArray args) text
+
+    Assert.Equal((box "Nn1", "string"), evaluate "name + ``name (shadowed)`` + string delay")
+    Assert.Equal((box stream, "System.IO.MemoryStream"), evaluate "other")
+    // The builder's variables are not rows, but they are still variables: the loop's enumerator.
+    match session.Value.CompileExpression(snd (probedFrame "loop"), "e", localsAsParameters = true) with
+    | Ok compiled -> Assert.Contains("IEnumerator", compiled.ResultType)
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    // Out of scope here: the loop's variable.
+    match session.Value.CompileExpression(frame, "squared", localsAsParameters = true) with
+    | Ok _ -> failwith "squared should not be in scope"
+    | Error diagnostics -> Assert.Contains(diagnostics, fun d -> d.Number = 39)
+
+    match session.Value.CompileAssignment(frame, "name", "\"new\"", localsAsParameters = true) with
+    | Error diagnostics -> failwithf "%A" diagnostics
+    | Ok compiled ->
+        (queryMethod compiled).Invoke(null, args) |> ignore
+        Assert.Equal(box "new", args[0].GetType().GetField("name0", all).GetValue args[0])
+        Assert.Equal(box "n", args[0].GetType().GetField("name", all).GetValue args[0])
+
+[<Fact>]
+let ``hoisted variables of a task in a generic function`` () =
+    let moveNext, frame = probedFrame "generic"
+    Assert.Equal<string list * string list>(([ "value"; "items" ], [ "awaiter" ]), rowsOf frame)
+
+    let machineType = moveNext.DeclaringType.MakeGenericType(typeof<string>)
+    let machine = Activator.CreateInstance machineType
+    machineType.GetField("items", all).SetValue(machine, [ "a"; "b" ])
+
+    match session.Value.CompileExpression(frame, "List.length items", localsAsParameters = true) with
+    | Error diagnostics -> failwithf "%A" diagnostics
+    | Ok compiled ->
+        let queryType = Assembly.Load(compiled.Assembly).GetType(compiled.TypeName).MakeGenericType(typeof<string>)
+        Assert.Equal(box 2, queryType.GetMethod(compiled.MethodName, all).Invoke(null, [| machine |]))

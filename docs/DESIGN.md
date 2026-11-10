@@ -211,8 +211,8 @@ DataTips, conditional breakpoints, tracepoints (`{expr}`) and value editing:
 - VS Code / vsdbg / Linux remote. The design keeps this possible
   (the RP is portable; the compiler core is host-agnostic) but we won't ship it.
 - `async { }` / `task { }` / `let!` in expressions. The debugger cannot await.
-- Declaring persistent variables in Immediate (`let x = …` through
-  `CreateVariable`). Deferred to v2.
+- ~~Declaring persistent variables in Immediate (`let x = …` through
+  `CreateVariable`). Deferred to v2.~~ Done in §17, item 31.
 - Erased type-provider types. They do not exist at runtime.
 - `[DebuggerDisplay]` strings written in F# syntax (§5.5).
 - Debugging F# Interactive sessions. Works only where the dynamic assemblies
@@ -357,9 +357,12 @@ F# compiler re-parses them:
 | record or class field/property | `r.X` (backing fields map to property names) |
 | array element | `arr[3]`, `arr[1, 2]` |
 | list item | `xs[3]` (`FSharpList.Item`; O(n), but correct) |
-| map entry | `m["key"]` (only for keys that format as literals; otherwise none) |
+| tuple item | `t.Item2`, `t.Rest.Item1`; a struct tuple's `(let struct (_, x) = t in x)` (§17, item 29) |
+| map entry | `m["key"]` for keys that format as literals; otherwise `(Seq.item 0 m).Value` (§17, item 29) |
+| set item | `Seq.item 1 s` |
+| F# exception field | `(match e with Ns.MyError (x, _) -> x \| _ -> failwith "not MyError")` |
 | union field | `(match u with Ns.Shape.Circle x -> x \| _ -> failwith "not Circle")` (positional pattern; `u.Value` for option and voption; §17, item 24) |
-| closure capture | the captured variable's name, which the compiler binds (§6.4) |
+| closure capture | in the closure's own frame, the captured variable's name, which the compiler binds (§6.4); under a closure value elsewhere, none (§17, item 29) |
 | cast | `(x :?> Ns.Derived)` |
 | delegated (C#) child | C# full name. **Not** F#-parseable, so we wrap or rewrite where we can. Otherwise `null`, which disables Add Watch. |
 
@@ -659,6 +662,7 @@ the Call Stack window's default Types+Names.
 | `Program.f@66.Invoke(Int32 x)` | `Program.f@66 (x: int)` |
 | `OptimizedClosures` `Invoke(a, b)` | `Program.add@53 (a: int) (b: int)` |
 | task state machine `MoveNext()` | `Program.work@24 (state machine)` |
+| `async { }` closures | `Program.fetch@69-2 (async)` (§17, item 30) |
 | `seq` `GenerateNext(...)` | `Program.numbers@12 (seq)` |
 | constructor / static constructor | `Person.new (name: string)` / `Person.(static initializer)` |
 | property getter `get_Name()` | `Person.Name (get) ()` |
@@ -795,6 +799,11 @@ replaces a heuristic.
 
 1. **`StateMachineHoistedLocalScopes`** (Roslyn's standard CDI) for `task`,
    `seq` and resumable code. Gives exact hoisted-variable names and scopes.
+   Until then the EE reads the scopes from the stores in `MoveNext` (§17,
+   item 15). A smaller step: `GenStructStateMachine` drops
+   `fvCompilerGenerated` when it makes the struct's fields, where closures
+   (`EraseClosures`) mark such fields `CompilerGenerated`. Marking them
+   would replace the EE's list of the builder's variable names.
 2. **An F# local-info CDI** (new GUID) per method. It holds the F# type of
    each local and parameter (measures, abbreviations, arity), plus
    flags: *mutable captured in a ref cell*, *compiler temporary*,
@@ -1038,12 +1047,11 @@ dialog.
 - **Full names use C# syntax for now** (`v.X`, `v[0]`,
   `((Ns.Shape.Circle)v).radius`), because the C# compiler still evaluates
   expressions. They switch to F# syntax with M4.
-  - Generic union case classes, Map entries and Set items have no full name
-    (no Add Watch).
-- **Primitives are still rendered by C#**, at top level and as children
-  (`radius = 2 : double`). Inside F# previews they use F# literals (`2.0`,
-  `1L`, `'c'`). Owning primitives means taking over hex display, editing and
-  string visualizers. That is a deliberate next step, not part of v1.
+  - ~~Generic union case classes, Map entries and Set items have no full name
+    (no Add Watch).~~ All have one now (§17, items 24 and 29).
+- ~~**Primitives are still rendered by C#**, at top level and as children
+  (`radius = 2 : double`).~~ They are F# literals since §17, item 28, which keeps
+  C#'s result (hex display, edits, visualizers) and replaces only its texts.
 - The Type column shows `declared {runtime}` when the declared type is not an
   F# shape (`obj {int list}`, `exn {…MyError}`).
 - Not yet covered:
@@ -1106,8 +1114,8 @@ Return types show as `unit`, `int list * (int * string)` and so on.
   M5's job (§6.4).
 - **Open questions.**
   - Whether to strip the namespace: VS shows the module name separately.
-  - Whether closures should name their enclosing function rather than
-    `name@line`.
+  - ~~Whether closures should name their enclosing function rather than
+    `name@line`.~~ They keep `name@line`, which F# users know (§17, item 30).
 
 ---
 
@@ -1281,6 +1289,35 @@ surgery than planned:
       second load, shadowed by the frame's own fields.
     - **Structs elsewhere.** `this` of an ordinary struct member is now
       `byref<T>`.
+    - **Scopes of hoisted variables.** The PDB has no scopes for them, but
+      `MoveNext` does: the compiler stores a hoisted variable where it is
+      bound and clears it where its scope ends (LowerStateMachines,
+      `RepresentBindingAsStateVar`). So a field is in scope between its
+      first and its last `stfld` in `MoveNext`, and a field never stored
+      there (a parameter of the function, a captured value) always is. The
+      frame carries the method's IL, read from the loaded image
+      (`PeImage.readMethodIL`), and its IL offset. Without the IL (Edit and
+      Continue, an unreadable image) every field is in scope, as before.
+    - **Shadowing.** A hoisted variable that shadows another is a field
+      named with a number (`name0` after `name`): it reads and writes as
+      `name`, and the outer one is `name (shadowed)`. Hoisted variables and
+      PDB locals shadow each other by where they are bound. A variable can
+      be both (`use!` copies its local to a field): the local is then not a
+      row, since it is empty after an await.
+      - **Limit.** A variable the user named `x0`, bound after an `x`,
+        looks the same and reads as `x`.
+    - **The builder's variables.** The builder's inlined code hoists its
+      own: awaiters, the enumerator of `for`, the parts of `while`, `use`
+      and `try`. The compiler knows they are compiler-generated but doesn't
+      mark the fields, so FSharp.Core's are recognized by name and type
+      (`awaiter`, `e`, `resource`, `condition`, `compensation`, `savedExn`,
+      each with a number when repeated). They are listed under
+      `[compiler generated]`. A field with `CompilerGeneratedAttribute` is
+      one too, should the compiler mark them (§9). Other builders' variables
+      are not recognized.
+    - **Not hoisted, so lost.** A variable not used after an await stays a
+      local of `MoveNext` (a `for` loop's `item`): after the await it reads
+      as its default value. Only the compiler can change that.
 16. **`seq` frames, and a hidden `this`.**
     - **`seq`.** A `seq` compiles to a class deriving from
       `GeneratedSequenceBase<T>`, and `GenerateNext` is its frame. Captured
@@ -1325,8 +1362,8 @@ surgery than planned:
       inner lambda (the curried frame parameters) into a ref cell.
     - **Not yet:**
       - immutable record fields (done in §17, item 23);
-      - Immediate-window variables (Roslyn writes them through
-        `GetVariableAddress<T>`).
+      - ~~Immediate-window variables (Roslyn writes them through
+        `GetVariableAddress<T>`).~~ Done in §17, item 31.
     - Code generation for queries no longer runs in parallel.
 20. **Diagnostic positions.** Each diagnostic carries a range in the user's
     expression text: lines from 1, columns from 0, `None` outside it.
@@ -2233,6 +2270,220 @@ assignments in F# frames, live in VS.
       ]`, its Locals row, and the abbreviation `myIds: ``My Ids``` (a module
       value: locals other than parameters have no F# type recorded). All 3
       runs pass on net10.0 and net48.
+
+28. **Primitives in F# form (§5.3, 2026-11-10).** Primitives were rendered by C#
+    at top level and as rows under F# values: `radius = 2 : double` under a
+    preview that says `Circle 2.0`, strings and chars with C# escapes, decimals
+    without `M`.
+    - **How.** The result provider already copies C#'s result to give it F#
+      type names (`retype`, item 13). For a primitive or a string it now also
+      replaces the value and the editable value with F# literals
+      (`FSharpValues.tryPrimitiveColumns`, the previews' `formatPrimitive`).
+      Everything else stays C#'s: the flags (raw string, the string
+      visualizer's), the custom visualizers, the full name, and the underlying
+      string, which `GetUnderlyingString` still takes from the original. So
+      owning the row outright was not needed.
+      - The value column has no integer suffix (§5.3): `5` for an `int64`. The
+        editable value, which an edit starts from, is the literal with its
+        suffix (`5L`), as the edit is compiled as F# (`x <- 5L`).
+      - Floats always have a decimal point or exponent (`2.0`, `nan`,
+        `infinity`, `1.5f`); decimals are `1.5M`; strings and chars use F#
+        escapes (`"a\tb"`, `'\''`, `"\000"`).
+      - Hexadecimal Display: integers are C#'s hex digits (`0x0000002a`), the
+        editable value adds the suffix (`0x0000000000000005L`); floats, chars
+        and strings keep their literals, as inside previews (item 25). A char
+        loses C#'s code point (`97 'a'` is `'a'`).
+      - `unit` was already `()`: a null declared `unit` is an F# shape.
+      - Enums, nulls and results with an exception keep C#'s text.
+    - **Type names.** `csharpTypeColumn` names primitives and arrays of them
+      in F# (`float`, `int64`, `string`, `float array`, `obj {float}`).
+    - **Tests.** `primitive rows show F# literals, without integer suffixes in
+      the value column`, `primitive rows in hex keep their F# suffix for
+      edits`, `nulls, enums and other values are not primitive rows`, `type
+      column of primitives C# renders uses F# names`.
+    - **Verified live.** TestDebuggee's break 1 has `ratio = 2.0`, `text =
+      "a\tb"`, `money = 1.5M`, `letter = 'q'` and `count64 = 5L`.
+      `Test-Debugger.ps1` checks their values and Type column, the same in hex,
+      `shape / radius` (`2.0`) and an array element, and edits `ratio` to
+      `2.5`, `text` to `"a\tc"`, `money` to `2.5M`, `letter` to `'r'` and
+      `array / [1]` to `3.5` through their Locals rows, reading each back. All
+      runs pass on net10.0 and net48.
+    - **Not checked live.** The string visualizer (the magnifier) and copying
+      a value: DTE can't open them. They are C#'s, through the flags and the
+      underlying string that the copy keeps.
+
+29. **Full names of the other rows (§5.4, 2026-11-10).** §14 recorded rows with
+    no full name, and item 24 fixed union case fields. Expanding every shape of
+    TestDebuggee's break 1 (the probe's new `-ExpectFullName`, below) showed
+    what was still missing or wrong:
+    - Map entries and Set items had none; struct tuple items had `v.Item1`,
+      which F# rejects (FS0039: F# has no `Item1` on struct tuples); an F#
+      exception's fields had `v.code`, which a value typed `exn` doesn't have;
+      a closure's captured values had `v.captured`, which no F# type has.
+    - Already right: record, anonymous record and ref cell fields, list items
+      (`xs[1]`, `nested[0][1]`), array elements, tuple items (`t.Item2`,
+      `big.Rest.Item1`), union case fields (generic unions too:
+      `(match tree with Ns.Tree.Node (x, _) -> x | _ -> …)`), `opt.Value`,
+      `created.Value`, and C#'s names of a two-dimensional array's elements
+      (`grid[1, 2]`, which is F# too).
+    - **Now.**
+      - A map entry is `m["two"]` when its key is a literal: an F# literal with
+        its type's suffix (`m[1L]`), never in hex, and not `nan`. Other keys (a
+        record) are by position: `(Seq.item 0 m).Value`, as a map enumerates
+        in key order, the order the tree walk lists. A set item is `Seq.item 1
+        s`.
+      - A struct tuple item is a pattern: `(let struct (_, x) = pair in x)`.
+      - An F# exception's field is a match on its pattern, as a union case's:
+        `(match (error :> exn) with Ns.MyError (x, _) -> x | _ -> failwith
+        "not MyError")`. The pattern takes an `exn`, and the value may be typed
+        as the exception itself (`let e = MyError (404, "x")`, a parameter, a
+        record field): without the upcast that gives FS0001. On a value
+        already typed `exn` the upcast checks too.
+      - A closure's captured values have no full name: in the closure's own
+        frame they are variables (§6.4); elsewhere nothing names them.
+    - **Edits.** Each row now says whether it can be edited (`Child.Editable`):
+      array elements, and fields of records and ref cells (immutable ones too,
+      item 23). Other rows are read-only: there is no assignment in F# to a
+      tuple or list item, a map entry, a union case, exception or anonymous
+      record field (FS0799), or a row without a full name. A C# result for
+      such a row (a primitive) is copied with the ReadOnly flag, so the Locals
+      window doesn't offer an edit that can only fail. Union case fields stay
+      read-only by design (item 24).
+    - **The probe's `-ExpectFullName`.** DTE doesn't expose a row's full name.
+      With `FSHARP_EE_LOG_FULL_NAMES=1`, which the probe sets, the result
+      provider logs the full name of each row it lists, and whether it is
+      read-only, under its parent's full name (for C#'s rows too, through a
+      data item on C#'s enumeration context). The probe walks down from a
+      Locals row, follows the logged names, and evaluates the last one, which
+      must give the row's value; `[read-only]` or `[editable]` checks the flag.
+    - **Tests.** `map entries and set items`, `struct tuple items and F#
+      exception fields are bound by a pattern`, `closure captures have no full
+      name`, `only array elements and record fields are editable`, and `the
+      result provider's full names of other rows compile`, which evaluates
+      each form in a frame, including an exception field on a value typed
+      `exn` and one typed as the exception (and FS0001 for the same name
+      without the upcast).
+    - **Verified live.** `Test-Debugger.ps1` checks 19 rows at break 1, each
+      evaluated after Add Watch would put it in the Watch window, and their
+      read-only flags. TestDebuggee has a two-dimensional array, a generic
+      union, a map with a record key, a tuple of 9 and a local typed as an
+      F# exception (`typedError`) for them. All runs pass
+      on net10.0 and net48 (where the result provider logs from msvsmon).
+    - **Not covered.** Rows of values C# renders (a `Dictionary`'s entries)
+      keep C#'s full names, which are not F# (§5.4, the last row).
+
+30. **Call stack names of compiler-generated code (§7, 2026-11-10).** §15 asked
+    whether a closure should name its enclosing function rather than
+    `name@line`.
+    - **Decision: keep the compiled names.** F# users know `f@66`,
+      `inspect@57-1` and `work@24` from decompiled code, error messages and
+      stack traces, so frames keep them: `Program.f@66 (x: int)`. A trial named
+      each frame after the function it is written in (`Program.closure.f`,
+      `Program.inspect.(fun)`), found from IL: the method that creates the
+      closure (`newobj`, or `ldsfld` of its cached instance) or initializes
+      the state machine struct. It worked, but was dropped for this reason.
+      What it showed about the metadata: a closure's class is named after the
+      innermost `let` it is in, which is not always a function (the lambda in
+      `let one = xs |> List.map (fun i -> ...)` is `one@53`), and the PDB says
+      nothing about the enclosing function.
+    - **Markers.** The code of a computation expression is marked after its
+      compiled name, as `(state machine)` and `(seq)` already were. The
+      closures of an `async { }` are now `Program.asyncFrame@203-1 (async)`,
+      without arguments: theirs are the builder's, not the user's. They are
+      recognized by their compiled shape, one parameter and the result:
+      - an inlined continuation takes FSharp.Core's `AsyncActivation<_>` and
+        returns `AsyncReturn`;
+      - the delayed code takes `unit` (`unitVar`) and returns `Async<_>`;
+      - the continuation of a `do!` or `let!` takes the value under a name the
+        compiler gives it (`_arg1`) and returns `Async<_>`.
+      A first version marked every closure returning `Async<_>`, so a lambda
+      that returns one with a parameter of its own (`fun url -> fetch url`)
+      lost its name's arguments: it is the user's function, and is now
+      `Program.asyncLambda@234 (url: string)`.
+      - **Same shapes, marked as the async.** `fun () -> async { ... }`
+        compiles as the delayed code does, and a `function` lambda returning
+        an async names its argument `_arg1`, as a continuation does. Marking
+        them is the less harmful reading: the first has no arguments to lose,
+        the second only a compiler-named one.
+    - **`@1` frames.** §15 saw FSharp.Core-inlined helpers' closures
+      (`work@1-2.Invoke`) named by C#. They came from the dynamic `task`
+      fallback of the released compilers; with the private compiler
+      TestDebuggee has none, and it was not reproduced. Concord chooses the
+      decoder by the language of the frame's document, so a frame whose PDB
+      doesn't say F# never reaches this one.
+    - **Tests.** `lambdas and inner functions keep their compiled names`, `the
+      closures of an async are marked`, `a lambda that returns an async keeps
+      its name and arguments` (with `fun () -> async { }` and a `let!`
+      continuation, both marked), over new fixtures.
+    - **Verified live.** A new `--frames` mode of TestDebuggee (the probe's
+      `-Frames`) breaks in a lambda, an inner function, a lambda in it, an
+      `async { }` after a `do!` and a `seq { }`. The probe's new
+      `-ExpectFrame` checks each frame's name (`*` for the line), and
+      `-ExpectLog` takes `*` too. Break F6 is in a lambda that returns an
+      async, which keeps its name and `(url: string)` and has no marker. All runs pass on net10.0 and net48.
+
+31. **Variables in the Immediate window (§3.2, §16 item 19, 2026-11-10).**
+    `let x = ...` declares a variable of the debugger, as Roslyn declares C#'s
+    (`int x = ...;`).
+    - **Statements.** The Immediate window compiles without
+      `DkmEvaluationFlags.TreatAsExpression`; Watch and DataTips with it. A
+      statement that reads `let [mutable] name [: type] = value`
+      (`EvaluationSession.CompileStatement`) is a declaration; anything else,
+      or one whose value doesn't compile (`let x = 1 in x + 1`), is an
+      expression.
+    - **The query.** The value is checked as an expression (with the
+      declared type as an annotation). After checking, its body becomes, as
+      Roslyn's `LocalDeclarationRewriter` and `PlaceholderLocalRewriter`
+      write it: the value into a local, `CreateVariable(typeof<T>, name,
+      payloadId, payload)`, a store through `GetVariableAddress<T>(name)`
+      (an IL call returning `T&`, `mkAddrSet` on it), then the value, which
+      the Immediate window shows.
+      - **Generic frames.** The post-inference checks, which run again in a
+        generic frame (§16, item 14), import the declaring type of a generic
+        IL call, and the session has no intrinsics assembly (FS1108). So the
+        typed tree calls a placeholder, `<>GetVariableAddress<T>` on
+        FSharp.Core's `Operators` (an F# module, which the checks skip), and
+        the generated IL is rewritten to the intrinsic
+        (`replaceVariableAddresses`), as field placeholders are. The query has a side effect and a
+      read-only result.
+    - **Custom type info.** The payload (`FSharpTypes.Variable`, its own
+      payload id) says whether the variable is `mutable`, and its F# type.
+      The debugger keeps it with the alias (`DkmClrAlias.CustomTypeInfoPayload`),
+      so the next frame knows.
+    - **Reading and assigning.** A variable is an alias of kind `Variable`,
+      read through `GetObjectByAlias` as before (§16 item 13), under the name
+      it was declared with (Concord gives it no `$` name). It now also has a
+      write, a store through `GetVariableAddress<T>`: `x <- v` checks when the
+      variable was declared mutable, and an edit of its row (an assignment)
+      always, as for frame values. An immutable one gives FS0027, as in F#.
+      Variables are listed in Locals, where their rows can be edited.
+    - **Types the next frame can't name.** A type the query itself defines (an
+      anonymous record the statement builds) is in the query's own assembly,
+      which later expressions can't reference: such a value is declared as
+      `obj`, boxed, and the statement returns a message instead of the value
+      (`made is declared as obj: its type, {| A: int |}, is defined by this
+      expression, and later expressions can't name it`). A variable whose CLR
+      type the next frame's session can't find reads as `obj` (as other
+      aliases), and can't be assigned.
+    - **Limits.**
+      - One identifier only: no patterns (`let a, b = ...`), no functions
+        (`let f x = ...`; `let f = fun x -> ...` works), no `let rec`.
+      - The F# type in the payload is not used yet: a variable reads as its
+        CLR type, so units of measure and abbreviations are lost.
+      - Declaring a name again replaces the variable as Concord's
+        `CreateVariable` does.
+    - **Tests.** `Immediate-window declarations create debugger variables`,
+      `assignment to Immediate-window variables`, `a variable of a type its
+      expression defines is declared as obj`, against stand-ins of
+      `CreateVariable` and `GetVariableAddress<T>` in the test assembly.
+    - **Verified live.** The probe's new `-Immediate` runs a statement as the
+      Immediate window does (DTE's `GetExpression2` with `TreatAsStatement`).
+      At break 1 `Test-Debugger.ps1` declares `digits` and `let mutable
+      runningTotal`, adds 10 to it with `<-`, checks that `digits <- []` fails,
+      declares a tuple with a type annotation and an anonymous record (the
+      message). Watch expressions read them at breaks 1, 2 and 3 (`digits` is
+      `string list`, `made` is `obj`), and break 4 edits `runningTotal` through
+      its Locals row. All runs pass on net10.0 and net48.
 
 **Next in M4**
 

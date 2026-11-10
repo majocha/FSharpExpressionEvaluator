@@ -59,6 +59,20 @@ let cliResources (read: ReadImage) (isLoadedImage: bool) : CliResources =
     // CLI header: cb, runtime versions, MetaData (8), Flags, EntryPoint, then Resources at 24.
     { ResourcesRva = i32 cliHeader 24; ToImageOffset = toImageOffset }
 
+/// Reads the IL of the method body at `rva`: the code, without its header and exception clauses.
+let readMethodIL (read: ReadImage) (toImageOffset: int -> int) (rva: int) =
+    let start = toImageOffset rva
+    let first = int (Array.head (read start 1))
+
+    match first &&& 0x3 with
+    // Tiny header: one byte, with the code size in its upper six bits.
+    | 0x2 -> read (start + 1) (first >>> 2)
+    // Fat header: flags and the header's size in 4-byte words, max stack, code size, local signature.
+    | 0x3 ->
+        let header = read start 12
+        read (start + (int header[1] >>> 4) * 4) (i32 header 4)
+    | _ -> failwith $"unknown method header 0x{first:X2}"
+
 /// Reads one embedded managed resource (4-byte length prefix, then data) at its manifest offset.
 let readResource (read: ReadImage) (resources: CliResources) (manifestOffset: int) =
     let start = resources.ToImageOffset(resources.ResourcesRva + manifestOffset)

@@ -296,9 +296,36 @@ let private argumentGroups (md: MetadataReader) (m: MethodDefinition) (declaring
         List.replicate parameterCount 1
     | _ -> [ parameterCount ]
 
+/// Whether a closure's `Invoke` is the code of an `async { }`, by its compiled shape (one parameter,
+/// with its IL name and type):
+/// - an inlined continuation takes FSharp.Core's `AsyncActivation<_>` and returns `AsyncReturn`;
+/// - the delayed code takes `unit` (`unitVar`) and returns `Async<_>`;
+/// - the continuation of a `do!` or `let!` takes the value under a name the compiler gives it
+///   (`_arg1`) and returns `Async<_>`.
+/// A lambda that returns an async takes its own parameters (`fun url -> fetch url`), so it is not
+/// one. Two shapes are the same as the async's own code, and are marked as it: `fun () -> async
+/// { ... }` (it has no arguments to lose), and a `function` lambda returning an async, whose
+/// argument the compiler names `_arg1` too.
+let private isAsyncCode (parameters: (string * SigType) list) (returnType: SigType) =
+    let control name (t: SigType) =
+        match t with
+        | Named({ Namespace = "Microsoft.FSharp.Control"; Name = n }, _) -> n = name
+        | _ -> false
+
+    let compilerNamed (name: string) =
+        name.StartsWith "_arg" && name.Length > 4 && Seq.forall Char.IsDigit (name.Substring 4)
+
+    match parameters with
+    | [ _, p ] when control "AsyncActivation`1" p -> control "AsyncReturn" returnType
+    | [ name, p ] when isUnit p || compilerNamed name -> control "FSharpAsync`1" returnType
+    | _ -> false
+
 /// The frame name of a method, F#-style. `typeArguments` are the frame's actual generic arguments
 /// (type parameters first, then method parameters), when Concord provides them. `fsharpTypes` are
 /// F# names for the parameters' types, in IL order, where the F# signature says more than IL.
+/// Compiler-generated code keeps its compiled name, as F# users know it from decompiled code and
+/// error messages (`Program.f@66 (x: int)`), with a marker for the code of a computation
+/// expression: `(state machine)`, `(seq)`, `(async)`.
 let frameNameWithTypes
     (md: MetadataReader)
     (methodToken: int)
@@ -318,25 +345,31 @@ let frameNameWithTypes
     let name = md.GetString m.Name
     let isStateMachine = name = "MoveNext" && implementsAsyncStateMachine md declaring
     let isSequence = name = "GenerateNext" && baseTypeName md declaring = "GeneratedSequenceBase`1"
+    let isClosureInvoke = isClosure md declaring && name = "Invoke"
+    let signature = m.DecodeSignature(signatureTypes md, { TypeParameters = typeParameters; MethodParameters = methodParameters })
+
+    let names =
+        [ for h in m.GetParameters() do
+              let p = md.GetParameter h
+              if p.SequenceNumber > 0 then p.SequenceNumber, md.GetString p.Name ]
+        |> Map.ofList
+
+    let parameterName i = names |> Map.tryFind (i + 1) |> Option.defaultValue $"arg{i}"
 
     if isStateMachine then
         $"{typeName} (state machine)"
     elif isSequence then
         $"{typeName} (seq)"
+    // The closures of an `async { }`: its code and its continuations (`let!`, `do!`). Their
+    // arguments are the builder's (`unit`, `AsyncActivation`), not the user's.
+    elif isClosureInvoke && isAsyncCode (signature.ParameterTypes |> Seq.mapi (fun i t -> parameterName i, t) |> List.ofSeq) signature.ReturnType then
+        $"{typeName} (async)"
     else
-        let signature = m.DecodeSignature(signatureTypes md, { TypeParameters = typeParameters; MethodParameters = methodParameters })
-
-        let names =
-            [ for h in m.GetParameters() do
-                  let p = md.GetParameter h
-                  if p.SequenceNumber > 0 then p.SequenceNumber, md.GetString p.Name ]
-            |> Map.ofList
-
         let parameters =
             signature.ParameterTypes
             |> Seq.mapi (fun i t ->
                 {
-                    Name = names |> Map.tryFind (i + 1) |> Option.defaultValue $"arg{i}"
+                    Name = parameterName i
                     Type = substitute substitution t
                     FSharpType = List.tryItem i fsharpTypes |> Option.flatten
                 })
@@ -346,7 +379,7 @@ let frameNameWithTypes
 
         // Closures: `Program.f@66 (x: int)` rather than `Program.f@66.Invoke(...)`.
         let member' =
-            if isClosure md declaring && name = "Invoke" then "" else "." + memberName md m + genericArguments substitution methodParameters
+            if isClosureInvoke then "" else "." + memberName md m + genericArguments substitution methodParameters
 
         typeName + member' + formatArguments format groups parameters
 

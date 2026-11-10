@@ -83,18 +83,40 @@ let ``null-represented children keep their declared type`` () =
         children { U = (); O = None; G = () }
     )
 
-    Assert.Equal(Some [ "[1]", "", "()" ], children (Map.ofList [ 1, () ]))
+    Assert.Equal(Some [ "[1]", "v[1]", "()" ], children (Map.ofList [ 1, () ]))
 
 [<Fact>]
-let ``closure captures`` () =
+let ``closure captures have no full name, as the closure class is no F# type`` () =
     let items = children (makeClosure ()) |> Option.get |> List.map (fun (n, f, _) -> n, f)
-    Assert.Contains(("captured", "v.captured"), items)
-    Assert.Contains(("counter", "v.counter"), items)
+    Assert.Contains(("captured", ""), items)
+    Assert.Contains(("counter", ""), items)
 
 [<Fact>]
 let ``map entries and set items`` () =
-    Assert.Equal(Some [ "[1]", "", "a"; "[2]", "", "b" ], children (Map.ofList [ 2, "b"; 1, "a" ]))
-    Assert.Equal(Some [ "[0]", "", "1"; "[1]", "", "2" ], children (Set.ofList [ 2; 1 ]))
+    // By a key that is a literal, with its type's suffix; by position otherwise.
+    Assert.Equal(Some [ "[1]", "v[1]", "a"; "[2]", "v[2]", "b" ], children (Map.ofList [ 2, "b"; 1, "a" ]))
+    Assert.Equal(Some [ "[\"one\"]", "v[\"one\"]", "1" ], children (Map.ofList [ "one", 1 ]))
+    Assert.Equal(Some [ "[1L]", "v[1L]", "a" ], children (Map.ofList [ 1L, "a" ]))
+    Assert.Equal(Some [ "[{ X = 1; Y = 2 }]", "(Seq.item 0 v).Value", "a" ], children (Map.ofList [ { X = 1; Y = 2 }, "a" ]))
+    Assert.Equal(Some [ "[nan]", "(Seq.item 0 v).Value", "a" ], children (Map.ofList [ nan, "a" ]))
+    Assert.Equal(Some [ "[0]", "Seq.item 0 v", "1"; "[1]", "Seq.item 1 v", "2" ], children (Set.ofList [ 2; 1 ]))
+
+    // Map keys are literals in their full names under hex display too.
+    let hex = FSharpValues.defaultOptions |> FSharpValues.withRadix 16u
+    let names = FSharpValues.tryChildren hex (Some "v") (live (Map.ofList [ 10L, "a" ])) |> Option.get
+    Assert.Equal<(string * string option) list>([ "[0x000000000000000a]", Some "v[10L]" ], names |> List.map (fun c -> c.Name, c.FullName))
+
+[<Fact>]
+let ``struct tuple items and F# exception fields are bound by a pattern`` () =
+    Assert.Equal(Some [ "Item1", "(let struct (x, _) = v in x)", "1.5"; "Item2", "(let struct (_, x) = v in x)", "c" ], children (struct (1.5, 'c')))
+    let samples = "FSharp.ExpressionEvaluator.Tests.Samples"
+
+    Assert.Equal(
+        Some
+            [ "code", $"(match (v :> exn) with {samples}.MyError (x, _) -> x | _ -> failwith \"not MyError\")", "404"
+              "Data1", $"(match (v :> exn) with {samples}.MyError (_, x) -> x | _ -> failwith \"not MyError\")", "not found" ],
+        children (MyError(404, "not found"))
+    )
 
 [<Fact>]
 let ``non-F# values have no F# children`` () =
@@ -140,3 +162,24 @@ let ``identifiers are left as they are`` () =
 
     for name in [ "my field"; "type"; "x@5"; "1st"; ""; "base" ] do
         Assert.Equal($"``{name}``", FSharpTypes.fsharpIdent name)
+
+[<Fact>]
+let ``only array elements and record fields are editable`` () =
+    let editable (value: obj) =
+        FSharpValues.tryChildren FSharpValues.defaultOptions (Some "v") (live value)
+        |> Option.get
+        |> List.map (fun c -> c.Name, c.Editable)
+
+    Assert.Equal<(string * bool) list>([ "[0]", true ], editable [| 1 |])
+    Assert.Equal<(string * bool) list>([ "X", true; "Y", true ], editable { X = 1; Y = 2 })
+    Assert.Equal<(string * bool) list>([ "contents", true ], editable (ref 1))
+    // No assignment in F# to these.
+    Assert.Equal<(string * bool) list>([ "[0]", false ], editable [ 1 ])
+    Assert.Equal<(string * bool) list>([ "Item1", false; "Item2", false ], editable (1, 2))
+    Assert.Equal<(string * bool) list>([ "Item1", false; "Item2", false ], editable (struct (1, 2)))
+    Assert.Equal<(string * bool) list>([ "A", false ], editable {| A = 1 |})
+    Assert.Equal<(string * bool) list>([ "radius", false ], editable (Circle 2.0))
+    Assert.Equal<(string * bool) list>([ "[1]", false ], editable (Map.ofList [ 1, "a" ]))
+    Assert.Equal<(string * bool) list>([ "[0]", false ], editable (Set.ofList [ 1 ]))
+    // Without a full name, nothing to assign to.
+    Assert.Equal<(string * bool) list>([ "[0]", false ], FSharpValues.tryChildren FSharpValues.defaultOptions None (live [| 1 |]) |> Option.get |> List.map (fun c -> c.Name, c.Editable))

@@ -95,14 +95,19 @@ if ($FSharpRepo) {
         Invoke-Native 'Build of the checkout' { & (Join-Path $checkout 'Build.cmd') -c $Configuration -noVisualStudio }
         Build-Checkout $checkout $true
         Set-Content $built (Get-Date -Format o)
+    } elseif (-not (Test-Path (Join-Path $checkout "artifacts\bin\FSharp.ExpressionEvaluator.Compiler\$Configuration\netstandard2.0\FSharp.ExpressionEvaluator.Compiler.pdb"))) {
+        # Built when the PDB was still embedded in the dll: build the private compiler again.
+        Build-Checkout $checkout $true
     }
 }
 
 $output = Join-Path $checkout "artifacts\bin\FSharp.ExpressionEvaluator.Compiler\$Configuration\netstandard2.0"
 $target = Join-Path $root 'artifacts\compiler'
 New-Item -ItemType Directory -Force $target | Out-Null
-# The PDB is embedded in the dll.
+# The PDB is a file of its own (PrivateCompiler.targets): to step into the compiler locally. The
+# VSIX ships only the dll.
 Copy-Item (Join-Path $output 'FSharp.ExpressionEvaluator.Compiler.dll') $target -Force
+Copy-Item (Join-Path $output 'FSharp.ExpressionEvaluator.Compiler.pdb') $target -Force
 $fscTarget = Join-Path $root 'artifacts\fsc'
 if (Test-Path $fscTarget) { Remove-Item $fscTarget -Recurse -Force }
 Copy-Item (Join-Path $checkout "artifacts\bin\fsc\$Configuration\net11.0") $fscTarget -Recurse

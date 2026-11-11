@@ -15,6 +15,10 @@
     <PublicSign>false</PublicSign>
     <DelaySign>false</DelaySign>
 
+    <!-- The checkout embeds the PDB in the dll: about 2 MB that the VSIX would carry, already
+         compressed. A PDB file instead, which eng/Build-Compiler.ps1 copies but the VSIX does not ship. -->
+    <DebugType>portable</DebugType>
+
     <!-- Its own folders, apart from the checkout's normal build. The SDK has already appended the
          target framework to the project's own paths by now, so these name it. -->
     <OutputPath>$(ArtifactsDir)bin/FSharp.ExpressionEvaluator.Compiler/$(Configuration)/$(TargetFramework)/</OutputPath>

@@ -1,0 +1,126 @@
+name: Build
+
+# Every push to master and every pull request: build the private compiler (cached), build, test and
+# keep the VSIX as a workflow artifact.
+# Every push to master: upload the VSIX to the Open VSIX Gallery (nightly feed).
+# A push to master with "[release]" in the commit message, or a manual run: also publish to the
+# Visual Studio Marketplace and make a GitHub release.
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['README.md', 'docs/**']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      # A short path for the dotnet/fsharp checkout: its deepest files would pass 260 characters.
+      FSHARP_EE_CACHE: C:\fsharp-ee
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The last part of the version is the commit count (Directory.Build.targets).
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # The private compiler and fsc (eng/Build-Compiler.ps1) depend only on the pinned commit and
+      # the files that build it.
+      - name: Cache private compiler
+        id: compiler-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            artifacts/compiler
+            artifacts/fsc
+          key: compiler-${{ hashFiles('eng/fsharp.commit', 'eng/Build-Compiler.ps1', 'eng/PrivateCompiler.targets') }}
+
+      - name: Build private compiler
+        if: steps.compiler-cache.outputs.cache-hit != 'true'
+        run: |
+          git config --global core.longpaths true
+          ./eng/Build-Compiler.ps1
+
+      # Compiled with the private fsc too, as the VSIX is built locally (released SDKs' compiler
+      # has Debug-build regressions, README.md).
+      - name: Build
+        run: dotnet build FSharp.ExpressionEvaluator.slnx -c Release -v minimal "-p:DotnetFscCompilerPath=$PWD\artifacts\fsc\fsc.dll"
+
+      - name: Test
+        run: dotnet test FSharp.ExpressionEvaluator.slnx -c Release --no-build -v minimal "-p:DotnetFscCompilerPath=$PWD\artifacts\fsc\fsc.dll"
+
+      - name: Get version
+        id: version
+        run: |
+          $height = git rev-list --count HEAD
+          [xml] $props = Get-Content Directory.Build.props
+          $majorMinor = $props.Project.PropertyGroup.VersionMajorMinor
+          "version=$majorMinor.$height" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FSharp.ExpressionEvaluator.Vsix.vsix
+          path: src/FSharp.ExpressionEvaluator.Vsix/bin/Release/net48/FSharp.ExpressionEvaluator.Vsix.vsix
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write # GitHub release
+    env:
+      RELEASE: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: FSharp.ExpressionEvaluator.Vsix.vsix
+          path: artifact
+
+      # Publish-Vsix.ps1 uses VsixPublisher.exe from the Microsoft.VSSDK.BuildTools package.
+      - uses: actions/setup-dotnet@v4
+        if: env.RELEASE == 'true'
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        if: env.RELEASE == 'true'
+        run: dotnet restore src/FSharp.ExpressionEvaluator.Vsix/FSharp.ExpressionEvaluator.Vsix.fsproj
+
+      - name: Upload to Open VSIX Gallery
+        uses: timheuer/openvsixpublish@v1
+        with:
+          vsix-file: artifact/FSharp.ExpressionEvaluator.Vsix.vsix
+          # Show the Marketplace overview instead of README.md (path is relative to the repo, per branch).
+          readme: ${{ github.ref_name }}/src/FSharp.ExpressionEvaluator.Vsix/overview.md
+
+      - name: Publish to Visual Studio Marketplace
+        if: env.RELEASE == 'true'
+        env:
+          VS_MARKETPLACE_PAT: ${{ secrets.VS_MARKETPLACE_PAT }}
+        run: ./eng/Publish-Vsix.ps1 -Vsix artifact/FSharp.ExpressionEvaluator.Vsix.vsix
+
+      - name: GitHub release
+        if: env.RELEASE == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: ${{ needs.build.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: artifact/FSharp.ExpressionEvaluator.Vsix.vsix

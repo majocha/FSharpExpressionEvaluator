@@ -230,7 +230,22 @@ To reinstall into the normal VS instance (Release by default; close VS first):
 powershell -File eng\Install-Vsix.ps1
 ```
 
-To publish to the Visual Studio Marketplace, commit all changes first. Then run:
+The GitHub workflow `.github/workflows/build.yml` builds the private compiler (cached by the files
+that build it), then builds and tests each push and pull request. Each workflow run keeps the VSIX
+as an artifact.
+
+- **Open VSIX Gallery**: each push to `master` uploads the VSIX to the
+  [Open VSIX Gallery](https://www.vsixgallery.com/extension/FSharp.ExpressionEvaluator.f049de54-75e7-4bb4-9839-fb6993919394).
+  This gives nightly builds. No account or token is necessary.
+- **Visual Studio Marketplace**: put `[release]` in the commit message, or start the workflow
+  manually. The workflow then publishes to the Marketplace and makes a GitHub release with
+  the tag `v<version>`. The repository secret `VS_MARKETPLACE_PAT` must contain the token (see below).
+
+To get the nightly builds in Visual Studio, add an additional extension gallery in **Tools >
+Options > Environment > Extensions** with the URL
+`https://www.vsixgallery.com/feed/extension/FSharp.ExpressionEvaluator.f049de54-75e7-4bb4-9839-fb6993919394`.
+
+To publish to the Visual Studio Marketplace from your computer, commit all changes first. Then run:
 
 ```powershell
 $env:VS_MARKETPLACE_PAT = '<token>'

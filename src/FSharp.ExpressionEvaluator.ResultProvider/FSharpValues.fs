@@ -592,24 +592,48 @@ type Child =
 let private child name declared fullName value =
     { Name = name; Value = value; DeclaredType = declared; FullName = fullName; Editable = false }
 
-let private editable (children: Child list) =
-    children |> List.map (fun c -> { c with Editable = c.FullName.IsSome })
+/// A row that can be edited when it has a full name.
+let private editable (c: Child) = { c with Editable = c.FullName.IsSome }
+
+/// Items read by index, such as the children of a value. An array's children are made only when a
+/// row is read, so the cost of a page of rows does not depend on the length of the array.
+[<NoEquality; NoComparison>]
+type Paged<'T> =
+    {
+        Count: int
+        /// The item at an index from 0 to Count - 1.
+        Item: int -> 'T
+    }
+
+module Paged =
+
+    let ofList (items: 'T list) =
+        let items = Array.ofList items
+        { Count = items.Length; Item = fun i -> items[i] }
+
+    /// The `count` items from `startIndex` on, as the debugger asks for a page of rows.
+    let page startIndex count (items: Paged<'T>) =
+        let first = max 0 startIndex
+        let last = int (min (int64 items.Count) (int64 first + int64 (max 0 count))) - 1
+        [| for i in first..last -> items.Item i |]
+
+    let toList (items: Paged<'T>) = List.init items.Count items.Item
 
 /// Children of an F# value, or None when it is not an F# shape. `parentFullName` is the full name
-/// of the value itself, if it has one.
-let tryChildren (options: Options) (parentFullName: string option) (v: IValue) : Child list option =
+/// of the value itself, if it has one. An array's children are not made until they are read.
+let tryChildPages (options: Options) (parentFullName: string option) (v: IValue) : Paged<Child> option =
     let memberName name = parentFullName |> Option.map (fun p -> FullNames.memberAccess p name)
     let indexName i = parentFullName |> Option.map (fun p -> FullNames.index p i)
 
     let fieldChildren (fields: ShapeField list) fullName =
         fields |> List.mapi (fun i f -> child f.Name (Some f.Type) (fullName i f) (lazy (v.Field f.BackingField)))
 
-    if v.IsNull || isError v then
-        None
-    else
-        match shape v.Type with
+    /// Children of the other shapes: few enough to make them all at once.
+    let listed =
+        function
         | NotFSharp -> None
         | UnitShape -> Some []
+        | ArrayShape _ -> None
         | FunctionShape ->
             // A closure's class is not an F# type, so its captured values have no member to name them
             // by (in the closure's own frame they are variables).
@@ -619,8 +643,6 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
         | ListShape element ->
             let items, _ = listItems options.MaxChildren v
             items |> List.mapi (fun i item -> child $"[{i}]" (Some element) (indexName i) (Lazy<IValue>.CreateFromValue item)) |> Some
-        | ArrayShape element ->
-            [ for i in 0 .. v.ArrayLength - 1 -> child $"[{i}]" (Some element) (indexName i) (lazy (v.Element i)) ] |> editable |> Some
         | TupleShape isStruct ->
             let types = tupleTypes v.Type
             let items = tupleItems v
@@ -657,7 +679,7 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
             let fields = recordFields v.Type
             fieldChildren fields (fun i _ -> parentFullName |> Option.map (fun p -> FullNames.exceptionField p v.Type i fields.Length)) |> Some
         | RecordShape AnonymousRecord -> fieldChildren (recordFields v.Type) (fun _ f -> memberName f.Name) |> Some
-        | RecordShape _ -> fieldChildren (recordFields v.Type) (fun _ f -> memberName f.Name) |> editable |> Some
+        | RecordShape _ -> fieldChildren (recordFields v.Type) (fun _ f -> memberName f.Name) |> List.map editable |> Some
         | BigIntShape -> Some []
         | LazyShape valueType ->
             // The value read from its field once created: never `.Value`, which would force it. The
@@ -703,6 +725,22 @@ let tryChildren (options: Options) (parentFullName: string option) (v: IValue) :
             |> List.mapi (fun i (k, _) ->
                 child $"[{i}]" (Some element) (parentFullName |> Option.map (fun p -> FullNames.item p i)) (Lazy<IValue>.CreateFromValue k))
             |> Some
+
+    if v.IsNull || isError v then
+        None
+    else
+        match shape v.Type with
+        | ArrayShape element ->
+            // An array can have millions of elements: each row is made when it is read.
+            let elementRow i =
+                editable (child $"[{i}]" (Some element) (indexName i) (lazy (v.Element i)))
+
+            Some { Count = v.ArrayLength; Item = elementRow }
+        | other -> listed other |> Option.map Paged.ofList
+
+/// Children of an F# value as a list, or None when it is not an F# shape (tests read them so).
+let tryChildren (options: Options) (parentFullName: string option) (v: IValue) : Child list option =
+    tryChildPages options parentFullName v |> Option.map Paged.toList
 
 /// Whether an F# value has F# children, without materializing them (for the Expandable flag).
 let hasChildren (v: IValue) =

@@ -59,8 +59,10 @@ type internal ParentNameData(fullName: string) =
     inherit DkmDataItem()
     member _.FullName = fullName
 
+/// The rows under an F# value, kept on its enumeration context. They are made when GetItems reads
+/// them: an array can have millions of elements.
 [<AllowNullLiteral>]
-type internal RowsData(parent: FSharpResultData, rows: Row[]) =
+type internal RowsData(parent: FSharpResultData, rows: Paged<Row>) =
     inherit DkmDataItem()
     member _.Parent = parent
     member _.Rows = rows
@@ -105,7 +107,7 @@ type ResultProvider() =
         not (isNull specifiers) && specifiers.Contains name
 
     static let lmrType (t: DkmClrType) =
-        if isNull t then None else Lmr.safe None (fun () -> Some(LmrType.Of(t.GetLmrType())))
+        if isNull t then None else Lmr.safe None (fun () -> Some(LmrType.Of t))
 
     /// A payload of the expression compiler's custom type info, decoded by `tryDecode`.
     static let decodeTypeInfo what (tryDecode: System.Guid -> byte[] -> 'T option) (customTypeInfo: DkmClrCustomTypeInfo) =
@@ -283,11 +285,18 @@ type ResultProvider() =
                 result
         | _ -> result
 
-    static let rows context (data: FSharpResultData) =
+    /// The rows under an F# value: its children, then the Raw View row if it has one.
+    static let rows context (data: FSharpResultData) : Paged<Row> =
         let fullName = Option.ofObj data.FullName
-        let children = FSharpValues.tryChildren (optionsFor context) fullName data.Value |> Option.defaultValue []
-        let raw = if FSharpValues.hasRawView data.Value then [ RawViewRow ] else []
-        [| yield! children |> List.map ChildRow; yield! raw |]
+
+        let children =
+            FSharpValues.tryChildPages (optionsFor context) fullName data.Value
+            |> Option.defaultWith (fun () -> Paged.ofList [])
+
+        let raw = if FSharpValues.hasRawView data.Value then 1 else 0
+
+        { Count = children.Count + raw
+          Item = fun i -> if i < children.Count then ChildRow(children.Item i) else RawViewRow }
 
     static let clrType (appDomain: DkmClrAppDomain) (t: IType option) =
         match t with
@@ -310,11 +319,11 @@ type ResultProvider() =
             match r.Result with
             | null -> k.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult(exn $"Raw View: error 0x{r.ErrorCode:X8}"))
             | csharp ->
-                WorkLists.complete "RP" "Raw View children" workList (fun workList k -> csharp.GetChildren(workList, initialRequestSize, context, k)) k.Invoke
+                WorkLists.complete "RP" (fun () -> "Raw View children") workList (fun workList k -> csharp.GetChildren(workList, initialRequestSize, context, k)) k.Invoke
 
         WorkLists.complete
             "RP"
-            "Raw View"
+            (fun () -> "Raw View")
             workList
             (fun workList k ->
                 parent.ClrValue.GetResult(workList, parent.DeclaredType, null, context, noFormatSpecifiers, "Raw View", rawFullName parent, k))
@@ -341,7 +350,7 @@ type ResultProvider() =
                 k.Invoke(staticRows rows initialRequestSize frame context)
 
         // A closure has a handful of fields, so one request returns C#'s Results View row.
-        WorkLists.complete "RP" "sequence children" workList (fun workList k -> retyped.Original.GetChildren(workList, 100, context, k)) complete
+        WorkLists.complete "RP" (fun () -> "sequence children") workList (fun workList k -> retyped.Original.GetChildren(workList, 100, context, k)) complete
 
     /// Logs the full names of the rows listed under a result, for eng\Probe-Debugger.ps1 (Log.fullNames).
     static let logFullNames (parentFullName: string) (rows: DkmEvaluationResult[]) =
@@ -428,7 +437,7 @@ type ResultProvider() =
 
                         WorkLists.complete
                             "RP"
-                            $"row '{child.Name}'"
+                            (fun () -> $"row '{child.Name}'")
                             workList
                             (fun workList k -> v.Value.GetResult(workList, declared, null, context, noFormatSpecifiers, child.Name, fullName, k))
                             (complete child.Editable)
@@ -443,7 +452,7 @@ type ResultProvider() =
         member _.GetResult
             (clrValue, workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
             =
-            let call, completionRoutine = WorkLists.traced "RP" $"GetResult '{resultName}'" completionRoutine
+            let struct (call, completionRoutine) = WorkLists.traced "RP" (fun () -> $"GetResult '{resultName}'") completionRoutine
             use _ = call
 
             let fsharp =
@@ -486,11 +495,11 @@ type ResultProvider() =
                     clrValue.GetResult(
                         workList, declaredType, customTypeInfo, inspectionContext, formatSpecifiers, resultName, resultFullName, completionRoutine)
 
-                WorkLists.complete "RP" $"GetResult '{resultName}'" workList csharp (fun r ->
+                WorkLists.complete "RP" (fun () -> $"GetResult '{resultName}'") workList csharp (fun r ->
                     completionRoutine.Invoke(if fsharp then retyped r else r))
 
         member _.GetChildren(result, workList, initialRequestSize, inspectionContext, completionRoutine) =
-            let call, completionRoutine = WorkLists.traced "RP" $"GetChildren '{result.Name}'" completionRoutine
+            let struct (call, completionRoutine) = WorkLists.traced "RP" (fun () -> $"GetChildren '{result.Name}'") completionRoutine
             use _ = call
 
             let orError f =
@@ -501,7 +510,7 @@ type ResultProvider() =
                     completionRoutine.Invoke(DkmGetChildrenAsyncResult.CreateErrorResult e)
 
             let passOn (original: DkmEvaluationResult) =
-                WorkLists.complete "RP" "GetChildren" workList (fun workList k ->
+                WorkLists.complete "RP" (fun () -> "GetChildren") workList (fun workList k ->
                     original.GetChildren(workList, initialRequestSize, inspectionContext, k)) (fun r ->
                     if Log.fullNames.Value && not (isNull r.EnumContext) then
                         logFullNames result.FullName r.InitialChildren
@@ -520,20 +529,20 @@ type ResultProvider() =
             | FSharpResult data ->
                 orError (fun () ->
                     let rows = rows inspectionContext data
-                    let enumContext = DkmEvaluationResultEnumContext.Create(rows.Length, result.StackFrame, inspectionContext, RowsData(data, rows))
-                    let initial = Array.truncate initialRequestSize rows
+                    let enumContext = DkmEvaluationResultEnumContext.Create(rows.Count, result.StackFrame, inspectionContext, RowsData(data, rows))
+                    let initial = Paged.page 0 initialRequestSize rows
 
                     evaluateRows workList inspectionContext data initial (fun children ->
                         logFullNames result.FullName children
                         completionRoutine.Invoke(DkmGetChildrenAsyncResult(children, enumContext))))
 
         member _.GetItems(enumContext, workList, startIndex, count, completionRoutine) =
-            let call, completionRoutine = WorkLists.traced "RP" $"GetItems {startIndex}+{count}" completionRoutine
+            let struct (call, completionRoutine) = WorkLists.traced "RP" (fun () -> $"GetItems {startIndex}+{count}") completionRoutine
             use _ = call
 
             match enumContext.GetDataItem<RowsData>(), enumContext.GetDataItem<SequenceRowsData>() with
             | null, null ->
-                WorkLists.complete "RP" "GetItems" workList (fun workList k ->
+                WorkLists.complete "RP" (fun () -> "GetItems") workList (fun workList k ->
                     enumContext.GetItems(workList, startIndex, count, k)) (fun r ->
                     match enumContext.GetDataItem<ParentNameData>() with
                     | null -> ()
@@ -544,7 +553,7 @@ type ResultProvider() =
                 completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(page startIndex count sequence.Rows))
             | data, _ ->
                 try
-                    evaluateRows workList enumContext.InspectionContext data.Parent (page startIndex count data.Rows) (fun items ->
+                    evaluateRows workList enumContext.InspectionContext data.Parent (Paged.page startIndex count data.Rows) (fun items ->
                         logFullNames data.Parent.FullName items
                         completionRoutine.Invoke(DkmEvaluationEnumAsyncResult(items)))
                 with e ->

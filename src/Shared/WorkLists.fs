@@ -10,8 +10,8 @@ module internal FSharp.ExpressionEvaluator.WorkLists
 open Microsoft.VisualStudio.Debugger
 
 /// Runs `start` on a work list of our own, to completion, and returns its result; None when that
-/// work list can't run here (logged).
-let runToCompletion (source: string) (what: string) (start: DkmWorkList -> DkmCompletionRoutine<'T> -> unit) : 'T option =
+/// work list can't run here (logged). `what` names the call in the log; it runs only on a failure.
+let runToCompletion (source: string) (what: unit -> string) (start: DkmWorkList -> DkmCompletionRoutine<'T> -> unit) : 'T option =
     let workList = DkmWorkList.Create(null)
     let result = ref None
 
@@ -20,7 +20,7 @@ let runToCompletion (source: string) (what: string) (start: DkmWorkList -> DkmCo
         workList.Execute()
         result.Value
     with e ->
-        Log.exn source $"{what} on our own work list" e
+        Log.exn source $"{what ()} on our own work list" e
 
         try
             workList.Cancel()
@@ -31,20 +31,24 @@ let runToCompletion (source: string) (what: string) (start: DkmWorkList -> DkmCo
 
 /// Runs `start` to completion and passes its result to `k`, before returning. When our own work list
 /// can't run, `start` runs on the caller's work list as before.
-let complete (source: string) (what: string) (workList: DkmWorkList) (start: DkmWorkList -> DkmCompletionRoutine<'T> -> unit) (k: 'T -> unit) =
+let complete (source: string) (what: unit -> string) (workList: DkmWorkList) (start: DkmWorkList -> DkmCompletionRoutine<'T> -> unit) (k: 'T -> unit) =
     match runToCompletion source what start with
     | Some r -> k r
     | None -> start workList (DkmCompletionRoutine<'T>(k))
 
 /// Starts tracing a call (Log.trace) and wraps its completion routine to log the completion. Dispose
-/// the call when the method that started it returns.
-let traced (source: string) (what: string) (completionRoutine: DkmCompletionRoutine<'T>) =
-    let call = Log.trace source what
+/// the call when the method that started it returns. With tracing off (the usual case) it gives a
+/// shared call that does nothing and the completion routine itself, and `what` does not run.
+let inline traced (source: string) ([<InlineIfLambda>] what: unit -> string) (completionRoutine: DkmCompletionRoutine<'T>) =
+    if not Log.isTracing.Value then
+        struct (Log.noCall, completionRoutine)
+    else
+        let call = Log.trace source (what ())
 
-    call,
-    DkmCompletionRoutine<'T>(fun r ->
-        call.Completed()
-        completionRoutine.Invoke r)
+        struct (call :> System.IDisposable,
+                DkmCompletionRoutine<'T>(fun r ->
+                    call.Completed()
+                    completionRoutine.Invoke r))
 
 /// The same inspection context with more evaluation flags.
 let withEvaluationFlags (flags: Evaluation.DkmEvaluationFlags) (c: Evaluation.DkmInspectionContext) =

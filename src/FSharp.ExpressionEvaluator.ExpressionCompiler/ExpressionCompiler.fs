@@ -115,14 +115,15 @@ type ExpressionCompiler() =
 
                     match withoutFailingOpens frame (run session) with
                     | Ok compiled ->
-                        let fsharpType =
-                            compiled.FSharpType |> Option.map (fun t -> $" (Type column {t})") |> Option.defaultValue ""
+                        Log.verbose "EC" (fun () ->
+                            let fsharpType =
+                                compiled.FSharpType |> Option.map (fun t -> $" (Type column {t})") |> Option.defaultValue ""
 
-                        log $"{what}: {compiled.ResultType}{fsharpType}, {sw.ElapsedMilliseconds} ms"
+                            $"{what}: {compiled.ResultType}{fsharpType}, {sw.ElapsedMilliseconds} ms")
                         Some(Ok(query address.RuntimeInstance compiled))
                     | Error diagnostics ->
                         let text = errorText diagnostics
-                        log $"{what}: {text}, {sw.ElapsedMilliseconds} ms"
+                        Log.verbose "EC" (fun () -> $"{what}: {text}, {sw.ElapsedMilliseconds} ms")
                         Some(Error text)
             with e ->
                 Log.exn "EC" what e
@@ -147,10 +148,11 @@ type ExpressionCompiler() =
                 | None -> None
                 | Some session ->
                     let runtime = address.RuntimeInstance
-                    let frame = Debuggee.frame address inspectionContext
+                    let debuggerAliases = Debuggee.aliases address inspectionContext
+                    let frame = Debuggee.frameWith address debuggerAliases
 
                     let displayNames =
-                        match runtime.GetAliases inspectionContext with
+                        match debuggerAliases with
                         | null -> Map.empty
                         | aliases -> aliases |> Seq.map (fun a -> a.FullName, a.Name) |> Map.ofSeq
 
@@ -174,8 +176,8 @@ type ExpressionCompiler() =
 
                     match withoutFailingOpens frame (fun frame -> session.CompileLocals(frame, argumentsOnly)) with
                     | Ok compiled ->
-                        log
-                            $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}, {sw.ElapsedMilliseconds} ms"
+                        Log.verbose "EC" (fun () ->
+                            $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}, {sw.ElapsedMilliseconds} ms")
 
                         let infos =
                             compiled.Locals

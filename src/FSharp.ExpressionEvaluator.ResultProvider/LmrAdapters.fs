@@ -34,25 +34,51 @@ module private Lmr =
               { TypeName = a.Constructor.DeclaringType.FullName
                 Args = [ for x in a.ConstructorArguments -> x.Value ] } ]
 
-type internal LmrType private (t: LmrTypeInfo) =
-    static let cache = ConcurrentDictionary<LmrTypeInfo, IType>()
+/// The IType of each LMR type of one CLR runtime instance. Concord releases it when the runtime
+/// instance closes (the debuggee stops), so the LMR types of a debug session do not stay in memory.
+/// Equal LMR types share an IType, so the caches of FSharpTypes (keyed by IType.Native) find them.
+[<AllowNullLiteral>]
+type internal LmrTypesData() =
+    inherit Microsoft.VisualStudio.Debugger.DkmDataItem()
+    member val Types = ConcurrentDictionary<LmrTypeInfo, IType>()
+
+type internal LmrType private (t: LmrTypeInfo, types: ConcurrentDictionary<LmrTypeInfo, IType>) =
+    static let gate = obj ()
+
+    /// The types of a runtime instance: created on first use.
+    static let typesOf (runtime: Microsoft.VisualStudio.Debugger.Clr.DkmClrRuntimeInstance) =
+        match runtime.GetDataItem<LmrTypesData>() with
+        | null ->
+            lock gate (fun () ->
+                match runtime.GetDataItem<LmrTypesData>() with
+                | null ->
+                    let data = LmrTypesData()
+                    runtime.SetDataItem(Microsoft.VisualStudio.Debugger.DkmDataCreationDisposition.CreateAlways, data)
+                    data.Types
+                | data -> data.Types)
+        | data -> data.Types
+
+    static let into (types: ConcurrentDictionary<LmrTypeInfo, IType>) (t: LmrTypeInfo) : IType =
+        if isNull t then Unchecked.defaultof<_> else types.GetOrAdd(t, fun t -> LmrType(t, types) :> IType)
+
+    let ofType = into types
 
     let attributes = lazy (Lmr.safe [] (fun () -> Lmr.attributes (t.GetCustomAttributesData())))
 
     let fields =
         lazy
             (Lmr.safe [] (fun () ->
-                [ for f in t.GetFields Lmr.declared -> { Name = f.Name; FieldType = LmrType.Of f.FieldType; IsStatic = f.IsStatic } ]))
+                [ for f in t.GetFields Lmr.declared -> { Name = f.Name; FieldType = ofType f.FieldType; IsStatic = f.IsStatic } ]))
 
     let properties =
         lazy
             (Lmr.safe [] (fun () ->
                 [ for p in t.GetProperties Lmr.declared ->
                       { Name = p.Name
-                        PropertyType = LmrType.Of p.PropertyType
+                        PropertyType = ofType p.PropertyType
                         Attributes = Lmr.safe [] (fun () -> Lmr.attributes (p.GetCustomAttributesData())) } ]))
 
-    let interfaces = lazy (Lmr.safe [] (fun () -> [ for i in t.GetInterfaces() -> LmrType.Of i ]))
+    let interfaces = lazy (Lmr.safe [] (fun () -> [ for i in t.GetInterfaces() -> ofType i ]))
 
     let methods =
         lazy
@@ -62,22 +88,23 @@ type internal LmrType private (t: LmrTypeInfo) =
                         IsStatic = m.IsStatic
                         Attributes = Lmr.safe [] (fun () -> Lmr.attributes (m.GetCustomAttributesData())) } ]))
 
-    static member Of(t: LmrTypeInfo) : IType =
-        if isNull t then Unchecked.defaultof<_> else cache.GetOrAdd(t, fun t -> LmrType t :> IType)
+    /// The IType of a debuggee type, shared by all equal LMR types of its runtime instance.
+    static member Of(t: Microsoft.VisualStudio.Debugger.Clr.DkmClrType) : IType =
+        into (typesOf t.AppDomain.RuntimeInstance) (t.GetLmrType())
 
     interface IType with
         member _.FullName = t.FullName
         member _.Name = t.Name
         member _.Namespace = t.Namespace
-        member _.DeclaringType = if t.IsGenericParameter then None else Option.ofObj t.DeclaringType |> Option.map LmrType.Of
-        member _.BaseType = Lmr.safe None (fun () -> Option.ofObj t.BaseType |> Option.map LmrType.Of)
+        member _.DeclaringType = if t.IsGenericParameter then None else Option.ofObj t.DeclaringType |> Option.map ofType
+        member _.BaseType = Lmr.safe None (fun () -> Option.ofObj t.BaseType |> Option.map ofType)
         member _.Interfaces = interfaces.Value
         member _.IsGenericParameter = t.IsGenericParameter
         member _.DefinitionName = if t.IsGenericType then t.GetGenericTypeDefinition().FullName else t.FullName
-        member _.GenericArguments = if t.IsGenericType then [ for a in t.GetGenericArguments() -> LmrType.Of a ] else []
+        member _.GenericArguments = if t.IsGenericType then [ for a in t.GetGenericArguments() -> ofType a ] else []
         member _.IsArray = t.IsArray
         member _.ArrayRank = if t.IsArray then t.GetArrayRank() else 0
-        member _.ElementType = if t.HasElementType then LmrType.Of(t.GetElementType()) else Unchecked.defaultof<_>
+        member _.ElementType = if t.HasElementType then ofType(t.GetElementType()) else Unchecked.defaultof<_>
         member _.IsValueType = t.IsValueType
         member _.IsEnum = t.IsEnum
         member _.Attributes = attributes.Value
@@ -105,7 +132,7 @@ type internal ConcordValue(value: DkmClrValue, context: DkmInspectionContext) =
     member _.Value = value
 
     interface IValue with
-        member _.Type = LmrType.Of(value.Type.GetLmrType())
+        member _.Type = LmrType.Of value.Type
         member _.IsNull = value.IsNull
 
         member _.Error =

@@ -5,6 +5,7 @@
 namespace FSharp.ExpressionEvaluator
 
 open System.Collections.Generic
+open System.Runtime.CompilerServices
 
 /// A custom attribute: full type name and constructor arguments (enums as their underlying value).
 type internal AttributeData = { TypeName: string; Args: obj list }
@@ -80,17 +81,18 @@ module internal Types =
         hierarchy t
         |> Seq.tryPick (fun t -> t.Fields |> List.tryFind (fun f -> f.Name = name && not f.IsStatic))
 
+    /// A cache of values computed from a type, keyed by the identity of IType.Native. The table holds
+    /// its keys weakly: an entry goes away when its native type (an LMR type of a debug session that
+    /// ended) is collected, also when the value refers back to the type. LmrType gives equal LMR
+    /// types the same native object, so the identity finds them. Safe on several threads: two
+    /// threads can both compute a value, but all callers get the one that the table keeps.
     let cache () =
-        let d = Dictionary<obj, _>(HashIdentity.Structural)
+        let table = ConditionalWeakTable<obj, 'T ref>()
 
         fun (t: IType) (create: IType -> 'T) ->
-            lock d (fun () ->
-                match d.TryGetValue t.Native with
-                | true, v -> v
-                | _ ->
-                    let v = create t
-                    d[t.Native] <- v
-                    v)
+            match t.Native with
+            | null -> create t
+            | native -> table.GetValue(native, fun _ -> ref (create t)).Value
 
 /// FSharp.Core's CompilationMappingAttribute(SourceConstructFlags, [variantNumber], [sequenceNumber]).
 module internal CompilationMapping =

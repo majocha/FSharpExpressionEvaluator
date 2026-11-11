@@ -38,13 +38,12 @@ let private copyBlob (ptr: nativeint) (size: uint32) =
     Marshal.Copy(ptr, bytes, 0, int size)
     bytes
 
-let private metadataReader (metadata: byte[]) =
-    MetadataReaderProvider.FromMetadataImage(ImmutableArray.Create<byte>(metadata))
-
-/// A copy of a loaded module's metadata.
-let private moduleMetadata (m: DkmClrModuleInstance) =
+/// Reads a loaded module's metadata in Concord's buffer, without a copy. The buffer can go away
+/// when the module unloads or changes, so `read` must not keep the reader or values that refer to it.
+let private readMetadata (m: DkmClrModuleInstance) (read: MetadataReader -> 'T) =
     let mutable size = 0u
-    copyBlob (m.GetMetaDataBytesPtr(&size)) size
+    let ptr = m.GetMetaDataBytesPtr(&size)
+    read (MetadataReader(NativePtr.ofNativeInt ptr, int size))
 
 /// Reads a range of a module's image from debuggee memory. Reading the whole image at once fails
 /// (unmapped gaps between sections), so only what is needed is read.
@@ -57,11 +56,20 @@ let private readImage (m: DkmClrModuleInstance) (offset: int) (size: int) =
 
     buffer
 
+/// The simple name of a module's assembly, kept with the module instance.
+[<AllowNullLiteral>]
+type private AssemblyNameItem(name: string) =
+    inherit DkmDataItem()
+    member _.Name = name
+
 /// The simple name of a loaded module's assembly.
 let private assemblyName (m: DkmClrModuleInstance) =
-    use provider = metadataReader (moduleMetadata m)
-    let md = provider.GetMetadataReader()
-    md.GetString(md.GetAssemblyDefinition().Name)
+    match m.GetDataItem<AssemblyNameItem>() with
+    | null ->
+        let name = readMetadata m (fun md -> md.GetString(md.GetAssemblyDefinition().Name))
+        m.SetDataItem(DkmDataCreationDisposition.CreateAlways, AssemblyNameItem name)
+        name
+    | item -> item.Name
 
 /// The simple name of an assembly and the assemblies it references.
 let private assemblyAndReferences (md: MetadataReader) =
@@ -70,23 +78,22 @@ let private assemblyAndReferences (md: MetadataReader) =
 
 /// A module as the compiler sees it: its metadata and its F# signature and optimization data
 /// (manifest resources), read from the loaded image. Modules without F# data need no resources.
-/// Also gives the assembly's simple name and its references.
-let private debuggeeModule (m: DkmClrModuleInstance) =
-    let metadata = moduleMetadata m
-    use provider = metadataReader metadata
-    let md = provider.GetMetadataReader()
+/// Also gives the assembly's simple name and its references, and whether the result can be kept
+/// (not when the resources could not be read: the next session tries again).
+let private readDebuggeeModule (m: DkmClrModuleInstance) (ptr: nativeint) (size: uint32) =
+    let md = MetadataReader(NativePtr.ofNativeInt ptr, int size)
 
     if not md.IsAssembly then
-        None
+        None, true
     else
         let fsharpResources =
             MetadataTypes.embeddedResources md
             |> List.filter (fun (name, _) -> name.StartsWith "FSharp")
             |> List.map snd
 
-        let resources =
+        let resources, complete =
             if fsharpResources.IsEmpty then
-                []
+                [], true
             else
                 try
                     let read = readImage m
@@ -94,12 +101,12 @@ let private debuggeeModule (m: DkmClrModuleInstance) =
                     let resources =
                         fsharpResources |> List.map (fun offset -> offset, PeImage.readResource read cli offset)
 
-                    log $"F# resources of {m.Name} ({m.MemoryLayout}): {[ for offset, blob in resources -> (offset, blob.Length) ]}"
-                    resources
+                    Log.verbose "EE" (fun () -> $"F# resources of {m.Name} ({m.MemoryLayout}): {[ for offset, blob in resources -> (offset, blob.Length) ]}")
+                    resources, true
                 with e ->
                     // Without them the module still imports, as plain .NET metadata.
                     Log.exn "EE" $"F# resources of {m.Name}" e
-                    []
+                    [], false
 
         let fileName =
             if String.IsNullOrEmpty m.FullName then
@@ -112,11 +119,39 @@ let private debuggeeModule (m: DkmClrModuleInstance) =
         Some(
             {
                 FileName = fileName
-                Image = DebuggeeImage.Metadata(metadata, resources)
+                // The one copy of the metadata: the session keeps it and reads it later, on another
+                // thread, when Concord's buffer can be gone.
+                Image = DebuggeeImage.Metadata(copyBlob ptr size, resources)
             },
             name,
             references
-        )
+        ),
+        complete
+
+/// A module as `readDebuggeeModule` read it, kept with the module instance, so that a new session
+/// (after another module loads) reads only the new modules. It is for the metadata buffer at
+/// `Pointer` with `Size`: Edit and Continue (Hot Reload) changes the buffer, and the module is then
+/// read again.
+[<AllowNullLiteral>]
+type private DebuggeeModuleItem(pointer: nativeint, size: uint32, value: (DebuggeeModule * string * AssemblyName list) option) =
+    inherit DkmDataItem()
+    member _.Pointer = pointer
+    member _.Size = size
+    member _.Value = value
+
+let private debuggeeModule (m: DkmClrModuleInstance) =
+    let mutable size = 0u
+    let ptr = m.GetMetaDataBytesPtr(&size)
+
+    match m.GetDataItem<DebuggeeModuleItem>() with
+    | item when not (isNull item) && item.Pointer = ptr && item.Size = size -> item.Value
+    | _ ->
+        let value, complete = readDebuggeeModule m ptr size
+
+        if complete then
+            m.SetDataItem(DkmDataCreationDisposition.CreateAlways, DebuggeeModuleItem(ptr, size, value))
+
+        value
 
 /// An assembly referenced by the loaded ones but not loaded itself (e.g. the `netstandard` facade a
 /// netstandard FSharp.Core references): its metadata from the debugger, which finds it as the
@@ -162,7 +197,7 @@ let private waitForCompilerWarmUp () =
 /// built on a thread-pool thread (docs/DESIGN.md §6.9). Replacing it, or the AppDomain going away,
 /// releases the session, once built.
 [<AllowNullLiteral>]
-type private SessionItem(modules: string, session: Task<EvaluationSession>) =
+type private SessionItem(modules: Guid[], session: Task<EvaluationSession>) =
     inherit DkmDataItem()
     member _.Modules = modules
     member _.Session = session
@@ -173,9 +208,12 @@ type private SessionItem(modules: string, session: Task<EvaluationSession>) =
                 (t.Result :> IDisposable).Dispose())
         |> ignore
 
-/// What a session item is built for: the modules loaded in the AppDomain.
+/// What a session item is built for: the modules loaded in the AppDomain, by MVID in order (compared
+/// as arrays, element by element).
 let private modulesKey (modules: DkmClrModuleInstance[]) =
-    modules |> Array.map (fun m -> string m.Mvid) |> Array.sort |> String.concat ","
+    let mvids = modules |> Array.map _.Mvid
+    Array.sortInPlace mvids
+    mvids
 
 /// The session item of the frame's AppDomain for the modules loaded in it now. A new one copies the
 /// modules out of the debuggee here, while it is stopped (the debugger's buffers of referenced
@@ -323,15 +361,14 @@ let private pdbScope (address: DkmClrInstructionAddress) =
 /// a method changed by Edit and Continue (the image has its first version) and when it can't be read.
 let private moveNextIL (address: DkmClrInstructionAddress) =
     let m = address.ModuleInstance
-    use provider = metadataReader (moduleMetadata m)
-    let md = provider.GetMetadataReader()
-    let methodDef = md.GetMethodDefinition(MetadataTypes.methodHandle address.MethodId.Token)
 
-    if
-        md.GetString methodDef.Name <> "MoveNext"
-        || methodDef.RelativeVirtualAddress = 0
-        || address.MethodId.Version > 1u
-    then
+    let rva =
+        readMetadata m (fun md ->
+            let methodDef = md.GetMethodDefinition(MetadataTypes.methodHandle address.MethodId.Token)
+
+            if md.GetString methodDef.Name <> "MoveNext" then 0 else methodDef.RelativeVirtualAddress)
+
+    if rva = 0 || address.MethodId.Version > 1u then
         [||]
     else
         let read = readImage m
@@ -339,7 +376,7 @@ let private moveNextIL (address: DkmClrInstructionAddress) =
         let toImageOffset =
             if string m.MemoryLayout = "MemoryPE" then id else (PeImage.cliResources read false).ToImageOffset
 
-        PeImage.readMethodIL read toImageOffset methodDef.RelativeVirtualAddress
+        PeImage.readMethodIL read toImageOffset rva
 
 let private aliasKind (kind: DkmClrAliasKind) =
     match kind with
@@ -350,15 +387,32 @@ let private aliasKind (kind: DkmClrAliasKind) =
     | DkmClrAliasKind.Variable -> Some AliasKind.Variable
     | _ -> None
 
+/// The display name of the debugger's intrinsics assembly, kept with the runtime instance.
+[<AllowNullLiteral>]
+type private IntrinsicsAssemblyItem(name: string) =
+    inherit DkmDataItem()
+    member _.Name = name
+
 /// The display name of the assembly with the debugger's intrinsic methods (aliases are read through it).
 let private intrinsicsAssembly (runtime: DkmClrRuntimeInstance) =
-    let mutable size = 0u
-    let metadata = copyBlob (runtime.GetIntrinsicAssemblyMetaDataBytesPtr(&size)) size
-    use provider = metadataReader metadata
-    (provider.GetMetadataReader().GetAssemblyDefinition().GetAssemblyName()).FullName
+    match runtime.GetDataItem<IntrinsicsAssemblyItem>() with
+    | null ->
+        let mutable size = 0u
+        let ptr = runtime.GetIntrinsicAssemblyMetaDataBytesPtr(&size)
+        let md = MetadataReader(NativePtr.ofNativeInt ptr, int size)
+        let name = md.GetAssemblyDefinition().GetAssemblyName().FullName
+        runtime.SetDataItem(DkmDataCreationDisposition.CreateAlways, IntrinsicsAssemblyItem name)
+        name
+    | item -> item.Name
 
-/// The context of the stopped frame: its method, local signature, locals, opens and the aliases.
-let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionContext) =
+/// The debugger's aliases in an inspection context ($exception, $ReturnValue, object IDs, variables
+/// of the Immediate window); null when there are none.
+let aliases (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionContext) =
+    address.RuntimeInstance.GetAliases inspectionContext
+
+/// The context of the stopped frame: its method, local signature, locals, opens and
+/// `debuggerAliases` (as `aliases` gives them).
+let frameWith (address: DkmClrInstructionAddress) (debuggerAliases: Collections.ObjectModel.ReadOnlyCollection<DkmClrAlias>) =
     let m = address.ModuleInstance
     let runtime = address.RuntimeInstance
 
@@ -383,7 +437,7 @@ let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionC
             [||]
 
     let aliases =
-        match runtime.GetAliases inspectionContext with
+        match debuggerAliases with
         | null -> []
         | aliases ->
             [
@@ -419,3 +473,7 @@ let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionC
         Aliases = aliases
         IntrinsicsAssembly = intrinsicsAssembly runtime
     }
+
+/// The context of the stopped frame: its method, local signature, locals, opens and the aliases.
+let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionContext) =
+    frameWith address (aliases address inspectionContext)

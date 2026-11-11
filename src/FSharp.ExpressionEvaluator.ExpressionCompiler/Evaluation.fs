@@ -1,5 +1,8 @@
 module internal FSharp.ExpressionEvaluator.Evaluation
 
+// FS0009: `fixed` and native pointers, to read metadata without a copy.
+#nowarn "9"
+
 open System
 open System.Collections.Immutable
 open System.IO
@@ -194,14 +197,16 @@ let private tryFindTypeDefByName (typeDefs: ILTypeDefs) (name: string) =
 let private tryFindMethod (ilModule: ILModuleDef) (token: int) =
     let rid = token &&& 0x00FFFFFF
 
-    let rec search (enclosing: ILTypeDef list) (typeDefs: ILTypeDef list) =
+    // `reversed` is the chain of enclosing types, innermost first: the path is made only on a hit.
+    let rec search (reversed: ILTypeDef list) (typeDefs: ILTypeDef list) =
         typeDefs
         |> List.tryPick (fun td ->
-            let path = enclosing @ [ td ]
-
             match td.Methods.AsList() |> List.tryFind (fun md -> md.MetadataIndex = rid) with
-            | Some md -> Some(path, md)
-            | None -> search path (td.NestedTypes.AsList()))
+            | Some md -> Some(List.rev (td :: reversed), md)
+            | None ->
+                match td.NestedTypes.AsList() with
+                | [] -> None
+                | nested -> search (td :: reversed) nested)
 
     search [] (ilModule.TypeDefs.AsList())
 
@@ -1131,15 +1136,31 @@ type private MetadataOnlyPEBuilder(metadata: byte[], resources: byte[]) =
 
     override _.GetDirectories() = directories
 
+/// Reads metadata in a byte array without a copy (ImmutableArray.Create copies the whole array).
+/// The array is pinned only while `read` runs: `read` must not keep the reader or values that
+/// refer to it.
+let private readMetadataBytes (metadata: byte[]) (read: MetadataReader -> 'T) =
+    use ptr = fixed metadata
+    read (MetadataReader(ptr, metadata.Length))
+
+/// Reads a PE image in a byte array without a copy, as `readMetadataBytes` does.
+let private readPEImage (image: byte[]) (read: PEReader -> 'T) =
+    use ptr = fixed image
+    use pe = new PEReader(ptr, image.Length)
+    read pe
+
+/// Reads the metadata of a module image without a copy, as `readMetadataBytes` does.
+let private readImageMetadata (image: DebuggeeImage) (read: MetadataReader -> 'T) =
+    match image with
+    | DebuggeeImage.Metadata(metadata, _) -> readMetadataBytes metadata read
+    | DebuggeeImage.PE image -> readPEImage image (fun pe -> read (pe.GetMetadataReader()))
+
 let private metadataOnlyImage (metadata: byte[]) (resources: (int * byte[]) list) =
     // Each resource is a length-prefixed blob at its offset in the resources directory. The IL
     // reader reads every embedded resource listed in the metadata, so resources that were not
     // provided get an empty blob at their offset.
     let allOffsets =
-        use provider =
-            MetadataReaderProvider.FromMetadataImage(ImmutableArray.Create<byte>(metadata))
-
-        MetadataTypes.embeddedResources (provider.GetMetadataReader()) |> List.map snd
+        readMetadataBytes metadata (fun md -> MetadataTypes.embeddedResources md |> List.map snd)
 
     let size =
         let provided =
@@ -1164,18 +1185,15 @@ type private SignatureType = { Type: ILType; Pinned: bool }
 
 /// Decodes a method's local signature (StandAloneSig) from the module's metadata, giving the same
 /// AbstractIL locals the IL reader would produce from the method body.
+/// `md` is used only while this runs; the result does not refer to it.
 let private decodeLocalSignature
     (g: TcGlobals.TcGlobals)
-    (metadata: byte[])
+    (md: MetadataReader)
     (scopeRef: ILScopeRef)
     (assemblyRefs: ILAssemblyRef list)
     (classTypars: int)
     (token: int)
     : ILLocals =
-    use provider =
-        MetadataReaderProvider.FromMetadataImage(ImmutableArray.Create<byte>(metadata))
-
-    let md = provider.GetMetadataReader()
     let plain t = { Type = t; Pinned = false }
 
     let fullName (ns: StringHandle) (name: StringHandle) =
@@ -1451,27 +1469,19 @@ let private ignoresAccessChecksTo (g: TcGlobals.TcGlobals) (assemblyNames: strin
 
 /// The token of a method's local signature, read from its body in a full image (0 when it has none).
 let private localSignatureTokenOf (image: byte[]) (methodToken: int) =
-    use pe = new PEReader(ImmutableArray.Create<byte>(image))
-    let md = pe.GetMetadataReader()
-    let methodDef = md.GetMethodDefinition(MetadataTypes.methodHandle methodToken)
+    readPEImage image (fun pe ->
+        let md = pe.GetMetadataReader()
+        let methodDef = md.GetMethodDefinition(MetadataTypes.methodHandle methodToken)
 
-    if methodDef.RelativeVirtualAddress = 0 then
-        0
-    else
-        let body = pe.GetMethodBody methodDef.RelativeVirtualAddress
-
-        if body.LocalSignature.IsNil then
+        if methodDef.RelativeVirtualAddress = 0 then
             0
         else
-            MetadataTokens.GetToken(StandaloneSignatureHandle.op_Implicit body.LocalSignature: EntityHandle)
+            let body = pe.GetMethodBody methodDef.RelativeVirtualAddress
 
-/// The metadata blob of a module image.
-let private metadataOf (image: DebuggeeImage) =
-    match image with
-    | DebuggeeImage.Metadata(metadata, _) -> metadata
-    | DebuggeeImage.PE image ->
-        use pe = new PEReader(ImmutableArray.Create<byte>(image))
-        pe.GetMetadata().GetContent().AsSpan().ToArray()
+            if body.LocalSignature.IsNil then
+                0
+            else
+                MetadataTokens.GetToken(StandaloneSignatureHandle.op_Implicit body.LocalSignature: EntityHandle))
 
 /// Operand sizes of the IL instructions by opcode (-1 for `switch`, whose operand gives its own size).
 let private operandSizes =
@@ -1500,12 +1510,8 @@ let private operandSizes =
 /// offsets of its first and last `stfld`. `il` is the method's code. In the `MoveNext` of a
 /// resumable state machine these delimit the scope of a hoisted variable: it is stored where it is
 /// bound, and cleared where its scope ends (LowerStateMachines, `RepresentBindingAsStateVar`).
-let private fieldStores (metadata: byte[]) (methodToken: int) (il: byte[]) : Map<string, int * int> =
-    use provider =
-        MetadataReaderProvider.FromMetadataImage(ImmutableArray.Create<byte>(metadata))
-
-    let md = provider.GetMetadataReader()
-
+/// `md` is used only while this runs.
+let private fieldStores (md: MetadataReader) (methodToken: int) (il: byte[]) : Map<string, int * int> =
     let declaring =
         md.GetMethodDefinition(MetadataTypes.methodHandle methodToken).GetDeclaringType()
 
@@ -2339,7 +2345,7 @@ type EvaluationSession
                 match modules.TryFind dllInfo.FileName with
                 | Some image when isStateMachine && frame.MethodIL.Length > 0 ->
                     try
-                        fieldStores (metadataOf image) frame.MethodToken frame.MethodIL
+                        readImageMetadata image (fun md -> fieldStores md frame.MethodToken frame.MethodIL)
                     with e ->
                         Log.exn "EE" $"Field stores of 0x{frame.MethodToken:X8}" e
                         Map.empty
@@ -2592,13 +2598,14 @@ type EvaluationSession
                     if token = 0 then
                         []
                     else
-                        decodeLocalSignature
-                            g
-                            (metadataOf image)
-                            dllInfo.ILScopeRef
-                            dllInfo.ILAssemblyRefs
-                            declaringType.GenericParams.Length
-                            token
+                        readImageMetadata image (fun md ->
+                            decodeLocalSignature
+                                g
+                                md
+                                dllInfo.ILScopeRef
+                                dllInfo.ILAssemblyRefs
+                                declaringType.GenericParams.Length
+                                token)
                 | None -> []
 
             // Locals whose type can't be imported are left out.

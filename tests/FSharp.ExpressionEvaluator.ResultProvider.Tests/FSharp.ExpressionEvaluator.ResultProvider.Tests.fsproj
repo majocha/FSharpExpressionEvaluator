@@ -14,6 +14,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\Shared\Log.fs" Link="Core\Log.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\Model.fs" Link="Core\Model.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Core\FSharpTypes.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpValues.fs" Link="Core\FSharpValues.fs" />
@@ -22,6 +23,8 @@
     <Compile Include="TypeNameTests.fs" />
     <Compile Include="PreviewTests.fs" />
     <Compile Include="ChildrenTests.fs" />
+    <Compile Include="TypeCacheTests.fs" />
+    <Compile Include="LogTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

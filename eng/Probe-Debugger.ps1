@@ -209,6 +209,13 @@ $env:FSHARP_EE_SPIKE_MARKERS = '1'
 $env:FSHARP_EE_LOG = $Log
 # Full names of rows, for -ExpectFullName. A VS that was already running keeps its environment.
 $env:FSHARP_EE_LOG_FULL_NAMES = '1'
+# Frame names and expression texts, for -ExpectLog.
+$env:FSHARP_EE_LOG_VERBOSE = '1'
+# The EE moves a log of more than 4 MB to '<log>.1' at its first line in a process (src\Shared\Log.fs).
+# Do that here at 1 MB, so that it does not occur during this run.
+if ((Test-Path $Log) -and (Get-Item $Log).Length -gt 1MB) {
+    try { Move-Item -LiteralPath $Log -Destination "$Log.1" -Force -ErrorAction Stop } catch { Write-Host "Cannot move the EE log: $_" }
+}
 # -ExpectLog reads only what this run writes.
 $logStart = if (Test-Path $Log) { (Get-Item $Log).Length } else { 0 }
 $vs = Get-CimInstance Win32_Process -Filter "Name='devenv.exe'" |
@@ -298,7 +305,8 @@ function Read-Log {
     if (-not (Test-Path $Log)) { return '' }
     $stream = [IO.File]::Open($Log, 'Open', 'Read', 'ReadWrite')
     try {
-        [void]$stream.Seek([Math]::Min($logStart, $stream.Length), 'Begin')
+        # A shorter log was moved to '<log>.1' and started again: all of it is from this run.
+        [void]$stream.Seek($(if ($stream.Length -lt $logStart) { 0 } else { $logStart }), 'Begin')
         (New-Object IO.StreamReader($stream)).ReadToEnd()
     } finally { $stream.Dispose() }
 }

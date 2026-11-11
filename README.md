@@ -293,6 +293,20 @@ The components log to `%FSHARP_EE_LOG%` if set, otherwise to
 `%LOCALAPPDATA%\FSharpExpressionEvaluator\ee.log`. `Probe-Debugger.ps1` sets
 `FSHARP_EE_LOG` to `artifacts\logs\ee.log` (its `-Log` parameter changes that).
 
+By default the log gets only errors, the lines that show when a component loads, and timings
+(sessions, compiler warm-up). These environment variables add more lines. Set them in the environment
+of devenv (and of msvsmon when it runs the result provider):
+
+| Variable | Adds |
+| --- | --- |
+| `FSHARP_EE_LOG_VERBOSE=1` | each call stack frame name (with argument values when the debugger shows them), each expression text, the F# resources of each module. These lines can contain your data. |
+| `FSHARP_EE_LOG_FULL_NAMES=1` | the full name of each row that the result provider lists |
+| `FSHARP_EE_TRACE=1` | the start and the completion of each asynchronous call |
+
+`Probe-Debugger.ps1` sets the first two. Several processes can write to the log at the same time.
+When the log is larger than 4 MB, the first line of a process moves it to `ee.log.1` (this replaces
+the previous `ee.log.1`) and starts a new `ee.log`.
+
 ## License
 
 [MIT](LICENSE).

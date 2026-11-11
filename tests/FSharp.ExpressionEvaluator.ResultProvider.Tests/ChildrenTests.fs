@@ -183,3 +183,57 @@ let ``only array elements and record fields are editable`` () =
     Assert.Equal<(string * bool) list>([ "[0]", false ], editable (Set.ofList [ 1 ]))
     // Without a full name, nothing to assign to.
     Assert.Equal<(string * bool) list>([ "[0]", false ], FSharpValues.tryChildren FSharpValues.defaultOptions None (live [| 1 |]) |> Option.get |> List.map (fun c -> c.Name, c.Editable))
+
+/// An int array of `length` elements that does not exist: it counts the elements that are read.
+type private HugeArray(length: int) =
+    let template = live [| 0 |]
+    member val Reads = 0 with get, set
+
+    interface IValue with
+        member _.Type = template.Type
+        member _.IsNull = false
+        member _.Error = null
+        member _.HostValue = null
+        member _.Field _ = failwith "an array has no fields"
+        member _.ArrayLength = length
+
+        member this.Element i =
+            this.Reads <- this.Reads + 1
+            live i
+
+        member _.FallbackDisplay() = "int[]"
+
+[<Fact>]
+let ``array children are made only for the rows that are read`` () =
+    // Two billion elements: a row for each would need far more memory than the test has.
+    let array = HugeArray(2_000_000_000)
+    let children = FSharpValues.tryChildPages FSharpValues.defaultOptions (Some "v") array |> Option.get
+
+    Assert.Equal(2_000_000_000, children.Count)
+    Assert.Equal(0, array.Reads)
+
+    let page = FSharpValues.Paged.page 1_999_999_998 100 children
+    Assert.Equal<string list>([ "[1999999998]"; "[1999999999]" ], [ for c in page -> c.Name ])
+    Assert.Equal<string option list>([ Some "v[1999999998]"; Some "v[1999999999]" ], [ for c in page -> c.FullName ])
+    Assert.True(page |> Array.forall _.Editable)
+    // The values are read when the rows are evaluated, not when they are made.
+    Assert.Equal(0, array.Reads)
+    Assert.Equal<obj list>([ box 1_999_999_998; box 1_999_999_999 ], [ for c in page -> c.Value.Value.HostValue ])
+    Assert.Equal(2, array.Reads)
+
+[<Fact>]
+let ``pages of children are the rows from the start index on`` () =
+    let children = FSharpValues.tryChildPages FSharpValues.defaultOptions (Some "v") (live [| 10..10..100 |]) |> Option.get
+    let names start count = [ for c in FSharpValues.Paged.page start count children -> c.Name ]
+
+    Assert.Equal(10, children.Count)
+    Assert.Equal<string list>([ "[0]"; "[1]"; "[2]" ], names 0 3)
+    Assert.Equal<string list>([ "[8]"; "[9]" ], names 8 5)
+    Assert.Equal<string list>([], names 10 5)
+    Assert.Equal<string list>([], names 3 0)
+    // The debugger's first page, then the next ones, give each row once.
+    let all = [ yield! names 0 4; yield! names 4 4; yield! names 8 4 ]
+    Assert.Equal<string list>([ for i in 0..9 -> $"[{i}]" ], all)
+    // Other shapes page the same way.
+    let record = FSharpValues.tryChildPages FSharpValues.defaultOptions (Some "v") (live { X = 1; Y = 2 }) |> Option.get
+    Assert.Equal<string list>([ "Y" ], [ for c in FSharpValues.Paged.page 1 10 record -> c.Name ])

@@ -2572,6 +2572,27 @@ let private shapeCases: (string * ShapeCase) list =
         "lazy body", case (probed "lazy") [ "n", "int"; "doubled", "int" ] "doubled + n" None
 
         "custom builder's lambda", case (probed "builder") [ "a", "int"; "b", "int" ] "a + b" None
+
+        // `static let` values in generated frames of a class's members. The class of a closure or
+        // state machine is nested in the module's class: only its hoisted `this` tells which class it
+        // belongs to (``static let values are not in scope in a closure without the class's this``).
+        "lambda of an instance member that captures this, in a class in a module",
+        case
+            (probed "registryLambda")
+            [ "this", "Registry"; "x", "int" ]
+            "x * multiplier + name.Length + calls - calls"
+            (runWith
+                [ generatedInstance (sweepClosure (fun n -> n.StartsWith "ScaleAll@")) [ "this", box (SweepFixtures.Registry "reg") ]; box 2 ]
+                9)
+
+        "task of an instance member, in a class in a module",
+        case (probed "registryTask") [ "this", "Registry"; "n", "int" ] "n * multiplier + calls" None
+
+        "async of an instance member, in a class in a module",
+        case (probed "registryAsync") [ "this", "Registry"; "n", "int" ] "n * multiplier + calls" None
+
+        "seq of an instance member, in a class in a module",
+        case (probed "registrySeq") [ "this", "Registry"; "n", "int" ] "n * multiplier + calls" None
     ]
 
 /// The names of the frame shapes, for the theory.
@@ -2685,3 +2706,26 @@ let ``a fixed pointer local reads as a nativeptr`` () =
     match session.Value.CompileExpression(frameOf (methodOf sweep "fixedPointer"), "Microsoft.FSharp.NativeInterop.NativePtr.read p") with
     | Ok compiled -> Assert.Equal("int", compiled.ResultType)
     | Error diagnostics -> failwithf "%A" diagnostics
+
+[<Fact>]
+let ``static let values are not in scope in a closure without the class's this`` () =
+    // Nothing in the metadata names the class of these closures: they have no `this`, and their
+    // classes are nested in the module's class, or at namespace level in the file's startup class.
+    SweepNamespace.Counter.Run() |> ignore
+
+    for label, text in
+        [
+            "registryStaticLambda", "x * multiplier"
+            "registryPlainLambda", "x * multiplier"
+            "namespaceStaticLambda", "x * step"
+        ] do
+        let frameMethod, frame = probedSweepFrame label
+        Assert.DoesNotContain(frameMethod.DeclaringType.GetFields all, fun f -> f.Name = "this")
+
+        match session.Value.CompileLocals(frame, false) with
+        | Ok compiled -> Assert.Equal<string list>([ "x" ], compiled.Locals |> List.map _.Name)
+        | Error diagnostics -> failwithf "%s: %A" label diagnostics
+
+        match session.Value.CompileExpression(frame, text) with
+        | Ok _ -> failwithf "%s: '%s' compiled" label text
+        | Error diagnostics -> Assert.Equal(39, diagnostics.Head.Number)

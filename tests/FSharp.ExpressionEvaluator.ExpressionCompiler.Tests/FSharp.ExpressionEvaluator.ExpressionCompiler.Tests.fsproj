@@ -23,6 +23,7 @@
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\SessionBuild.fs" Link="Core\SessionBuild.fs" />
     <Compile Include="Fixtures.fs" />
     <Compile Include="SweepFixtures.fs" />
+    <Compile Include="SweepNamespaceFixtures.fs" />
     <Compile Include="MethodNameTests.fs" />
     <Compile Include="EvaluationIntrinsics.fs" />
     <Compile Include="StartupFixture.fs" />

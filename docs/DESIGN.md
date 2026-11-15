@@ -2583,10 +2583,29 @@ assignments in F# frames, live in VS.
       expressions cannot name it.
     - **`static let` values.** A class's `static let` values are static
       fields. Only instance fields were variables, so `table` gave FS0039 in
-      the class's members. Now the static fields of the frame's type are
-      variables that expressions can read and assign. They have no Locals
-      rows, as in C#. In a closure or a state machine, this is only for a
-      type that is not generic.
+      the class's members. Now the static fields of the class are variables
+      that expressions can read and assign. They have no Locals rows, as in
+      C#.
+      - **In a member of the class**, static or not, the class is the
+        frame's type.
+      - **In a closure or a state machine** (a lambda, `task`, `async`,
+        `seq`), the compiler never nests the generated class in the class
+        whose member made it. It nests it in the module's class, or at
+        namespace level in the file's `<StartupCode$…>` class. Only the
+        hoisted `this` field tells the class, so the static fields are
+        variables when the frame has that field. This is also correct for
+        a generic class, because the field's type has the frame's type
+        variables.
+      - **Not in scope:** a closure without `this`. This is a lambda of a
+        static member, or a lambda that uses nothing of `this`. Its class
+        has no field that tells the class. Its name (`Lookup@424`) gives
+        the member's name and line only, and other classes can have the
+        same. Such an expression gives FS0039.
+      - The first version of this item said that closures also saw the
+        static fields. No test checked it, and the live debugger showed
+        FS0039 in a lambda of an instance member. The code took the class
+        from the frame's enclosing types, which hold the module, not the
+        class.
     - **Limits.**
       - A local of a `fixed` pointer (`use p = fixed values`) is
         `native int` in IL, and nothing records the F# types of locals
@@ -2601,8 +2620,9 @@ assignments in F# frames, live in VS.
         `float<'u>` reads as `float`.
     - **Tests.** `frame shapes` (one case for each shape), `byref-like
       variables read and run` (through delegates, because reflection cannot
-      give or return a byref-like value), and `static let values read and
-      write as variables of the type's members`. The fallback tests of item
+      give or return a byref-like value), `static let values read and write
+      as variables of the type's members`, and `static let values are not in
+      scope in a closure without the class's this`. The fallback tests of item
       32 now use a local whose name F# cannot write, because no tested
       frame has a variable that fails.
     - **Not verified live yet.** The Locals row of a `Span<T>` (how the

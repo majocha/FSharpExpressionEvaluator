@@ -241,6 +241,87 @@ let private frames () =
     seqFrame () |> Seq.toList |> ignore
     asyncLambda [ "abc" ] |> Async.Parallel |> Async.RunSynchronously |> ignore
 
+/// Break X1: a `byref<int>` parameter, called with the address of a mutable local, and an ordinary
+/// second parameter. The row for `x` shows the value it points to; an edit of it changes `target`.
+let byrefParameter (x: byref<int>) (n: int) =
+    Debugger.Break()
+    x <- x + n
+    x
+
+/// Break X3: an instance member of a struct that reads its own fields (`this` is a byref).
+[<Struct>]
+type Segment =
+    { Low: int
+      High: int }
+
+    member this.Width(extra: int) =
+        Debugger.Break()
+        this.High - this.Low + extra
+
+/// Break X4: a `Span<int>` parameter, a `ReadOnlySpan<char>` local and an ordinary `int` local.
+let spans (span: Span<int>) =
+    let text = "hello".AsSpan()
+    let count = span.Length + text.Length
+    Debugger.Break()
+    count + span[0]
+
+/// Break X5: a parameter of a type with a unit-of-measure type parameter, called with `m`.
+let scaleDistance (distance: float<'u>) (factor: float) =
+    Debugger.Break()
+    distance * factor
+
+/// Breaks X6 (a static member) and X7 (a lambda inside an instance member) of a non-generic class
+/// with `static let` values, one of them mutable.
+type Registry(name: string) =
+    static let multiplier = 3
+    static let mutable calls = 0
+
+    static member Lookup(i: int) =
+        calls <- calls + 1
+        Debugger.Break()
+        i * multiplier + calls
+
+    member this.ScaleAll(xs: int list) =
+        xs
+        |> List.map (fun x ->
+            calls <- calls + 1
+            Debugger.Break()
+            x * multiplier + name.Length)
+
+/// Break X9: a lambda inside a static member of a class with `static let` values. It holds no `this`,
+/// so nothing in its metadata names the class: its `static let` values are not variables there.
+type StaticLambda =
+    static let factor = 2
+
+    static member ScaleAll(xs: int list) =
+        xs
+        |> List.map (fun x ->
+            Debugger.Break()
+            x * factor)
+
+/// Break X8: in a `seq { }` with a local of its own: `next` of the state machine isn't a row.
+let seqLocal (n: int) =
+    seq {
+        let doubled = n * 2
+        yield doubled
+        Debugger.Break()
+        yield doubled + 1
+    }
+
+let private shapes () =
+    let mutable target = 5
+    byrefParameter &target 2 |> ignore
+    // Break X2: the caller, after break X1: `target` holds what the byref wrote.
+    Debugger.Break()
+    { Low = 3; High = 10 }.Width 1 |> ignore
+    let numbers = [| 10; 20; 30 |]
+    spans (Span<int>(numbers)) |> ignore
+    scaleDistance 3.0<m> 2.0 |> ignore
+    Registry.Lookup 4 |> ignore
+    Registry("reg").ScaleAll [ 1 ] |> ignore
+    seqLocal 4 |> Seq.toList |> ignore
+    StaticLambda.ScaleAll [ 1 ] |> ignore
+
 [<EntryPoint>]
 let main argv =
     if Array.contains "--wait" argv then
@@ -251,6 +332,10 @@ let main argv =
 
     if Array.contains "--frames" argv then
         frames ()
+        exit 0
+
+    if Array.contains "--shapes" argv then
+        shapes ()
         exit 0
 
     // Top-level code of the other files runs on the first use of their values: breaks S1 and S2 with --startup.

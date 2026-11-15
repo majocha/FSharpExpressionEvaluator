@@ -37,6 +37,8 @@ param(
     [string[]] $ExpectType = @(),
     # Checks 'break: name => type': the type of that Locals row at that break.
     [string[]] $ExpectLocalType = @(),
+    # Checks 'break: name': the Locals list has no row with that name at that break.
+    [string[]] $ExpectNoLocal = @(),
     # Checks 'break: row / child => value': the value of a child of that Locals row at that break.
     [string[]] $ExpectLocalChild = @(),
     # Checks 'break: row / child [/ child...] => full name': the full name of a row under a Locals row, the
@@ -62,6 +64,9 @@ param(
     # Run TestDebuggee with --frames: only the breaks F1-F5 in compiler-generated code (lambdas, an
     # inner function, `async`, `seq`), for their call stack names.
     [switch] $Frames,
+    # Run TestDebuggee with --shapes: only the breaks X1-X7, one per shape the expression compiler
+    # handles specially (byref, struct member, Span, unit of measure, static let, seq).
+    [switch] $Shapes,
     # Defaults to artifacts\logs\ee.log.
     [string] $Log,
     [switch] $KeepVsOpen,
@@ -100,6 +105,10 @@ $typeExpectations = @($ExpectType | ForEach-Object { $_ -split ';;' } | Where-Ob
 $localTypeExpectations = @($ExpectLocalType | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectLocalType '$_' is not 'break: name => type'." }
     [pscustomobject]@{ Break = [int]$Matches[1]; Name = $Matches[2]; Type = $Matches[3] }
+})
+$noLocalExpectations = @($ExpectNoLocal | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*$') { throw "-ExpectNoLocal '$_' is not 'break: name'." }
+    [pscustomobject]@{ Break = [int]$Matches[1]; Name = $Matches[2] }
 })
 $localChildExpectations = @($ExpectLocalChild | ForEach-Object { $_ -split ';;' } | Where-Object { $_ } | ForEach-Object {
     if ($_ -notmatch '^\s*(\d+)\s*:\s*(.+?)\s*/\s*(.+?)\s*=>\s*(.*?)\s*$') { throw "-ExpectLocalChild '$_' is not 'break: row / child => value'." }
@@ -268,7 +277,7 @@ if ($Reuse) {
 
     # Start the debuggee; it prints its PID once the runtime is up, then spins until a debugger attaches.
     $stdout = [IO.Path]::GetTempFileName()
-    $debuggeeArguments = '--wait' + $(if ($Startup) { ' --startup' } else { '' }) + $(if ($Frames) { ' --frames' } else { '' })
+    $debuggeeArguments = '--wait' + $(if ($Startup) { ' --startup' } else { '' }) + $(if ($Frames) { ' --frames' } else { '' }) + $(if ($Shapes) { ' --shapes' } else { '' })
     $debuggee = Start-Process $exe -ArgumentList $debuggeeArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout
     Wait-Until { (Get-Content $stdout -Raw -ErrorAction SilentlyContinue) -match 'PID' } 30 'debuggee start'
 
@@ -422,6 +431,10 @@ $assigned = @{}
             $child = @($children | Where-Object { $_.Name -ceq $check.Child } | Select-Object -First 1)
             $actual = if ($child) { $child[0].Value } elseif ($row) { 'no such child' } else { 'no such row' }
             Test-Check "break $i : Locals row $($check.Row) / $($check.Child) => $($check.Value)" ($child -and $actual -ceq $check.Value) $actual
+        }
+        foreach ($check in @($noLocalExpectations | Where-Object { $_.Break -eq $i })) {
+            $row = @($locals | Where-Object { $_.Name -ceq $check.Name })
+            Test-Check "break $i : no Locals row $($check.Name)" ($row.Count -eq 0) $(if ($row.Count) { "a row $($check.Name) = $($row[0].Value)" } else { '' })
         }
         foreach ($check in $hereLocalTypes) {
             $row = @($locals | Where-Object { $_.Name -ceq $check.Name } | Select-Object -First 1)

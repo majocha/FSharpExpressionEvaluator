@@ -2631,46 +2631,54 @@ type EvaluationSession
                 originalThisFields @ (ownFields |> List.map (fun (f, _, _) -> f))
 
             // A class's `static let` values are static fields, in scope in all of its members, as in
-            // source, and in closures and state machines inside them. Only in a type that isn't
-            // generic when the frame is generated: a generated type's typars need not be its type's.
+            // source, and in closures and state machines inside them.
             let staticFieldVariables =
-                match List.tryLast entities with
-                | Some entity when not entity.IsModuleOrNamespace ->
-                    let td = enclosing[entities.Length - 1]
+                // The class whose member the frame is in, as an IL type in the frame's type variables,
+                // and its definition.
+                let owner =
+                    if not isGeneratedFrame then
+                        match List.tryLast entities with
+                        | Some entity when not entity.IsModuleOrNamespace -> Some(thisILType, declaringType)
+                        | _ -> None
+                    else
+                        // The class of a closure or state machine is nested in the module's class, or
+                        // at namespace level in the file's `<StartupCode$…>` class: never in the class
+                        // whose member made it. Its hoisted `this` is of that class. Without one (a
+                        // lambda of a static member, or one that uses nothing of `this`), nothing in
+                        // the metadata names the class: the generated name (`Lookup@424`) has the
+                        // member's name and line only, which other classes can share. Those frames
+                        // don't see the static fields.
+                        declaringType.Fields.AsList()
+                        |> List.tryFind (fun f -> not f.IsStatic && f.Name = "this")
+                        |> Option.bind (fun f ->
+                            let ownerType = instILType thisILType.GenericArgs (rescopeILType dllInfo.ILScopeRef f.FieldType)
 
-                    let ownerType =
-                        if not isGeneratedFrame then
-                            Some thisILType
-                        elif td.GenericParams.IsEmpty then
-                            let tref =
-                                mkRefForNestedILTypeDef dllInfo.ILScopeRef (List.take (entities.Length - 1) enclosing, td)
+                            if ownerType.IsNominal then
+                                tryFindTypeDef ownerType.TypeRef |> Option.map (fun td -> ownerType, td)
+                            else
+                                None)
 
-                            Some(if td.IsStruct then mkILValueTy tref [] else mkILBoxedTy tref [])
-                        else
-                            None
+                match owner with
+                | Some(ownerType, td) ->
+                    td.Fields.AsList()
+                    |> List.filter (fun f ->
+                        f.IsStatic
+                        && not f.IsLiteral
+                        && not (f.Name.Contains "@")
+                        && not (f.Name.StartsWith "_"))
+                    |> List.choose (fun f ->
+                        let formalType = rescopeILType dllInfo.ILScopeRef f.FieldType
 
-                    match ownerType with
-                    | Some ownerType ->
-                        td.Fields.AsList()
-                        |> List.filter (fun f ->
-                            f.IsStatic
-                            && not f.IsLiteral
-                            && not (f.Name.Contains "@")
-                            && not (f.Name.StartsWith "_"))
-                        |> List.choose (fun f ->
-                            let formalType = rescopeILType dllInfo.ILScopeRef f.FieldType
+                        tryImportType (instILType ownerType.GenericArgs formalType)
+                        |> Option.map (fun ty ->
+                            let field = mkILFieldSpecInTy (ownerType, f.Name, formalType)
 
-                            tryImportType (instILType ownerType.GenericArgs formalType)
-                            |> Option.map (fun ty ->
-                                let field = mkILFieldSpecInTy (ownerType, f.Name, formalType)
-
-                                {
-                                    Var = mkVariable f.Name ty
-                                    Read = fun m -> mkAsmExpr ([ I_ldsfld(Nonvolatile, field) ], [], [], [ ty ], m)
-                                    Write = Some(fun m value -> mkAsmExpr ([ I_stsfld(Nonvolatile, field) ], [], [ value ], [], m))
-                                }))
-                    | None -> []
-                | _ -> []
+                            {
+                                Var = mkVariable f.Name ty
+                                Read = fun m -> mkAsmExpr ([ I_ldsfld(Nonvolatile, field) ], [], [], [ ty ], m)
+                                Write = Some(fun m value -> mkAsmExpr ([ I_stsfld(Nonvolatile, field) ], [], [ value ], [], m))
+                            }))
+                | None -> []
 
             // The debugger's intrinsic methods (docs/DESIGN.md §2), called as raw IL against the
             // assembly that defines them, so the checker never imports it.

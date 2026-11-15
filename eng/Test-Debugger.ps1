@@ -185,6 +185,49 @@ $runs = @(
         }
     }
     @{
+        Name = 'frame shapes'
+        Arguments = @{
+            Breaks = 9
+            Shapes = $true
+            Expressions = @()
+            Expect = @(
+                # A byref parameter reads as the value it points to.
+                '1: x => 5'
+                '1: x + 1 => 6'
+                '2: target => 11'
+                # A struct's `this` and its fields.
+                '3: this.Low => 3'
+                '3: this.High - this.Low => 7'
+                '3: this.Low + extra => 4'
+                # A Span and a ReadOnlySpan: the rows, and expressions on them.
+                '4: span.Length => 3'
+                '4: span[0] => 10'
+                '4: text.Length => 5'
+                '4: count + 1 => 9'
+                '5: distance * factor => 6.0'
+                # A class's `static let` values, in a static member and in a lambda of an instance member.
+                '6: multiplier => 3'
+                '6: multiplier + i => 7'
+                '6: calls => 1'
+                '7: multiplier * x => 3'
+                '7: calls => 51'
+                '8: doubled => 8'
+                # Expected error: a lambda that holds no `this` (here in a static member) has nothing in
+                # its metadata that names the class, so its `static let` values are not variables.
+                '9: factor => !error'
+            )
+            # The unit of a measure parameter is erased at run time: `float<'u>` is the right Type column.
+            ExpectType = @('5: distance * factor => float<''u>')
+            ExpectLocalType = @('1: x => int', '1: n => int', '3: this => TestDebuggee.Program.Segment', '4: span => Span<int>', '4: text => ReadOnlySpan<char>', '4: count => int', '5: distance => float<''u>', '8: doubled => int')
+            ExpectLocalChild = @('3: this / Low => 3')
+            ExpectNoLocal = @('8: next')
+            Expand = @('4: span', '4: text')
+            AssignLocal = @('1: x = 9')
+            Assign = @('calls=50')
+            ExpectEnd = $true
+        }
+    }
+    @{
         Name = 'breakpoint condition'
         Arguments = @{
             Breaks = 7

@@ -413,10 +413,63 @@ let customBuilder (n: int) =
         return a + b
     }
 
+/// `static let` values in closures and state machines of a class in a module: their classes are
+/// nested in the module's class, not in the class.
+type Registry(name: string) =
+    static let multiplier = 3
+    static let mutable calls = 0
+
+    static member Lookup(i: int) =
+        [ i ]
+        |> List.map (fun x ->
+            probe "registryStaticLambda"
+            x * multiplier)
+
+    /// The lambda captures `this`, for `name`.
+    member this.ScaleAll(xs: int list) =
+        xs
+        |> List.map (fun x ->
+            calls <- calls + 1
+            probe "registryLambda"
+            x * multiplier + name.Length)
+
+    /// The lambda captures nothing of `this`.
+    member this.Plain(xs: int list) =
+        xs
+        |> List.map (fun x ->
+            probe "registryPlainLambda"
+            x * multiplier)
+
+    member this.InTask(n: int) =
+        task {
+            do! Threading.Tasks.Task.Yield()
+            probe "registryTask"
+            return n * multiplier + name.Length
+        }
+
+    member this.InAsync(n: int) =
+        async {
+            do! Async.Sleep 0
+            probe "registryAsync"
+            return n * multiplier + name.Length
+        }
+
+    member this.InSeq(n: int) =
+        seq {
+            probe "registrySeq"
+            yield n * multiplier + name.Length
+        }
+
 /// Runs the generated fixtures once, so that `probes` has their frames.
 let runGenerated =
     lazy
         (nested3 1 |> ignore
+         (Registry "reg").ScaleAll [ 1 ] |> ignore
+         (Registry "reg").Plain [ 1 ] |> ignore
+         Registry.Lookup 1 |> ignore
+         ((Registry "reg").InTask 1).Wait()
+         (Registry "reg").InAsync 1 |> Async.RunSynchronously |> ignore
+         (Registry "reg").InSeq 1 |> Seq.toList |> ignore
          (Holder "v").Pair 2 |> ignore
          asyncShapes 1 [ 2 ] |> Async.RunSynchronously |> ignore
          (taskShapes 1 [ 2 ]).Wait()

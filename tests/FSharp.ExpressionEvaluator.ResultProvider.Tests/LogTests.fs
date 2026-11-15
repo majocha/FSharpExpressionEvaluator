@@ -58,6 +58,15 @@ let ``the log can be written while another process has it open`` () =
     Assert.Equal<string[]>([| "first"; "second" |], text.ReadToEnd().Split([| Environment.NewLine |], StringSplitOptions.RemoveEmptyEntries))
 
 [<Fact>]
+let ``the first line of a component in a process has the date and the version`` () =
+    let line = Log.startLine(DateTime(2026, 11, 11, 9, 5, 3, 25))
+    let lineFormat = @"^09:05:03\.025 \[[^\]]+:\d+:x(64|86)\] \[Log\] 2026-11-11, (?<assembly>\S+) (?<version>\S+)\r?\n$"
+    let m = Text.RegularExpressions.Regex.Match(line, lineFormat)
+    Assert.True(m.Success, line)
+    Assert.Equal(Reflection.Assembly.GetExecutingAssembly().GetName().Name, m.Groups["assembly"].Value)
+    Assert.Matches(@"^\d+\.\d+\.\d+", m.Groups["version"].Value)
+
+[<Fact>]
 let ``verbose lines are not made without FSHARP_EE_LOG_VERBOSE`` () =
     if not Log.isVerbose.Value then
         Log.verbose "test" (fun () -> failwith "made a verbose line")

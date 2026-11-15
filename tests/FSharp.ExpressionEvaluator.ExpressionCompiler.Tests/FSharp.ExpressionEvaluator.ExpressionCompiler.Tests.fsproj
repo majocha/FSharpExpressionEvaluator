@@ -20,6 +20,7 @@
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MethodNames.fs" Link="Core\MethodNames.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\Evaluation.fsi" Link="Core\Evaluation.fsi" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\Evaluation.fs" Link="Core\Evaluation.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\SessionBuild.fs" Link="Core\SessionBuild.fs" />
     <Compile Include="Fixtures.fs" />
     <Compile Include="MethodNameTests.fs" />
     <Compile Include="EvaluationIntrinsics.fs" />

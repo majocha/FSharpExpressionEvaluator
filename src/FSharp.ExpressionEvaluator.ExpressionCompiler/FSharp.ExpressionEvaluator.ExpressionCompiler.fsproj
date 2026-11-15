@@ -22,6 +22,7 @@
     <Compile Include="ReturnValues.fs" />
     <Compile Include="Evaluation.fsi" />
     <Compile Include="Evaluation.fs" />
+    <Compile Include="SessionBuild.fs" />
     <Compile Include="Debuggee.fs" />
     <Compile Include="FrameDecoder.fs" />
     <Compile Include="CompilerWarmUp.fs" />

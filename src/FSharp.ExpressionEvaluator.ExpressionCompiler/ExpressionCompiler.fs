@@ -109,8 +109,10 @@ type ExpressionCompiler() =
                 let sw = Diagnostics.Stopwatch.StartNew()
 
                 match Debuggee.session expressionTimeout address with
-                | None -> Some(Error stillLoading)
-                | Some session ->
+                | SessionBuild.Building -> Some(Error stillLoading)
+                // The build failed for the modules loaded now, and logged why.
+                | SessionBuild.Failed -> None
+                | SessionBuild.Ready session ->
                     let frame = Debuggee.frame address inspectionContext
 
                     match withoutFailingOpens frame (run session) with
@@ -144,9 +146,10 @@ type ExpressionCompiler() =
                 let sw = Diagnostics.Stopwatch.StartNew()
 
                 match Debuggee.session localsTimeout address with
-                // The C# query if it takes even longer.
-                | None -> None
-                | Some session ->
+                // The C# query if it takes even longer, or if the build failed.
+                | SessionBuild.Building
+                | SessionBuild.Failed -> None
+                | SessionBuild.Ready session ->
                     let runtime = address.RuntimeInstance
                     let debuggerAliases = Debuggee.aliases address inspectionContext
                     let frame = Debuggee.frameWith address debuggerAliases
@@ -157,7 +160,9 @@ type ExpressionCompiler() =
                         | aliases -> aliases |> Seq.map (fun a -> a.FullName, a.Name) |> Map.ofSeq
 
                     let displayName name =
-                        displayNames |> Map.tryFind name |> Option.defaultValue name
+                        match displayNames |> Map.tryFind name with
+                        | Some displayName when not (String.IsNullOrEmpty displayName) -> displayName
+                        | _ -> name
 
                     let returnValues =
                         frame.Aliases |> List.filter (fun a -> a.Kind = AliasKind.ReturnValue)
@@ -174,13 +179,23 @@ type ExpressionCompiler() =
                             Aliases = frame.Aliases |> List.filter listed
                         }
 
-                    match withoutFailingOpens frame (fun frame -> session.CompileLocals(frame, argumentsOnly)) with
+                    // CompileLocals tries again without the opens itself, before each variable alone.
+                    match session.CompileLocals(frame, argumentsOnly) with
                     | Ok compiled ->
                         Log.verbose "EC" (fun () ->
                             $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}, {sw.ElapsedMilliseconds} ms")
 
-                        let infos =
+                        // Concord throws on a null name, and the whole query would fall back to C#.
+                        let named, unnamed =
                             compiled.Locals
+                            |> List.partition (fun local ->
+                                not (String.IsNullOrEmpty(displayName local.Name) || String.IsNullOrEmpty local.FullName))
+
+                        for local in unnamed do
+                            log $"GetClrLocalVariableQuery: a variable without a name left out ({local.MethodName})"
+
+                        let infos =
+                            named
                             |> List.map (fun local ->
                                 DkmClrLocalVariableInfo.Create(
                                     displayName local.Name,

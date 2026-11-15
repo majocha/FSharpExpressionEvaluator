@@ -9,6 +9,7 @@ open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open Xunit
+open FSharp.ExpressionEvaluator
 open FSharp.ExpressionEvaluator.Evaluation
 open Microsoft.VisualStudio.Debugger.Clr
 
@@ -260,6 +261,39 @@ module EvalFixtures =
         member this.Get(n: int) = n
         member this.Map<'U>(f: 'T -> 'U) = f value
 
+    /// What byref parameters and locals point to: a struct and a reference type.
+    [<Struct>]
+    type Slot =
+        { mutable Count: int }
+
+        member this.Times(n: int) = this.Count * n
+
+    type Cell = { mutable Value: int }
+
+    let withByrefs (slot: byref<Slot>) (cell: byref<Cell>) (n: int) =
+        slot.Count <- slot.Count + n
+        cell.Value + n
+
+    let withInref (slot: inref<Slot>) (n: int) = slot.Count + n
+
+    let withOutref (result: outref<int>) (n: int) =
+        result <- n
+        n
+
+    /// As FSharp.Core's `moveNextRef`: a generic function with a byref parameter.
+    let byrefGeneric (x: byref<'T>) (n: int) = n
+
+    /// A local of a byref-like type, which a query can't read (FS0406).
+    let withSpan (values: int[]) (n: int) =
+        let span = System.Span<int>(values)
+        let total = span[0] + n
+        total
+
+    let withByrefLocal (slots: Slot[]) (n: int) =
+        let slot = &slots[0]
+        slot.Count <- slot.Count + n
+        slot.Count
+
 let private all = BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Instance ||| BindingFlags.Static
 
 /// What a debuggee process has loaded: the runtime's implementation assemblies, FSharp.Core and this assembly.
@@ -322,6 +356,7 @@ let private debuggeeModules framePE =
                     DebuggeeImage.PE(File.ReadAllBytes path)
                 else
                     metadataOnly path
+            IsOptional = false
         })
 
 let private session = lazy (EvaluationSession.Create(debuggeeModules false))
@@ -410,6 +445,90 @@ let private evaluateWithAliases aliases (frameMethod: MethodBase) (args: obj lis
 let ``the session reads every module from memory`` () =
     Assert.All(debuggeeModules false, fun m -> Assert.False(File.Exists m.FileName))
     Assert.Equal((box 3, "int"), evaluate (methodOf fixtures "add") [ 1; 2 ] "List.length moduleValue")
+
+/// Metadata blobs the debugger can give for an assembly that is not loaded, which are not an
+/// assembly's metadata: empty, cut short, and garbage.
+let private unreadableBlobs =
+    let xunit = typeof<FactAttribute>.Assembly.Location
+
+    let cut =
+        match metadataOnly xunit with
+        | DebuggeeImage.Metadata(metadata, _) -> Array.truncate (metadata.Length / 2) metadata
+        | DebuggeeImage.PE _ -> failwith "metadata expected"
+
+    [ "empty", [||]; "cut short", cut; "garbage", Array.init 4096 (fun i -> byte (i * 7919)) ]
+
+/// The metadata of an F# assembly and its F# resources (offsets in the resources directory).
+let private fsharpMetadata =
+    let compiler = Path.Combine(AppContext.BaseDirectory, "FSharp.ExpressionEvaluator.Compiler.dll")
+
+    match metadataOnly compiler with
+    | DebuggeeImage.Metadata(metadata, resources) ->
+        Assert.NotEmpty resources
+        metadata, resources
+    | DebuggeeImage.PE _ -> failwith "metadata expected"
+
+/// A not-loaded assembly as the debugger can give it.
+let private notLoaded isOptional image =
+    {
+        FileName = @"Z:\debuggee\not-loaded\FSharp.ExpressionEvaluator.Compiler.dll"
+        Image = image
+        IsOptional = isOptional
+    }
+
+[<Fact>]
+let ``an optional module that can't be imported is left out of the session`` () =
+    let add = methodOf fixtures "add"
+    let metadata, resources = fsharpMetadata
+
+    let images =
+        [
+            // An F# assembly that is not loaded: the debugger gives its metadata only, which lists
+            // F# resources it doesn't give.
+            yield "F# metadata only", DebuggeeImage.Metadata(metadata, [])
+            // Its F# resources there, but not readable (the session is built again without it).
+            yield "garbage F# resources", DebuggeeImage.Metadata(metadata, [ for offset, _ in resources -> offset, [| 1uy; 2uy; 3uy |] ])
+            for name, blob in unreadableBlobs do
+                yield name, DebuggeeImage.Metadata(blob, [])
+        ]
+
+    for name, image in images do
+        use session = EvaluationSession.Create(debuggeeModules false @ [ notLoaded true image ])
+
+        match session.CompileExpression(frameOf add, "x + y", localsAsParameters = true) with
+        | Ok compiled -> Assert.Equal("int", compiled.ResultType)
+        | Error diagnostics -> failwithf "%s: %A" name diagnostics
+
+    // Not optional, the F# one fails the session, as in the debugger: "Error opening binary file
+    // ... end of stream".
+    let e =
+        Assert.ThrowsAny<exn>(fun () ->
+            EvaluationSession.Create(debuggeeModules false @ [ notLoaded false (DebuggeeImage.Metadata(metadata, [])) ])
+            |> ignore)
+
+    Assert.Contains("end of stream", e.Message)
+
+[<Fact>]
+let ``a metadata blob is checked before it becomes a module`` () =
+    for name, metadata in unreadableBlobs do
+        Assert.True((assemblyMetadataError metadata).IsSome, name)
+
+    match metadataOnly typeof<FactAttribute>.Assembly.Location with
+    | DebuggeeImage.Metadata(metadata, _) -> Assert.Equal(None, assemblyMetadataError metadata)
+    | DebuggeeImage.PE _ -> failwith "metadata expected"
+
+[<Fact>]
+let ``a failed session build answers at once, without its exception`` () =
+    let failed = Threading.Tasks.Task.Run(fun () -> failwith "import failed": int)
+    let sw = Diagnostics.Stopwatch.StartNew()
+    Assert.Equal(SessionBuild.Failed, SessionBuild.state failed (TimeSpan.FromSeconds 10.0))
+    Assert.Equal(SessionBuild.Failed, SessionBuild.state failed (TimeSpan.FromSeconds 10.0))
+    Assert.True(sw.Elapsed < TimeSpan.FromSeconds 5.0, $"{sw.Elapsed}")
+
+    let building = Threading.Tasks.TaskCompletionSource<int>()
+    Assert.Equal(SessionBuild.Building, SessionBuild.state building.Task (TimeSpan.FromMilliseconds 10.0))
+    building.SetResult 3
+    Assert.Equal(SessionBuild.Ready 3, SessionBuild.state building.Task (TimeSpan.FromMilliseconds 10.0))
 
 [<Fact>]
 let ``constant expression`` () =
@@ -505,6 +624,7 @@ let private netfxSession =
                  {
                      FileName = Path.Combine(dir, Path.GetFileName path)
                      Image = metadataOnly path
+                     IsOptional = false
                  })
 
          let lengthToken =
@@ -1504,6 +1624,152 @@ let ``locals start with the debugger's aliases`` () =
     let _, value, ty, _ = List.head locals
     Assert.Equal("boom", (value :?> exn).Message)
     Assert.Equal("System.InvalidOperationException", ty)
+
+[<Fact>]
+let ``variables without a name are not listed`` () =
+    let add = methodOf fixtures "add"
+
+    let alias name =
+        {
+            Name = name
+            Kind = AliasKind.ReturnValue
+            TypeName = typeof<int>.AssemblyQualifiedName
+            IsMutable = false
+        }
+
+    let frame =
+        { frameOf add with
+            Aliases = [ alias null; alias ""; alias "$ReturnValue1" ]
+            Locals = [ { Name = ""; Slot = 0; Start = 0 } ]
+        }
+
+    for argumentsOnly in [ false; true ] do
+        match session.Value.CompileLocals(frame, argumentsOnly) with
+        | Ok compiled ->
+            let expected = if argumentsOnly then [ "x"; "y" ] else [ "$ReturnValue1"; "x"; "y" ]
+            Assert.Equal<string list>(expected, compiled.Locals |> List.map _.Name)
+            Assert.All(compiled.Locals, fun l -> Assert.False(String.IsNullOrEmpty l.FullName))
+        | Error diagnostics -> failwithf "%A" diagnostics
+
+    match session.Value.CompileExpression(frame, "x + y") with
+    | Ok compiled -> Assert.Equal("int", compiled.ResultType)
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+[<Fact>]
+let ``byref parameters read as the values they point to`` () =
+    let withByrefs = methodOf fixtures "withByrefs"
+    let slot: EvalFixtures.Slot = { Count = 3 }
+    let cell: EvalFixtures.Cell = { Value = 4 }
+    let args = [ box slot; box cell; box 2 ]
+
+    Assert.Equal((box 3, "int"), evaluate withByrefs args "slot.Count")
+    Assert.Equal((box 6, "int"), evaluate withByrefs args "cell.Value + n")
+    Assert.Equal((box slot, "Slot"), evaluate withByrefs args "slot")
+
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "slot", box slot, "Slot", false; "cell", box cell, "Cell", false; "n", box 2, "int", false ],
+        localsOf (frameOf withByrefs) withByrefs args false
+    )
+
+    // An assignment stores through the byref.
+    let args = Array.ofList args
+    (queryMethod (assign true withByrefs "slot" "{ Count = n + 10 }")).Invoke(null, args) |> ignore
+    Assert.Equal(12, (args[0] :?> EvalFixtures.Slot).Count)
+    (queryMethod (assign true withByrefs "cell.Value" "n + 20")).Invoke(null, args) |> ignore
+    Assert.Equal(22, cell.Value)
+
+[<Fact>]
+let ``inref and outref parameters, and a byref parameter of a generic function`` () =
+    let withInref = methodOf fixtures "withInref"
+    let slot: EvalFixtures.Slot = { Count = 3 }
+    Assert.Equal((box 5, "int"), evaluate withInref [ box slot; box 2 ] "slot.Count + n")
+
+    // What an inref points to can't be changed.
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "slot", box slot, "Slot", true; "n", box 2, "int", false ],
+        localsOf (frameOf withInref) withInref [ box slot; box 2 ] false
+    )
+
+    let withOutref = methodOf fixtures "withOutref"
+    Assert.Equal((box 9, "int"), evaluate withOutref [ box 7; box 2 ] "result + n")
+
+    Assert.Equal<string list>(
+        [ "result"; "n" ],
+        localsOf (frameOf withOutref) withOutref [ box 7; box 2 ] false |> List.map (fun (n, _, _, _) -> n)
+    )
+
+    let byrefGeneric = methodOf fixtures "byrefGeneric"
+
+    match session.Value.CompileLocals(frameOf byrefGeneric, false) with
+    | Ok compiled -> Assert.Equal<string list>([ "x"; "n" ], compiled.Locals |> List.map _.Name)
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    Assert.Equal((box "a", "string"), evaluateGeneric [] [ typeof<string> ] byrefGeneric [ box "a"; box 1 ] "string x")
+
+[<Fact>]
+let ``byref locals read as the values they point to`` () =
+    let withByrefLocal = methodOf fixtures "withByrefLocal"
+    let frame = frameOf withByrefLocal
+    Assert.Equal<string list>([ "slot" ], frame.Locals |> List.map _.Name)
+    let slot: EvalFixtures.Slot = { Count = 3 }
+    let args = [ box [| slot |]; box 2; box slot ]
+
+    Assert.Equal((box 5, "int"), evaluate withByrefLocal args "slot.Count + n")
+
+    // A struct's `this` is a byref too.
+    let times = methodOf typeof<EvalFixtures.Slot> "Times"
+    Assert.Equal((box 5, "int"), evaluate times [ box slot; box 2 ] "this.Count + n")
+    Assert.Equal<string list>([ "this"; "n" ], localsOf (frameOf times) times [ box slot; box 2 ] false |> List.map (fun (n, _, _, _) -> n))
+
+    Assert.Equal<(string * obj * string * bool) list>(
+        [ "slots", box [| slot |], "Slot array", false; "n", box 2, "int", false; "slot", box slot, "Slot", false ],
+        localsOf frame withByrefLocal args false
+    )
+
+[<Fact>]
+let ``a variable the Locals query can't compile is left out, not the others`` () =
+    let withSpan = methodOf fixtures "withSpan"
+    let frame = frameOf withSpan
+    Assert.Equal<string list>([ "span"; "total" ], frame.Locals |> List.map _.Name)
+
+    // A byref-like local can't be read (FS0406), alone or with the others.
+    match session.Value.CompileExpression(frame, "span") with
+    | Ok _ -> failwith "span compiled"
+    | Error diagnostics -> Assert.Equal(406, diagnostics.Head.Number)
+
+    match session.Value.CompileLocals(frame, false) with
+    | Ok compiled ->
+        Assert.Equal<(string * string) list>(
+            [ "values", "int array"; "n", "int"; "total", "int" ],
+            compiled.Locals |> List.map (fun l -> l.Name, l.ResultType)
+        )
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+[<Fact>]
+let ``a failing open of the PDB costs one more compile, before the variables alone`` () =
+    let s = session.Value
+
+    // The variables (and [compiler generated]) each compile alone only after the query of all of
+    // them failed with and without the opens.
+    let compiles frame =
+        let before = s.CompileCount
+
+        let names =
+            match s.CompileLocals(frame, false) with
+            | Ok compiled -> compiled.Locals |> List.map _.Name
+            | Error diagnostics -> failwithf "%A" diagnostics
+
+        names, s.CompileCount - before
+
+    let badOpen frame = { frame with Opens = [ "No.Such.Namespace" ] }
+    let add = frameOf (methodOf fixtures "add")
+    Assert.Equal((([ "x"; "y" ], 1)), compiles add)
+    Assert.Equal((([ "x"; "y" ], 2)), compiles (badOpen add))
+
+    // span fails: all four rows, each alone, then the three that compile.
+    let withSpan = frameOf (methodOf fixtures "withSpan")
+    Assert.Equal((([ "values"; "n"; "total" ], 1 + 4 + 1)), compiles withSpan)
+    Assert.Equal((([ "values"; "n"; "total" ], 2 + 4 + 1)), compiles (badOpen withSpan))
 
 
 /// Timings for docs/DESIGN.md §6.9, written to the file FSHARP_EE_PERF names (nothing runs without

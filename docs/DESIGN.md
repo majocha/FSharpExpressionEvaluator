@@ -641,6 +641,10 @@ chain to C# (`expression.CompileExpression(...)` reaches Roslyn) and append
 during early milestones, **off** at 1.0. User errors (FS0039 and the like)
 are never retried as C#.
 
+A session that fails to build for the AppDomain's modules is kept: every
+query goes to C# at once until the modules change (§17, item 32). A Locals
+query that fails lists the variables that compile alone and logs the others.
+
 ---
 
 ## 7. Frame and instruction decoder
@@ -2485,6 +2489,65 @@ assignments in F# frames, live in VS.
       message). Watch expressions read them at breaks 1, 2 and 3 (`digits` is
       `string list`, `made` is `obj`), and break 4 edits `runningTotal` through
       its Locals row. All runs pass on net10.0 and net48.
+
+32. **Fixes from the evaluator's own log (§6.10, 2026-11-11).** The EE log
+    of real debug sessions showed failures where F# stopped and C# took over.
+    - **A not-loaded F# assembly stopped the session.** The session also
+      imports assemblies that loaded ones reference but that are not loaded
+      (`referencedModule`). For these, the debugger gives the metadata only.
+      An F# assembly lists its F# signature data, but the data is not there,
+      and the import failed with "Error opening binary file ... end of
+      stream". This stopped every query of the debug session (seen with
+      `FSharp.Compiler.Interactive.Settings` in dotnet/fsharp's tests). Now
+      such a module is optional (`DebuggeeModule.IsOptional`).
+      `EvaluationSession.Create` leaves out an optional module whose F#
+      resources are not available. If the import fails all the same, it
+      builds the session again without optional modules. `referencedModule`
+      also rejects an empty blob, or one that is not an assembly's metadata
+      (`assemblyMetadataError`).
+    - **A failed session is not built again.** Before, each evaluation built
+      the session again after a failure (one second or more each) and failed
+      the same way. Now the failed build stays with the AppDomain until its
+      modules change. The log has the failure once, and each evaluation goes
+      to C# at once (`SessionBuild.state`).
+    - **Byref values.** The checker sees the frame's values as free locals of
+      the query's lambda, and F# does not let a lambda capture a byref
+      (FS0406). So each frame of a function with a `byref`, `inref` or
+      `outref` parameter, a byref local, or a struct member (its `this`)
+      went to C#. Now such a variable reads as the value that it points to.
+      It is checked as a variable of that type, and after checking it reads
+      and writes through the byref, which is then an argument of the query
+      method. An assignment stores through the byref. What an `inref` points
+      to is read-only.
+    - **One variable that fails does not lose Locals.** When the Locals query
+      fails, `CompileLocals` first compiles it again without the PDB's opens
+      (an open can name a namespace of an assembly that is not loaded, and
+      then all variables fail). If that also fails, it compiles each variable
+      alone and lists those that compile. The log has each variable left out, by name, with its
+      error (not only with `FSHARP_EE_LOG_VERBOSE`). This occurs only after a
+      failure, so the usual query is not slower. When all variables fail
+      alone, the error stays. A byref-like local (`Span<T>`) is such a
+      variable: it has no row yet.
+    - **Variables without a name.** A debugger alias without a full name gave
+      a Locals row with a null full name, and Concord threw
+      (`DkmClrLocalVariableInfo.Create`). Now aliases and PDB locals without
+      a name are not variables. `compileLocals` also leaves out a row without
+      a name, and logs it.
+    - **The date in the log.** The first line of each component in a process
+      has the date, the assembly and its version (`Log.startLine`). The other
+      lines are as before.
+    - **Tests.** `an optional module that can't be imported is left out of
+      the session`, `a metadata blob is checked before it becomes a module`,
+      `a failed session build answers at once, without its exception`,
+      `byref parameters read as the values they point to`, `inref and outref
+      parameters, and a byref parameter of a generic function`, `byref locals
+      read as the values they point to`, `a variable the Locals query can't
+      compile is left out, not the others`, `a failing open of the PDB costs
+      one more compile, before the variables alone`, `variables without a name are not
+      listed`, and `the first line of a component in a process has the date
+      and the version`.
+    - **Not verified live yet.** The debugger's real blob for a not-loaded
+      assembly, and the Locals window and call stack of byref frames.
 
 **Next in M4**
 

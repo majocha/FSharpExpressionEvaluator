@@ -22,7 +22,15 @@ type DebuggeeModule =
         FileName: string
 
         Image: DebuggeeImage
+
+        /// The session can do without the module: an assembly that loaded ones reference but that
+        /// is not loaded itself. The session leaves it out when the compiler can't import it.
+        IsOptional: bool
     }
+
+/// Why a metadata blob is not an assembly's metadata that can be read, or None when it is. An
+/// empty blob is not.
+val assemblyMetadataError: metadata: byte[] -> string option
 
 /// A local variable of the frame that is in scope at the stop location (from the PDB).
 type FrameLocal =
@@ -223,9 +231,15 @@ type EvaluationSession =
     /// variable an inner one of the same name shadows is listed as `x (shadowed)`, read-only;
     /// expressions name it ``x (shadowed)``.
     /// With `argumentsOnly`, only the parameters (for the call stack's argument values).
+    /// When the query fails, it is compiled again without the frame's opens, then each variable
+    /// alone: the variables that fail alone are left out and logged.
     member CompileLocals:
         frame: FrameContext * argumentsOnly: bool * ?localsAsParameters: bool ->
             Result<CompiledLocals, EvaluationDiagnostic list>
+
+    /// How many query modules the session has compiled, for tests: a failed query costs more
+    /// than one.
+    member CompileCount: int
 
     /// Compiles `target <- value` in the context of a frame, as for the debugger's edits of a
     /// value: the frame's parameters, locals and the fields of `this` can be assigned. The query

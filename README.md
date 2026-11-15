@@ -294,7 +294,8 @@ The components log to `%FSHARP_EE_LOG%` if set, otherwise to
 `FSHARP_EE_LOG` to `artifacts\logs\ee.log` (its `-Log` parameter changes that).
 
 By default the log gets only errors, the lines that show when a component loads, and timings
-(sessions, compiler warm-up). These environment variables add more lines. Set them in the environment
+(sessions, compiler warm-up). The first line of each component in a process also has the date and
+the component's version. The names of Locals variables that do not compile are also logged. These environment variables add more lines. Set them in the environment
 of devenv (and of msvsmon when it runs the result provider):
 
 | Variable | Adds |

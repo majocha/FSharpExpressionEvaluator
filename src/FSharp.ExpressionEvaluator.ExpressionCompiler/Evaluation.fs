@@ -46,6 +46,7 @@ type DebuggeeModule =
     {
         FileName: string
         Image: DebuggeeImage
+        IsOptional: bool
     }
 
 type FrameLocal = { Name: string; Slot: int; Start: int }
@@ -776,19 +777,28 @@ let private rewriting intercept transform rewriteQuotations =
 
 /// Replaces reads and writes of the given Vals with expressions built at their range: field
 /// variables become field loads and stores on `this` (as class `let` fields are compiled), aliases
-/// become calls to the debugger's intrinsic methods.
-let private replaceVariables (reads: (Val * (range -> Expr)) list) (writes: (Val * (range -> Expr -> Expr)) list) expr =
+/// become calls to the debugger's intrinsic methods. The address of a variable in `addresses` (as
+/// the checker takes it for a struct's field or member) becomes the given address.
+let private replaceVariables
+    (reads: (Val * (range -> Expr)) list)
+    (writes: (Val * (range -> Expr -> Expr)) list)
+    (addresses: (Val * (range -> Expr)) list)
+    expr
+    =
     match reads, writes with
     | [], [] -> expr
     | _ ->
         let readsByStamp = reads |> List.map (fun (v, f) -> v.Stamp, f) |> dict
         let writesByStamp = writes |> List.map (fun (v, f) -> v.Stamp, f) |> dict
+        let addressesByStamp = addresses |> List.map (fun (v, f) -> v.Stamp, f) |> dict
 
         let intercept recurse (e: Expr) =
             match e with
             | Expr.Val(vref, _, m) when readsByStamp.ContainsKey vref.Stamp ->
                 let read = readsByStamp[vref.Stamp]
                 Some(read m)
+            | Expr.Op(TOp.LValueOp(LAddrOf _, vref), _, [], m) when addressesByStamp.ContainsKey vref.Stamp ->
+                Some(addressesByStamp[vref.Stamp] m)
             | Expr.Op(TOp.LValueOp(LSet, vref), _, [ value ], m) when writesByStamp.ContainsKey vref.Stamp ->
                 let write = writesByStamp[vref.Stamp]
                 Some(write m (recurse value))
@@ -807,6 +817,7 @@ let private bindFrameValues
     (frameVals: Val list)
     (reads: (Val * (range -> Expr)) list)
     (writes: (Val * (range -> Expr -> Expr)) list)
+    (addresses: (Val * (range -> Expr)) list)
     (declare: (Expr -> TType -> Expr * TType) option)
     (contents: ModuleOrNamespaceContents)
     =
@@ -824,7 +835,7 @@ let private bindFrameValues
 
             match stripDebugPoints expr with
             | Expr.Lambda(_, _, _, [ unitArg ], body0, m, valueTy) ->
-                let body = replaceVariables reads writes body0
+                let body = replaceVariables reads writes addresses body0
 
                 // A declaration wraps the value: it declares the variable, then returns the value.
                 let body, bodyTy =
@@ -1036,7 +1047,9 @@ type private QueryRequest =
     /// A variable declared in the Immediate window, with its value.
     | Declaration of Declaration
     /// One query per variable the Locals window shows (only the parameters with argumentsOnly).
-    | Locals of argumentsOnly: bool
+    /// With `rows`, only the variables named there. `listed` receives the names of all of them,
+    /// before they are compiled.
+    | Locals of argumentsOnly: bool * rows: Set<string> option * listed: ResizeArray<string>
 
 /// Compiler temporaries the Locals window doesn't show (docs/DESIGN.md §6.4); expressions can
 /// still name them.
@@ -1142,6 +1155,24 @@ type private MetadataOnlyPEBuilder(metadata: byte[], resources: byte[]) =
 let private readMetadataBytes (metadata: byte[]) (read: MetadataReader -> 'T) =
     use ptr = fixed metadata
     read (MetadataReader(ptr, metadata.Length))
+
+let assemblyMetadataError (metadata: byte[]) =
+    try
+        readMetadataBytes metadata (fun md ->
+            if not md.IsAssembly then
+                Some "no assembly definition"
+            else
+                md.GetString(md.GetAssemblyDefinition().Name) |> ignore
+
+                for h in md.AssemblyReferences do
+                    md.GetString((md.GetAssemblyReference h).Name) |> ignore
+
+                for h in md.TypeDefinitions do
+                    md.GetString((md.GetTypeDefinition h).Name) |> ignore
+
+                None)
+    with e ->
+        Some e.Message
 
 /// Reads a PE image in a byte array without a copy, as `readMetadataBytes` does.
 let private readPEImage (image: byte[]) (read: PEReader -> 'T) =
@@ -1700,21 +1731,58 @@ type EvaluationSession
     let signatureTypeNames =
         Collections.Concurrent.ConcurrentDictionary<string * int, string option list * string option>()
 
+    let mutable compiles = 0
+
     interface IDisposable with
         member _.Dispose() =
             DebuggeeFileSystem.Instance.Remove files
 
     static member Create(modules: DebuggeeModule list) =
-        let files =
-            DebuggeeFileSystem.Instance.Add
-                [
-                    for m in modules ->
-                        m.FileName,
-                        lazy
-                            (match m.Image with
-                             | DebuggeeImage.PE image -> image
-                             | DebuggeeImage.Metadata(metadata, resources) -> metadataOnlyImage metadata resources)
-                ]
+        let images =
+            modules
+            |> List.map (fun m ->
+                m,
+                lazy
+                    (match m.Image with
+                     | DebuggeeImage.PE image -> image
+                     | DebuggeeImage.Metadata(metadata, resources) -> metadataOnlyImage metadata resources))
+
+        // One module that the compiler can't import fails the whole import. An F# assembly that is
+        // not loaded is such a module: the debugger gives its metadata only, without the F#
+        // signature data it lists, and the compiler reads that data. An optional module that lacks
+        // F# resources is left out. If the import fails all the same, it is done again without
+        // any optional module.
+        let lacksFSharpResources (m: DebuggeeModule) =
+            match m.Image with
+            | DebuggeeImage.PE _ -> false
+            | DebuggeeImage.Metadata(metadata, resources) ->
+                try
+                    readMetadataBytes metadata (fun md ->
+                        MetadataTypes.embeddedResources md
+                        |> List.exists (fun (name, offset) ->
+                            name.StartsWith "FSharp" && not (resources |> List.exists (fun (o, _) -> o = offset))))
+                with _ ->
+                    // Not metadata at all: the compiler ignores such a file.
+                    false
+
+        let images =
+            images
+            |> List.filter (fun (m, _) ->
+                if m.IsOptional && lacksFSharpResources m then
+                    Log.write "EE" $"{Path.GetFileName m.FileName} left out of the session: its F# resources are not available"
+                    false
+                else
+                    true)
+
+        try
+            EvaluationSession.Build images
+        with e when images |> List.exists (fun (m, _) -> m.IsOptional) ->
+            Log.exn "EE" "Session with the optional modules" e
+            EvaluationSession.Build(images |> List.filter (fun (m, _) -> not m.IsOptional))
+
+    static member private Build(images: (DebuggeeModule * Lazy<byte[]>) list) =
+        let modules = images |> List.map fst
+        let files = DebuggeeFileSystem.Instance.Add [ for m, image in images -> m.FileName, image ]
 
         let fsharpCore =
             files
@@ -1840,7 +1908,61 @@ type EvaluationSession
         |> Result.map (compiledExpression [])
 
     member this.CompileLocals(frame: FrameContext, argumentsOnly: bool, ?localsAsParameters: bool) =
-        this.Compile(frame, QueryRequest.Locals argumentsOnly, defaultArg localsAsParameters false, false, true, true)
+        let compile frame rows =
+            let listed = ResizeArray()
+
+            let compiled =
+                this.Compile(
+                    frame,
+                    QueryRequest.Locals(argumentsOnly, rows, listed),
+                    defaultArg localsAsParameters false,
+                    false,
+                    true,
+                    true
+                )
+
+            compiled, List.ofSeq listed
+
+        // The PDB's opens can name namespaces of assemblies the debuggee has not loaded. Then all
+        // variables fail, and the query is compiled again without the opens: the usual case, so it
+        // comes before the variables alone.
+        let frame, first =
+            match compile frame None with
+            | Result.Error _, _ when not frame.Opens.IsEmpty ->
+                let withoutOpens = { frame with Opens = [] }
+                withoutOpens, compile withoutOpens None
+            | first -> frame, first
+
+        // One variable that doesn't compile fails the query of all of them. Then each one is
+        // compiled alone, and those that fail are left out and logged (only on this path: the query
+        // of all of them is one compilation). When all fail alone, the error stays.
+        let compile = compile frame
+
+        let compiled =
+            match first with
+            | Result.Error diagnostics, listed when not listed.IsEmpty ->
+                let failing =
+                    listed
+                    |> List.choose (fun name ->
+                        match compile (Some(Set.singleton name)) with
+                        | Result.Error errors, _ -> Some(name, errors)
+                        | Result.Ok _, _ -> None)
+
+                if failing.IsEmpty || failing.Length = listed.Length then
+                    Result.Error diagnostics
+                else
+                    for name, errors in failing do
+                        let error =
+                            match errors with
+                            | d :: _ -> $"error FS{d.Number:D4}: {d.Message}"
+                            | [] -> "an error without diagnostics"
+
+                        Log.write "EE" $"Locals: '{name}' left out: {error}"
+
+                    fst (compile (Some(set listed - set (List.map fst failing))))
+            | compiled, _ -> compiled
+
+        compiled
         |> Result.map (fun (assembly, queries) ->
             {
                 Assembly = assembly
@@ -1860,6 +1982,8 @@ type EvaluationSession
                             CompilerGenerated = q.CompilerGenerated
                         })
             })
+
+    member _.CompileCount = compiles
 
     member _.SignatureTypeNames(assemblyName: string, methodToken: int) =
         signatureTypeNames.GetOrAdd(
@@ -2000,11 +2124,17 @@ type EvaluationSession
             {
                 FileName = fsharpCore
                 Image = DebuggeeImage.PE fsharpCoreImage
+                IsOptional = false
             }
             :: [
                 for name in needed do
                     match runtime[name] with
-                    | Some(path, image, _) -> { FileName = path; Image = DebuggeeImage.PE image }
+                    | Some(path, image, _) ->
+                        {
+                            FileName = path
+                            Image = DebuggeeImage.PE image
+                            IsOptional = false
+                        }
                     | None -> ()
             ]
 
@@ -2029,8 +2159,17 @@ type EvaluationSession
             refCellsAsContents: bool,
             fsharpParameterTypes: bool
         ) =
+        Threading.Interlocked.Increment &compiles |> ignore
         let g = tcGlobals
         let m = range0
+
+        // An expression can't name a variable without a name, and the Locals window can't list it
+        // (its full name would be null): the debugger can give an alias without a full name.
+        let frame =
+            { frame with
+                Aliases = frame.Aliases |> List.filter (fun a -> not (String.IsNullOrEmpty a.Name))
+                Locals = frame.Locals |> List.filter (fun l -> not (String.IsNullOrEmpty l.Name))
+            }
 
         let text =
             match request with
@@ -2571,17 +2710,65 @@ type EvaluationSession
                 |> List.mapi (fun i p ->
                     // A parameter keeps its position among the query's arguments: `obj` when its type
                     // can't be imported. The frame's F# value gives its F# type, with the units of
-                    // measure and abbreviations IL has lost, where that erases to the IL type.
+                    // measure and abbreviations IL has lost, where that erases to the IL type. IL
+                    // has one byref type: the F# type also tells an inref and an outref.
+                    let sameByref fsharpType ilType =
+                        isByrefTy g fsharpType
+                        && isByrefTy g ilType
+                        && typeEquivAux EraseAll g (destByrefTy g fsharpType) (destByrefTy g ilType)
+
                     let ty =
                         match tryImportType (rescopeILType dllInfo.ILScopeRef p.Type), List.tryItem i frameParameterTypes with
                         | Some ilType, Some fsharpType when
-                            fsharpParameterTypes && typeEquivAux EraseAll g fsharpType ilType
+                            fsharpParameterTypes
+                            && (typeEquivAux EraseAll g fsharpType ilType || sameByref fsharpType ilType)
                             ->
                             fsharpType
                         | Some ilType, _ -> ilType
                         | None, _ -> g.obj_ty_ambivalent
 
                     mkVariable (defaultArg p.Name $"arg{i}") ty)
+
+            // A byref parameter or local (`x: byref<T>`, `let x = &a[0]`) and a struct's `this` read
+            // and write as the value they point to. The checker must not see the byref itself in the
+            // query method's lambda (FS0406: a byref can't be captured); after `bindFrameValues` it
+            // is an argument of the method, which a byref can be. What an inref points to can't be
+            // assigned.
+            let byrefContents (v: Val) =
+                if isByrefTy g v.Type then
+                    let ty = destByrefTy g v.Type
+
+                    if isInByrefTy g v.Type then
+                        Some
+                            {
+                                Var = fst (mkLocal m v.LogicalName ty)
+                                Read = fun m -> mkAddrGet m (mkLocalValRef v)
+                                Write = None
+                            }
+                    else
+                        Some
+                            {
+                                Var = mkVariable v.LogicalName ty
+                                Read = fun m -> mkAddrGet m (mkLocalValRef v)
+                                Write = Some(fun m value -> mkAddrSet m (mkLocalValRef v) value)
+                            }
+                else
+                    None
+
+            let parameterContents =
+                thisVal @ parameterVals
+                |> List.choose (fun v -> byrefContents v |> Option.map (fun c -> v, c))
+
+            // `this` and the parameters as expressions name them.
+            let scopedThis, scopedParameters =
+                let scoped (vals: Val list) =
+                    vals
+                    |> List.map (fun v ->
+                        parameterContents
+                        |> List.tryPick (fun (p, contents) -> if valEq p v then Some contents.Var else None)
+                        |> Option.defaultValue v)
+
+                scoped thisVal, scoped parameterVals
 
             // The frame's locals, typed from its own local signature: decoded from the module's
             // metadata by token, or taken from the method body when the module is a full image.
@@ -2618,19 +2805,22 @@ type EvaluationSession
 
             let localSlots = typedLocals |> List.map (fun (l, _) -> l.Slot)
 
-            // Ref cell locals as their contents: the names bind to these, read and written through
-            // the frame's locals.
+            // Ref cell and byref locals as their contents: the names bind to these, read and written
+            // through the frame's locals.
             let contentsVariables =
                 localVals
                 |> List.choose (fun cell ->
-                    contentsTypeOf cell.Type
-                    |> Option.map (fun ty ->
-                        cell,
-                        {
-                            Var = mkVariable cell.LogicalName ty
-                            Read = fun m -> mkRefCellGet g m ty (exprForVal m cell)
-                            Write = Some(fun m value -> mkRefCellSet g m ty (exprForVal m cell) value)
-                        }))
+                    match byrefContents cell with
+                    | Some contents -> Some(cell, contents)
+                    | None ->
+                        contentsTypeOf cell.Type
+                        |> Option.map (fun ty ->
+                            cell,
+                            {
+                                Var = mkVariable cell.LogicalName ty
+                                Read = fun m -> mkRefCellGet g m ty (exprForVal m cell)
+                                Write = Some(fun m value -> mkRefCellSet g m ty (exprForVal m cell) value)
+                            }))
 
             let scopedLocals =
                 localVals
@@ -2646,7 +2836,7 @@ type EvaluationSession
             let frameRows =
                 let argumentsOnly =
                     match request with
-                    | QueryRequest.Locals argumentsOnly -> argumentsOnly
+                    | QueryRequest.Locals(argumentsOnly, _, _) -> argumentsOnly
                     | QueryRequest.Expression _
                     | QueryRequest.Declaration _ -> false
 
@@ -2663,7 +2853,10 @@ type EvaluationSession
                 let parameters =
                     parameterVals
                     |> List.filter (fun v -> not (isHiddenLocalName v.LogicalName || isTuplePiece v.LogicalName))
-                    |> List.map (fun v -> v.LogicalName, v.Type, (fun m -> exprForVal m v))
+                    |> List.map (fun v ->
+                        match parameterContents |> List.tryFind (fun (p, _) -> valEq p v) with
+                        | Some(_, contents) -> contents.Var.LogicalName, contents.Var.Type, contents.Read
+                        | None -> v.LogicalName, v.Type, (fun m -> exprForVal m v))
 
                 // Each with where its scope starts, and whether it is a field.
                 let fields =
@@ -2753,7 +2946,7 @@ type EvaluationSession
             // value, without asking a result provider.
             let compilerGenerated =
                 match request with
-                | QueryRequest.Locals false ->
+                | QueryRequest.Locals(false, _, _) ->
                     [
                         for v in parameterVals do
                             if isHiddenLocalName v.LogicalName then
@@ -2794,10 +2987,10 @@ type EvaluationSession
                     |> (if isStateMachine then List.sortBy fst else id)
                     |> List.map snd
 
-                thisVal
+                scopedThis
                 @ (originalThisFields |> List.map _.Var)
                 @ (captured |> List.map (fun (f, _, _) -> f.Var))
-                @ parameterVals
+                @ scopedParameters
                 @ hoistedAndLocals
                 @ (aliasVariables |> List.map _.Var)
                 @ (shadowedVariables |> List.map _.Var)
@@ -2809,7 +3002,7 @@ type EvaluationSession
                 match request with
                 | QueryRequest.Expression _
                 | QueryRequest.Declaration _ -> [ text, quoted ]
-                | QueryRequest.Locals argumentsOnly ->
+                | QueryRequest.Locals(argumentsOnly, shown, listed) ->
                     let names =
                         if argumentsOnly then
                             frameRowNames
@@ -2826,15 +3019,17 @@ type EvaluationSession
                                 yield! frameRowNames
                             ]
 
-                    let rows =
-                        match List.distinct names with
-                        | [] -> [ "", "()" ]
-                        | names -> names |> List.map (fun name -> name, $"``{name}``")
+                    let names =
+                        List.distinct names @ (if compilerGenerated.IsEmpty then [] else [ CompilerGeneratedRow ])
 
-                    if compilerGenerated.IsEmpty then
-                        rows
-                    else
-                        rows @ [ CompilerGeneratedRow, "(null: obj)" ]
+                    listed.AddRange names
+                    let isShown name = shown |> Option.forall (Set.contains name)
+
+                    match names |> List.filter isShown with
+                    | [] -> [ "", "()" ]
+                    | names ->
+                        names
+                        |> List.map (fun name -> name, (if name = CompilerGeneratedRow then "(null: obj)" else $"``{name}``"))
 
             let! parsed =
                 withDiagnostics BuildPhase.Parse (fun () ->
@@ -3010,7 +3205,11 @@ type EvaluationSession
                     implFile
 
                 let replaced =
-                    fieldVariables @ (contentsVariables |> List.map snd) @ aliasVariables @ shadowedVariables
+                    fieldVariables
+                    @ (parameterContents |> List.map snd)
+                    @ (contentsVariables |> List.map snd)
+                    @ aliasVariables
+                    @ shadowedVariables
 
                 let reads = replaced |> List.map (fun r -> r.Var, r.Read)
 
@@ -3018,8 +3217,16 @@ type EvaluationSession
                     (replaced |> List.choose (fun r -> r.Write |> Option.map (fun write -> r.Var, write)))
                     @ frameValueWrites
 
+                // The address of what a byref points to is the byref.
+                let addresses =
+                    [
+                        for v, contents in parameterContents @ contentsVariables do
+                            if isByrefTy g v.Type then
+                                contents.Var, (fun m -> exprForVal m v)
+                    ]
+
                 let rewrittenContents, checkedBodies =
-                    bindFrameValues g frameTypars frameVals reads writes (declaration denv) contents
+                    bindFrameValues g frameTypars frameVals reads writes addresses (declaration denv) contents
 
                 CheckedImplFile(
                     qualifiedNameOfFile,
@@ -3060,7 +3267,9 @@ type EvaluationSession
                 [
                     yield! frameVals
                     yield! fieldVariables |> List.map _.Var
-                    yield! contentsVariables |> List.map (fun (_, contents) -> contents.Var)
+                    for _, contents in parameterContents @ contentsVariables do
+                        if contents.Write.IsSome then
+                            contents.Var
                     for alias, variable in List.zip frame.Aliases aliasVariables do
                         if alias.Kind = AliasKind.Variable then
                             variable.Var

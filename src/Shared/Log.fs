@@ -89,9 +89,22 @@ let private processTag =
          let bits = if Environment.Is64BitProcess then "x64" else "x86"
          $"{p.ProcessName}:{p.Id}:{bits}")
 
+/// The first line of a component (an assembly that has this file) in a process. Lines have the
+/// time only; this one also has the date, and the component's assembly and version.
+let startLine (now: DateTime) =
+    let assembly = Reflection.Assembly.GetExecutingAssembly()
+
+    let version =
+        match Attribute.GetCustomAttribute(assembly, typeof<Reflection.AssemblyInformationalVersionAttribute>) with
+        | :? Reflection.AssemblyInformationalVersionAttribute as a -> a.InformationalVersion
+        | _ -> string (assembly.GetName().Version)
+
+    $"{now:``HH:mm:ss.fff``} [{processTag.Value}] [Log] {now:``yyyy-MM-dd``}, {assembly.GetName().Name} {version}{Environment.NewLine}"
+
 let write (source: string) (message: string) =
     try
-        let line = $"{DateTime.Now:``HH:mm:ss.fff``} [{processTag.Value}] [{source}] {message}{Environment.NewLine}"
+        let now = DateTime.Now
+        let line = $"{now:``HH:mm:ss.fff``} [{processTag.Value}] [{source}] {message}{Environment.NewLine}"
 
         lock gate (fun () ->
             withFileLock path (fun () ->
@@ -104,6 +117,8 @@ let write (source: string) (message: string) =
                     with _ ->
                         // Another process has the file open without delete sharing: it stays as it is.
                         ()
+
+                    append path (startLine now)
 
                 append path line))
     with _ ->

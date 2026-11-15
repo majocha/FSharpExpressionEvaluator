@@ -9,7 +9,6 @@ open System.IO
 open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
-open System.Runtime.ExceptionServices
 open System.Runtime.InteropServices
 open System.Text
 open System.Threading.Tasks
@@ -122,6 +121,7 @@ let private readDebuggeeModule (m: DkmClrModuleInstance) (ptr: nativeint) (size:
                 // The one copy of the metadata: the session keeps it and reads it later, on another
                 // thread, when Concord's buffer can be gone.
                 Image = DebuggeeImage.Metadata(copyBlob ptr size, resources)
+                IsOptional = false
             },
             name,
             references
@@ -155,18 +155,31 @@ let private debuggeeModule (m: DkmClrModuleInstance) =
 
 /// An assembly referenced by the loaded ones but not loaded itself (e.g. the `netstandard` facade a
 /// netstandard FSharp.Core references): its metadata from the debugger, which finds it as the
-/// runtime would.
+/// runtime would. The session can do without it: a blob that is empty or is not an assembly's
+/// metadata gives no module.
 let private referencedModule (appDomain: DkmClrAppDomain) (reference: AssemblyName) =
     try
         let mutable size = 0u
         let ptr = appDomain.GetMetaDataBytesPtr(reference.FullName, &size)
 
-        Some
-            {
-                // A path that names it but doesn't exist: nothing is read from disk.
-                FileName = Path.Combine(Path.GetTempPath(), "FSharpExpressionEvaluator", "not-loaded", reference.Name + ".dll")
-                Image = DebuggeeImage.Metadata(copyBlob ptr size, [])
-            }
+        if ptr = 0n || size = 0u then
+            log $"no metadata for {reference.FullName}: empty blob"
+            None
+        else
+            let blob = copyBlob ptr size
+
+            match Evaluation.assemblyMetadataError blob with
+            | Some error ->
+                log $"no metadata for {reference.FullName}: {size} bytes that are not an assembly's metadata ({error})"
+                None
+            | None ->
+                Some
+                    {
+                        // A path that names it but doesn't exist: nothing is read from disk.
+                        FileName = Path.Combine(Path.GetTempPath(), "FSharpExpressionEvaluator", "not-loaded", reference.Name + ".dll")
+                        Image = DebuggeeImage.Metadata(blob, [])
+                        IsOptional = true
+                    }
     with e ->
         log $"no metadata for {reference.FullName}: {e.GetType().Name}"
         None
@@ -195,7 +208,8 @@ let private waitForCompilerWarmUp () =
 
 /// The evaluation session of an AppDomain, kept with it while its set of modules stays the same,
 /// built on a thread-pool thread (docs/DESIGN.md §6.9). Replacing it, or the AppDomain going away,
-/// releases the session, once built.
+/// releases the session, once built. A build that failed stays, so that the same modules are not
+/// built again.
 [<AllowNullLiteral>]
 type private SessionItem(modules: Guid[], session: Task<EvaluationSession>) =
     inherit DkmDataItem()
@@ -246,7 +260,20 @@ let private sessionItem (address: DkmClrInstructionAddress) =
 
         let build () =
             let sw = Stopwatch.StartNew()
-            let session = EvaluationSession.Create debuggeeModules
+
+            let session =
+                try
+                    EvaluationSession.Create debuggeeModules
+                with e ->
+                    // Logged once: the item stays for these modules, and evaluations fall back to C#
+                    // until they change.
+                    Log.exn
+                        "EE"
+                        $"session for AppDomain {appDomain.Id} ({loaded.Length} loaded and {referenced.Length} referenced modules; C# until they change)"
+                        e
+
+                    reraise ()
+
             let created = sw.ElapsedMilliseconds
             // Imports may build beside the compiler's warm-up, but queries are compiled one at a time.
             waitForCompilerWarmUp ()
@@ -268,24 +295,16 @@ let private sessionItem (address: DkmClrInstructionAddress) =
 let warmUp (address: DkmClrInstructionAddress) = sessionItem address |> ignore
 
 /// The evaluation session for the frame's AppDomain: imports built from every module loaded in it,
-/// rebuilt when modules are loaded or unloaded. None if it is still being built after `timeout`.
+/// rebuilt when modules are loaded or unloaded. Building if it is still being built after
+/// `timeout`; Failed, at once, while the modules are those a build failed for.
 let session (timeout: TimeSpan) (address: DkmClrInstructionAddress) =
     let item = sessionItem address
 
-    let built =
-        try
-            item.Session.Wait timeout
-        with :? AggregateException as e ->
-            // Built again for the next evaluation.
-            address.ModuleInstance.AppDomain.RemoveDataItem<SessionItem>() |> ignore
-            ExceptionDispatchInfo.Capture(e.InnerException).Throw()
-            false
-
-    if built then
-        Some item.Session.Result
-    else
+    match SessionBuild.state item.Session timeout with
+    | SessionBuild.Building ->
         log $"session for AppDomain {address.ModuleInstance.AppDomain.Id}: still building after {timeout.TotalSeconds} s"
-        None
+        SessionBuild.Building
+    | state -> state
 
 /// The F# names of the types of the frame method's parameters and return type, where the F#
 /// signature says more than IL (`EvaluationSession.SignatureTypeNames`). Only from a session that is
@@ -443,6 +462,8 @@ let frameWith (address: DkmClrInstructionAddress) (debuggerAliases: Collections.
             [
                 for a in aliases do
                     match aliasKind a.Kind with
+                    // An expression can't name an alias without a full name.
+                    | Some _ when String.IsNullOrEmpty a.FullName -> ()
                     | Some kind ->
                         // A variable declared `let mutable` in the Immediate window says so in the
                         // custom type info it was created with.

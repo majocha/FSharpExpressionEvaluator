@@ -283,7 +283,7 @@ module EvalFixtures =
     /// As FSharp.Core's `moveNextRef`: a generic function with a byref parameter.
     let byrefGeneric (x: byref<'T>) (n: int) = n
 
-    /// A local of a byref-like type, which a query can't read (FS0406).
+    /// A local of a byref-like type, which can't be boxed or captured.
     let withSpan (values: int[]) (n: int) =
         let span = System.Span<int>(values)
         let total = span[0] + n
@@ -1726,21 +1726,27 @@ let ``byref locals read as the values they point to`` () =
         localsOf frame withByrefLocal args false
     )
 
+/// A frame with a variable that no query can read. No variable of the frame shapes tested fails
+/// (``frame shapes``): a local whose name F# can't write, even in double backticks, stands for one.
+let private withFailingVariable (frameMethod: MethodBase) =
+    let frame = frameOf frameMethod
+
+    { frame with
+        Locals = frame.Locals @ [ { Name = "no``name"; Slot = 0; Start = 0 } ]
+    }
+
 [<Fact>]
 let ``a variable the Locals query can't compile is left out, not the others`` () =
-    let withSpan = methodOf fixtures "withSpan"
-    let frame = frameOf withSpan
-    Assert.Equal<string list>([ "span"; "total" ], frame.Locals |> List.map _.Name)
+    let frame = withFailingVariable (methodOf fixtures "withLocals")
 
-    // A byref-like local can't be read (FS0406), alone or with the others.
-    match session.Value.CompileExpression(frame, "span") with
-    | Ok _ -> failwith "span compiled"
-    | Error diagnostics -> Assert.Equal(406, diagnostics.Head.Number)
+    match session.Value.CompileExpression(frame, "doubled") with
+    | Ok compiled -> Assert.Equal("int", compiled.ResultType)
+    | Error diagnostics -> failwithf "%A" diagnostics
 
     match session.Value.CompileLocals(frame, false) with
     | Ok compiled ->
         Assert.Equal<(string * string) list>(
-            [ "values", "int array"; "n", "int"; "total", "int" ],
+            [ "x", "int"; "doubled", "int"; "label", "string" ],
             compiled.Locals |> List.map (fun l -> l.Name, l.ResultType)
         )
     | Error diagnostics -> failwithf "%A" diagnostics
@@ -1766,10 +1772,10 @@ let ``a failing open of the PDB costs one more compile, before the variables alo
     Assert.Equal((([ "x"; "y" ], 1)), compiles add)
     Assert.Equal((([ "x"; "y" ], 2)), compiles (badOpen add))
 
-    // span fails: all four rows, each alone, then the three that compile.
-    let withSpan = frameOf (methodOf fixtures "withSpan")
-    Assert.Equal((([ "values"; "n"; "total" ], 1 + 4 + 1)), compiles withSpan)
-    Assert.Equal((([ "values"; "n"; "total" ], 2 + 4 + 1)), compiles (badOpen withSpan))
+    // One variable fails: all four rows, each alone, then the three that compile.
+    let failing = withFailingVariable (methodOf fixtures "withLocals")
+    Assert.Equal((([ "x"; "doubled"; "label" ], 1 + 4 + 1)), compiles failing)
+    Assert.Equal((([ "x"; "doubled"; "label" ], 2 + 4 + 1)), compiles (badOpen failing))
 
 
 /// Timings for docs/DESIGN.md §6.9, written to the file FSHARP_EE_PERF names (nothing runs without
@@ -2021,3 +2027,661 @@ let ``hoisted variables of a task in a generic function`` () =
     | Ok compiled ->
         let queryType = Assembly.Load(compiled.Assembly).GetType(compiled.TypeName).MakeGenericType(typeof<string>)
         Assert.Equal(box 2, queryType.GetMethod(compiled.MethodName, all).Invoke(null, [| machine |]))
+
+// Frame shapes: a sweep of ordinary F# code (SweepFixtures.fs) through the Locals query and
+// expressions.
+
+let private sweep = typeof<SweepFixtures.SPoint>.DeclaringType
+
+/// A method of a type, by a test on its name (overloads and compiled names differ).
+let private methodWhere (t: Type) (test: string -> bool) =
+    t.GetMethods all |> Array.find (fun m -> test m.Name) :> MethodBase
+
+/// The frame where a generated sweep fixture called `probe label`: the locals in scope at its IL
+/// offset, and its IL.
+let private probedSweepFrame label =
+    SweepFixtures.runGenerated.Force()
+    let frameMethod, offset = lock SweepFixtures.probes (fun () -> SweepFixtures.probes[label])
+    let pdbPath = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".pdb")
+    use provider = MetadataReaderProvider.FromPortablePdbStream(File.OpenRead pdbPath)
+    let pdb = provider.GetMetadataReader()
+
+    let locals =
+        [
+            for h in pdb.GetLocalScopes(MetadataTokens.MethodDefinitionHandle(frameMethod.MetadataToken &&& 0xFFFFFF)) do
+                let scope = pdb.GetLocalScope h
+
+                if scope.StartOffset <= offset && offset < scope.EndOffset then
+                    for v in scope.GetLocalVariables() do
+                        let local = pdb.GetLocalVariable v
+
+                        {
+                            Name = pdb.GetString local.Name
+                            Slot = local.Index
+                            Start = scope.StartOffset
+                        }
+        ]
+
+    frameMethod,
+    { frameOf frameMethod with
+        Locals = locals
+        ILOffset = offset
+        MethodIL = frameMethod.GetMethodBody().GetILAsByteArray()
+    }
+
+let private plainFrame (frameMethod: MethodBase) = frameMethod, frameOf frameMethod
+
+
+/// An instance of a generated class (a closure) with the given fields set, as the frame's `this`.
+let private generatedInstance (t: Type) (fields: (string * obj) list) =
+    let instance = Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject t
+
+    for field, value in fields do
+        t.GetField(field, all).SetValue(instance, value)
+
+    instance
+
+let private sweepClosure (test: string -> bool) =
+    sweep.GetNestedTypes all |> Array.find (fun t -> test t.Name)
+
+/// A query run in-process: the frame's `this`, parameters and locals, the type arguments of a
+/// generic frame, and the value expected.
+type private ShapeRun =
+    {
+        Args: obj list
+        ClassArgs: Type list
+        MethodArgs: Type list
+        Expected: obj
+    }
+
+/// A frame shape: its frame, the Locals rows a user expects (name and F# type), and an expression
+/// that uses the frame's variables, run when the harness can pass the frame's values.
+type private ShapeCase =
+    {
+        Frame: unit -> MethodBase * FrameContext
+        Rows: (string * string) list
+        Expression: string
+        Run: ShapeRun option
+    }
+
+let private runWith args expected =
+    Some
+        {
+            Args = args
+            ClassArgs = []
+            MethodArgs = []
+            Expected = expected
+        }
+
+let private shapeCases: (string * ShapeCase) list =
+    let fn name = fun () -> plainFrame (methodOf sweep name)
+    let on (t: Type) test = fun () -> plainFrame (methodWhere t test)
+    let probed label = fun () -> probedSweepFrame label
+
+    let case frame rows expression run =
+        {
+            Frame = frame
+            Rows = rows
+            Expression = expression
+            Run = run
+        }
+
+    let generic classArgs methodArgs args (expected: obj) =
+        Some
+            {
+                Args = args
+                ClassArgs = classArgs
+                MethodArgs = methodArgs
+                Expected = expected
+            }
+
+    let settings () = box (SweepFixtures.Settings())
+
+    [
+        // Byref-like and pointer values. A byref-like value can't be boxed: these queries can't
+        // run through reflection (``byref-like variables read and run``).
+        "Span<int> parameter",
+        case (fn "spanParameter") [ "span", "System.Span<int>"; "n", "int" ] "span[0] + n" None
+
+        "ReadOnlySpan<char> parameter",
+        case (fn "readOnlySpanParameter") [ "text", "System.ReadOnlySpan<char>"; "n", "int" ] "text.Length + n" None
+
+        "ReadOnlySpan<char> local",
+        case
+            (fn "readOnlySpanLocal")
+            [ "text", "string"; "chars", "System.ReadOnlySpan<char>"; "length", "int" ]
+            "chars.Length + length"
+            None
+
+        "byref-like struct parameter",
+        case (fn "byrefLikeParameter") [ "window", "Window"; "n", "int" ] "window.Start + n" None
+
+        "byref-like struct member",
+        case
+            (fun () -> plainFrame (methodWhere (sweep.GetNestedType "Window") ((=) "End")))
+            [ "this", "Window"; "extra", "int" ]
+            "this.Start + this.Length + extra"
+            None
+
+        "nativeptr<int> parameter",
+        case
+            (fn "nativePointer")
+            [ "p", "nativeptr<int>"; "n", "int" ]
+            "Microsoft.FSharp.NativeInterop.NativePtr.read p + n"
+            None
+
+        "voidptr parameter", case (fn "voidPointer") [ "p", "voidptr"; "n", "int" ] "(p, n + 1)" None
+
+        "nativeint parameter",
+        case (fn "nativeInt") [ "p", "nativeint"; "n", "int" ] "int p + n" (runWith [ box 5n; box 2 ] 7)
+
+        "outref<'T> parameter",
+        case
+            (fn "outrefGeneric")
+            [ "result", "'T"; "value", "'T" ]
+            "string value"
+            (generic [] [ typeof<string> ] [ box "a"; box "b" ] "b")
+
+        // Struct frames: `this` is a byref to the struct.
+        "struct record member",
+        case
+            (on typeof<SweepFixtures.SPoint> ((=) "Sum"))
+            [ "this", "SPoint"; "k", "int" ]
+            "this.X + this.Y + k"
+            (runWith [ box ({ X = 1; Y = 2 }: SweepFixtures.SPoint); box 3 ] 6)
+
+        "struct union member",
+        case
+            (on typeof<SweepFixtures.SShape> ((=) "Area"))
+            [ "this", "SShape"; "scale", "float"; "r", "float"; "s", "float" ]
+            "(match this with SCircle x -> x | SSquare x -> -x) + scale"
+            (runWith [ box (SweepFixtures.SCircle 1.0); box 2.0; box 0.0; box 0.0 ] 3.0)
+
+        "struct class member that mutates this",
+        case
+            (on typeof<SweepFixtures.SCounter> ((=) "Bump"))
+            [ "this", "SCounter"; "by", "int" ]
+            "this.Count + by"
+            (runWith [ box (SweepFixtures.SCounter 3); box 2 ] 5)
+
+        "generic struct record member",
+        case
+            (on typedefof<SweepFixtures.SPair<_>> ((=) "Swap"))
+            [ "this", "SPair<'T>"; "n", "int" ]
+            "(this.B, n)"
+            (generic [ typeof<string> ] [] [ box ({ A = "a"; B = "b" }: SweepFixtures.SPair<string>); box 1 ] ("b", 1))
+
+        // A struct tuple pattern of a parameter: the parameter is a temporary, the pattern's
+        // variables are locals.
+        "struct tuple parameter",
+        case
+            (fn "structTuple")
+            [ "n", "int"; "b", "string"; "a", "int" ]
+            "a + b.Length + n"
+            (runWith [ box (struct (1, "xy")); box 3; box "xy"; box 1 ] 6)
+
+        // Members.
+        // F# names the input of a pipeline for the debugger: `Pipe #1 input at line 85`.
+        "generic member with its own constrained typar",
+        case
+            (on typedefof<SweepFixtures.Repo<_>> ((=) "Find"))
+            [ "this", "Repo<'T>"; "key", "'K"; "pick", "'T -> 'K"; "Pipe #1 input at line 85", "'T list" ]
+            "pick (List.head items) = key"
+            (generic
+                [ typeof<string> ]
+                [ typeof<int> ]
+                [ box (SweepFixtures.Repo [ "ab" ]); box 2; box (fun (s: string) -> s.Length); box [ "ab" ] ]
+                true)
+
+        "member of a class with a comparison typar",
+        case
+            (on typedefof<SweepFixtures.Repo<_>> ((=) "Largest"))
+            [ "this", "Repo<'T>"; "extra", "'T" ]
+            "List.max (extra :: items)"
+            (generic [ typeof<string> ] [] [ box (SweepFixtures.Repo [ "a"; "c" ]); box "b" ] "c")
+
+        "static member of a generic class",
+        case
+            (on typedefof<SweepFixtures.Repo<_>> ((=) "Create"))
+            [ "xs", "'T list" ]
+            "List.length xs"
+            (generic [ typeof<int> ] [] [ box [ 1; 2 ] ] 2)
+
+        "property getter",
+        case (on typeof<SweepFixtures.Settings> ((=) "get_Level")) [ "this", "Settings" ] "this.Level + level" (runWith [ settings () ] 2)
+
+        "property setter",
+        case
+            (on typeof<SweepFixtures.Settings> ((=) "set_Level"))
+            [ "this", "Settings"; "v", "int" ]
+            "level + v"
+            (runWith [ settings (); box 5 ] 6)
+
+        "indexer getter",
+        case
+            (on typeof<SweepFixtures.Settings> ((=) "get_Item"))
+            [ "this", "Settings"; "i", "int" ]
+            "this[i] + i"
+            (runWith [ settings (); box 2 ] 5)
+
+        "indexer setter",
+        case
+            (on typeof<SweepFixtures.Settings> ((=) "set_Item"))
+            [ "this", "Settings"; "i", "int"; "v", "int" ]
+            "level + i + v"
+            (runWith [ settings (); box 1; box 2 ] 4)
+
+        "static member",
+        case (on typeof<SweepFixtures.Settings> ((=) "Scale")) [ "n", "int" ] "Settings.Scale n + n" (runWith [ box 3 ] 9)
+
+        "static member reading a static let",
+        case (on typeof<SweepFixtures.WithStatics> ((=) "Lookup")) [ "i", "int" ] "table.Length + i" (runWith [ box 1 ] 4)
+
+        "static let",
+        case (fun () -> plainFrame typeof<SweepFixtures.WithStatics>.TypeInitializer) [] "WithStatics.Table.Length" (runWith [] 3)
+
+        "explicit interface implementation",
+        case
+            (on typeof<SweepFixtures.Square> (fun n -> n.EndsWith "Area"))
+            [ "this", "Square"; "scale", "float" ]
+            "side * scale"
+            (runWith [ box (SweepFixtures.Square 2.0); box 3.0 ] 6.0)
+
+        // An object expression has no self identifier: its captured values are fields.
+        "object expression method",
+        case
+            (fun () -> plainFrame (methodWhere ((SweepFixtures.makeShape 2.0).GetType()) (fun n -> n.EndsWith "Area")))
+            [ "scale", "float"; "side", "float" ]
+            "side * scale"
+            (runWith [ box (SweepFixtures.makeShape 2.0); box 3.0 ] 6.0)
+
+        "intrinsic-style extension member",
+        case
+            (fun () -> plainFrame (methodWhere (sweep.GetNestedType "Extensions") (fun n -> n.Contains "Twice")))
+            [ "this", "string"; "n", "int" ]
+            "this.Length + n"
+            (runWith [ box "ab"; box 1 ] 3)
+
+        "[<Extension>] member",
+        case
+            (on typeof<SweepFixtures.ListExtensions> ((=) "Total"))
+            [ "xs", "int list"; "n", "int" ]
+            "List.sum xs + n"
+            (runWith [ box [ 1; 2 ]; box 3 ] 6)
+
+        // A class's `let` fields are under `this`; the `do` block's locals are the frame's.
+        "primary constructor with let and do",
+        case
+            (fun () -> plainFrame (typeof<SweepFixtures.Animal>.GetConstructor [| typeof<string> |]))
+            [ "this", "Animal"; "name", "string"; "shout", "string" ]
+            "name + shout"
+            (runWith [ box (SweepFixtures.Animal "a"); box "a"; box "A" ] "aA")
+
+        "secondary constructor",
+        case
+            (fun () -> plainFrame (typeof<SweepFixtures.Animal>.GetConstructor [||]))
+            [ "this", "Animal" ]
+            "this.Length"
+            (runWith [ box (SweepFixtures.Animal "abc") ] 3)
+
+        "constructor with as self",
+        case
+            (fun () -> plainFrame (typeof<SweepFixtures.Initialized>.GetConstructor [||]))
+            [ "this", "Initialized"; "self", "Initialized" ]
+            "ready"
+            (runWith [ box (SweepFixtures.Initialized()); box (ref (SweepFixtures.Initialized())) ] true)
+
+        "abstract member's default",
+        case
+            (on typeof<SweepFixtures.Animal> ((=) "Speak"))
+            [ "this", "Animal"; "times", "int" ]
+            "this.Length + times"
+            (runWith [ box (SweepFixtures.Animal "ab"); box 2 ] 4)
+
+        "override",
+        case
+            (on typeof<SweepFixtures.Dog> ((=) "Speak"))
+            [ "this", "Dog"; "times", "int" ]
+            "name + string times"
+            (runWith [ box (SweepFixtures.Dog "rex"); box 1 ] "rex1")
+
+        "operator member",
+        case
+            (on typeof<SweepFixtures.Vector> ((=) "op_Addition"))
+            [ "a", "Vector"; "b", "Vector" ]
+            "a.DX + b.DY"
+            (runWith [ box ({ DX = 1.0; DY = 2.0 }: SweepFixtures.Vector); box ({ DX = 3.0; DY = 4.0 }: SweepFixtures.Vector) ] 5.0)
+
+        "optional parameters",
+        case
+            (on typeof<SweepFixtures.Options> ((=) "Get"))
+            [ "count", "int option"; "label", "string option" ]
+            "defaultArg count 0"
+            (runWith [ box (Some 3); null ] 3)
+
+        "ParamArray parameter",
+        case (on typeof<SweepFixtures.Options> ((=) "Sum")) [ "values", "int array" ] "Array.sum values" (runWith [ box [| 1; 2 |] ] 3)
+
+        // The PDB has the self identifier as a local, a copy of `this`.
+        "member with a self identifier other than this",
+        case
+            (on typeof<SweepFixtures.Named> ((=) "Plus"))
+            [ "this", "Named"; "n", "int"; "x", "Named" ]
+            "x.Plus n + start"
+            (runWith [ box (SweepFixtures.Named 1); box 2; box (SweepFixtures.Named 1) ] 4)
+
+        "member with curried parameters",
+        case
+            (on typeof<SweepFixtures.Named> ((=) "Curried"))
+            [ "this", "Named"; "a", "int"; "b", "int" ]
+            "start + a + b"
+            (runWith [ box (SweepFixtures.Named 1); box 2; box 3 ] 6)
+
+        "union member",
+        case
+            (on typeof<SweepFixtures.Token> ((=) "Describe"))
+            [ "this", "Token"; "prefix", "string"; "w", "string"; "n", "int" ]
+            "prefix + string n"
+            (runWith [ box (SweepFixtures.Word "x"); box "p"; box "w"; box 3 ] "p3")
+
+        "record member",
+        case
+            (on typeof<SweepFixtures.Range> ((=) "Contains"))
+            [ "this", "Range"; "n", "int" ]
+            "this.Low <= n && n <= this.High"
+            (runWith [ box ({ Low = 1; High = 3 }: SweepFixtures.Range); box 2 ] true)
+
+        "member of a class with an event",
+        case (on typeof<SweepFixtures.Ticker> ((=) "Tick")) [ "this", "Ticker"; "n", "int" ] "(this.Ticked, n + 1)" None
+
+        // Functions.
+        "inner function that captures nothing",
+        case
+            (fun () -> plainFrame (methodWhere (sweepClosure (fun n -> n.StartsWith "helper@")) ((=) "Invoke")))
+            [ "x", "int" ]
+            "x + 1"
+            (runWith [ generatedInstance (sweepClosure (fun n -> n.StartsWith "helper@")) []; box 2 ] 3)
+
+        // A generic closure is a type function, whose specialization is the closure.
+        "generic inner function",
+        case
+            (fun () ->
+                plainFrame (methodWhere (sweepClosure (fun n -> n.StartsWith "generic@" && n.EndsWith "T")) ((=) "Invoke")))
+            [ "x", "'a" ]
+            "[ x; x ]"
+            (let closure =
+                (sweepClosure (fun n -> n.StartsWith "generic@" && n.EndsWith "T")).MakeGenericType typeof<int>
+
+             generic [ typeof<int> ] [] [ generatedInstance closure []; box 5 ] [ 5; 5 ])
+
+        "let rec inner function that captures",
+        case
+            (fun () -> plainFrame (methodWhere (sweepClosure (fun n -> n.StartsWith "go@")) ((=) "Invoke")))
+            [ "i", "int"; "acc", "int"; "limit", "int" ]
+            "i + acc + limit"
+            (runWith [ generatedInstance (sweepClosure (fun n -> n.StartsWith "go@")) [ "limit", box 3 ]; box 1; box 2 ] 6)
+
+        "let rec outer of an inner function",
+        case (fn "withRecInner") [ "limit", "int"; "go", "int -> int -> int" ] "go 0 limit" None
+
+        "mutually recursive functions", case (fn "isEven") [ "n", "int" ] "isOdd n" (runWith [ box 3 ] true)
+
+        "caller of an inline function",
+        case (fn "callsInline") [ "n", "int"; "doubled", "int" ] "twice n + doubled" (runWith [ box 2; box 4 ] 8)
+
+        "active pattern", case (on sweep ((=) "|Even|Odd|")) [ "n", "int" ] "n % 2" (runWith [ box 3 ] 1)
+
+        "partial active pattern",
+        case (on sweep ((=) "|Positive|_|")) [ "n", "int" ] "(|Positive|_|) n" (runWith [ box 2 ] (Some 2))
+
+        "unit-of-measure generic",
+        case (fn "measured") [ "x", "float<'u>"; "factor", "float" ] "x * factor" (runWith [ box 2.0; box 3.0 ] 6.0)
+
+        "unit-of-measure and type generic",
+        case
+            (fn "measuredAndGeneric")
+            [ "x", "float<'u>"; "tag", "'T" ]
+            "(x * 2.0, tag)"
+            (generic [] [ typeof<string> ] [ box 2.0; box "t" ] (4.0, "t"))
+
+        "member of a class generic over a unit of measure and a type",
+        case
+            (on typedefof<SweepFixtures.Quantity<1, _>> ((=) "Scaled"))
+            [ "this", "Quantity<'u,'T>"; "k", "float" ]
+            "value * k"
+            (generic [ typeof<string> ] [] [ box (SweepFixtures.Quantity(2.0, "t")); box 3.0 ] 6.0)
+
+        "member of a class generic over a unit of measure and a type, typed by the type",
+        case
+            (on typedefof<SweepFixtures.Quantity<1, _>> ((=) "Tagged"))
+            [ "this", "Quantity<'u,'T>"; "extra", "'T" ]
+            "(tag, extra)"
+            (generic [ typeof<string> ] [] [ box (SweepFixtures.Quantity(2.0, "t")); box "e" ] ("t", "e"))
+
+        "first-class functions, tupled and curried",
+        case
+            (fn "applyFunctions")
+            [ "f", "int * int -> int"; "g", "int -> int -> int"; "n", "int" ]
+            "f (n, n) + g n n"
+            (runWith [ box (fun (a: int, b: int) -> a + b); box (fun (a: int) (b: int) -> a * b); box 2 ] 8)
+
+        // All of the method's locals: `frameOf` lists every scope.
+        "pattern-bound variables",
+        case
+            (fn "matchArms")
+            [
+                "shape", "Shape"
+                "xs", "int list"
+                "p", "Point"
+                "pair", "int * string"
+                "b", "string"
+                "a", "int"
+                "fromTuple", "int"
+                "radius", "float"
+                "width", "float"
+                "height", "float"
+                "fromUnion", "float"
+                "tail", "int list"
+                "head", "int"
+                "fromList", "int"
+                "whole", "Point"
+                "py", "int"
+                "px", "int"
+                "fromRecord", "int"
+            ]
+            "a + head + px + whole.PY"
+            None
+
+        "loop variables",
+        case
+            (fn "loops")
+            [ "n", "int"; "xs", "int list"; "total", "int"; "i", "int"; "x", "int"; "k", "int" ]
+            "total + i + x + k + n"
+            (runWith [ box 1; box [ 2 ]; box 3; box 4; box 5; box 6 ] 19)
+
+        "use binding",
+        case
+            (fn "withUse")
+            [ "n", "int"; "stream", "System.IO.MemoryStream"; "length", "int" ]
+            "int stream.Length + length + n"
+            (runWith [ box 1; box (new MemoryStream(Array.zeroCreate<byte> 2)); box 3 ] 6)
+
+        "try ... with handler",
+        case
+            (fn "withHandler")
+            [ "n", "int"; "e", "exn"; "message", "string" ]
+            "e.Message + message"
+            (runWith [ box 1; box (exn "x"); box "y" ] "xy")
+
+        "fixed pointer",
+        // `p` is a nativeptr<int> in source. IL types the local `native int`, and a local has no F#
+        // type to say otherwise (``a fixed pointer local reads as a nativeptr``, skipped).
+        case (fn "fixedPointer") [ "values", "int array"; "p", "nativeint"; "first", "int" ] "values.Length + first" None
+
+        // Types of variables.
+        "variables of many types",
+        case
+            (fn "variableTypes")
+            [
+                "color", "Color"
+                "maybe", "System.Nullable<int>"
+                "text", "string | null"
+                "anon", "{| Name: string; Tags: string list |} list"
+                "vo", "int voption"
+                "result", "Result<int,string>"
+                "jagged", "int array array"
+                "grid", "int array2d"
+                "lazyValue", "System.Lazy<int>"
+                "choice", "Choice<int,string,bool>"
+                "quote", "Quotations.Expr<int>"
+                "expr", "Expression"
+                "transform", "Transform"
+                "handler", "System.EventHandler"
+                "big", "int * int * int * int * int * int * int * int"
+                "total", "int"
+            ]
+            "int color + maybe.Value + jagged.Length + grid.Length + transform 1 + (match expr with Add _ -> 1 | Literal n -> n)"
+            None
+
+        // Generated frames.
+        "closure three deep", case (probed "nested3") [ "d", "int"; "a", "int"; "b", "int"; "c", "int" ] "a + b + c + d" None
+
+        "closure in a generic method of a generic class",
+        case (probed "genericClosure") [ "this", "Holder<'T>"; "i", "int"; "other", "'U" ] "(value, other, i)" None
+
+        // An `async`'s closures capture only what they use.
+        "async: for in try/finally", case (probed "asyncFor") [ "x", "int"; "squared", "int" ] "x + squared" None
+
+        "async: finally", case (probed "asyncFinally") [] "1" None
+
+        "task: for in try/finally",
+        case
+            (probed "taskFor")
+            [ "n", "int"; "xs", "int list"; "first", "int"; "resource", "System.IO.MemoryStream"; "x", "int"; "squared", "int" ]
+            "first + x + squared + n + int resource.Length"
+            None
+
+        // The `finally` of a `task` around a loop with an await is a closure.
+        "task: finally", case (probed "taskFinally") [] "1" None
+
+        "seq with use and yield!",
+        case (probed "seqUse") [ "n", "int"; "stream", "System.IO.MemoryStream"; "size", "int" ] "size + n" None
+
+        "backgroundTask", case (probed "backgroundTask") [ "n", "int"; "doubled", "int" ] "doubled + n" None
+
+        "lazy body", case (probed "lazy") [ "n", "int"; "doubled", "int" ] "doubled + n" None
+
+        "custom builder's lambda", case (probed "builder") [ "a", "int"; "b", "int" ] "a + b" None
+    ]
+
+/// The names of the frame shapes, for the theory.
+let frameShapes: obj[] seq = shapeCases |> Seq.map (fun (name, _) -> [| box name |])
+
+[<Theory; MemberData(nameof frameShapes)>]
+let ``frame shapes`` (shape: string) =
+    let case = shapeCases |> List.find (fun (name, _) -> name = shape) |> snd
+    let frameMethod, frame = case.Frame()
+    let s = session.Value
+
+    // Every variable is listed, with its F# type, from one compiled query: no variable failed.
+    let before = s.CompileCount
+
+    let compiled =
+        match s.CompileLocals(frame, false, localsAsParameters = true) with
+        | Ok compiled -> compiled
+        | Error diagnostics -> failwithf "%s: Locals: %A" shape diagnostics
+
+    Assert.Equal<(string * string) list>(
+        case.Rows,
+        compiled.Locals
+        |> List.filter (fun l -> l.Name <> CompilerGeneratedRow)
+        |> List.map (fun l -> l.Name, l.ResultType)
+    )
+
+    Assert.Equal(1, s.CompileCount - before)
+
+    // Each variable is an expression by its full name, of the same type.
+    for local in compiled.Locals do
+        if local.Name <> CompilerGeneratedRow then
+            match s.CompileExpression(frame, local.FullName, localsAsParameters = true) with
+            | Ok compiled -> Assert.Equal(local.ResultType, compiled.ResultType)
+            | Error diagnostics -> failwithf "%s: '%s': %A" shape local.FullName diagnostics
+
+    match s.CompileExpression(frame, case.Expression, localsAsParameters = true) with
+    | Error diagnostics -> failwithf "%s: '%s': %A" shape case.Expression diagnostics
+    | Ok _ ->
+        match case.Run with
+        | Some run ->
+            let value, _ = evaluateGeneric run.ClassArgs run.MethodArgs frameMethod run.Args case.Expression
+            Assert.Equal(run.Expected, value)
+        | None -> ()
+
+/// Query methods called through delegates: a byref-like value can't be passed to a method or
+/// returned from it through reflection.
+type private SpanRead = delegate of int[] * int * Span<int> * int -> Span<int>
+
+type private SpanQuery = delegate of int[] * int * Span<int> * int -> int
+
+type private WindowQuery = delegate of SweepFixtures.Window * int -> int
+
+[<Fact>]
+let ``byref-like variables read and run`` () =
+    let withSpan = methodOf fixtures "withSpan"
+    let frame = frameOf withSpan
+    let values = [| 3; 4 |]
+
+    // The Locals row returns the span, as the frame has it (values, n, then the locals span and total).
+    match session.Value.CompileLocals(frame, false, localsAsParameters = true) with
+    | Ok compiled ->
+        let local = compiled.Locals |> List.find (fun l -> l.Name = "span")
+        Assert.Equal("System.Span<int>", local.ResultType)
+
+        let read =
+            Assembly.Load(compiled.Assembly).GetType(compiled.TypeName).GetMethod(local.MethodName, all).CreateDelegate<SpanRead>()
+
+        Assert.Equal<int[]>(values, read.Invoke(values, 1, Span<int>(values), 0).ToArray())
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    match session.Value.CompileExpression(frame, "span[1] + n", localsAsParameters = true) with
+    | Ok compiled -> Assert.Equal(6, (queryMethod compiled).CreateDelegate<SpanQuery>().Invoke(values, 2, Span<int>(values), 0))
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    // An edit of its row stores to the frame's local.
+    match session.Value.CompileAssignment(frame, "span", "System.Span<int>(values, 1, 1)", localsAsParameters = true) with
+    | Ok compiled -> Assert.Equal("unit", compiled.ResultType)
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    // A lambda can't capture it, as in source.
+    match session.Value.CompileExpression(frame, "[ 0 ] |> List.map (fun i -> span[i])") with
+    | Ok _ -> failwith "a lambda captured span"
+    | Error diagnostics -> Assert.Equal(406, diagnostics.Head.Number)
+
+    // A struct that is byref-like.
+    let byrefLike = methodOf sweep "byrefLikeParameter"
+
+    match session.Value.CompileExpression(frameOf byrefLike, "window.Start + window.Length + n", localsAsParameters = true) with
+    | Ok compiled ->
+        Assert.Equal(6, (queryMethod compiled).CreateDelegate<WindowQuery>().Invoke(SweepFixtures.Window(1, 2), 3))
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+[<Fact>]
+let ``static let values read and write as variables of the type's members`` () =
+    let lookup = methodOf typeof<SweepFixtures.WithStatics> "Lookup"
+    let before = SweepFixtures.WithStatics.Table
+
+    match session.Value.CompileAssignment(frameOf lookup, "table", "Array.copy table", localsAsParameters = true) with
+    | Ok compiled -> (queryMethod compiled).Invoke(null, [| box 0 |]) |> ignore
+    | Error diagnostics -> failwithf "%A" diagnostics
+
+    Assert.NotSame(before, SweepFixtures.WithStatics.Table)
+    Assert.Equal<int[]>(before, SweepFixtures.WithStatics.Table)
+
+[<Fact(Skip =
+    "`use p = fixed values` gives `p: nativeptr<int>` in source, but IL types the local `native int`, and nothing records "
+    + "the F# types of locals: `p` reads as nativeint, and `NativePtr.read p` gives FS0001 (`NativePtr.ofNativeInt p` works). "
+    + "Options: F# types of locals from the compiler (docs/DESIGN.md §9), or a `native int` local next to a pinned `T&` "
+    + "local read as nativeptr<T>, which is a guess.")>]
+let ``a fixed pointer local reads as a nativeptr`` () =
+    match session.Value.CompileExpression(frameOf (methodOf sweep "fixedPointer"), "Microsoft.FSharp.NativeInterop.NativePtr.read p") with
+    | Ok compiled -> Assert.Equal("int", compiled.ResultType)
+    | Error diagnostics -> failwithf "%A" diagnostics

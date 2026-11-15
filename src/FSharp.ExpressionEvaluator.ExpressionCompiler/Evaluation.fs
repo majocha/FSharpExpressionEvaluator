@@ -144,6 +144,9 @@ let private queryMethodName (n: int) = $"<>m{n}"
 
 let private isQueryMethodName (name: string) = name.StartsWith "<>m"
 
+/// The name of a frame parameter that is plumbing, not a variable of the user's.
+let private plumbingParameterName = "<>next"
+
 let private queryFileName = "<>x.fs"
 
 /// Placeholder methods of `<>x` standing for loads and stores of fields of compiler-generated
@@ -701,13 +704,21 @@ let private tryFrameValue
             with _ ->
                 true
 
+        // Units of measure are erased: IL has no type parameters for the value's measure typars, nor
+        // for its type's.
+        let ilTyparCount (typars: Typars) =
+            typars |> List.filter (fun tp -> tp.Kind = TyparKind.Type) |> List.length
+
+        let enclosingTyparCount =
+            if entity.IsModuleOrNamespace then 0 else entity.Typars.Length
+
         let matching =
             candidates
             |> List.filter (fun v ->
-                v.Typars.Length = typarCount
+                ilTyparCount v.Typars = typarCount
                 && v.CompiledName g.CompilerGlobalState = methodDef.Name)
             |> List.choose (fun v ->
-                match compiledSignature g v declaringType.GenericParams.Length with
+                match compiledSignature g v enclosingTyparCount with
                 | Some(types, returnType) when types.Length = methodDef.Parameters.Length -> Some(v, types, returnType)
                 | _ -> None)
 
@@ -2249,8 +2260,10 @@ type EvaluationSession
                     |> List.map (fun p -> Construct.NewRigidTypar p.Name m),
                     []
 
-            let classTypars = List.take declaringType.GenericParams.Length frameTypars
-            let frameTinst = frameTypars |> List.map mkTyparTy
+            // IL type variables number the typars that are not units of measure, which IL erases.
+            let ilTypars = frameTypars |> List.filter (fun tp -> tp.Kind = TyparKind.Type)
+            let classTypars = List.take declaringType.GenericParams.Length ilTypars
+            let frameTinst = ilTypars |> List.map mkTyparTy
 
             // Anonymous record types are classes the compiler generates in each assembly that uses
             // them (`<>f__AnonymousType<hash>`1`, generic over the field types in field-name order),
@@ -2373,6 +2386,20 @@ type EvaluationSession
             let isGeneratedFrame = entities.Length <> enclosing.Length
             let isStateMachine = isGeneratedFrame && isValueType
 
+            // The type of `this` in a member of the type. IL has no type parameters for the type's units
+            // of measure (`Quantity<'u, 'T>` is ``Quantity`1``): the frame's F# value has them, as
+            // the first of its typars. Not for a generated type, which F# can't import.
+            let thisType () =
+                let imported = importType thisILType
+
+                match frameVal, tryTcrefOfAppTy g imported with
+                | Some _, ValueSome tcref when
+                    tcref.Typars.Length <> classTypars.Length && tcref.Typars.Length <= frameTypars.Length
+                    ->
+                    let tinst = frameTypars |> List.take tcref.Typars.Length |> List.map mkTyparTy
+                    TType_app(tcref, tinst, g.knownWithoutNull)
+                | _ -> imported
+
             let thisVal =
                 if methodDef.IsStatic then
                     []
@@ -2386,9 +2413,9 @@ type EvaluationSession
 
                     [ fst (mkLocal m "<>this" (importType baseType)) ]
                 elif isValueType then
-                    [ fst (mkLocal m "this" (mkByrefTy g (importType thisILType))) ]
+                    [ fst (mkLocal m "this" (mkByrefTy g (thisType ()))) ]
                 else
-                    [ fst (mkLocal m "this" (importType thisILType)) ]
+                    [ fst (mkLocal m "this" (thisType ())) ]
 
             // Variables of the frame. When compiling an assignment they are mutable, so the checker
             // lets the expression assign them (and, as F# requires, no closure captures them).
@@ -2464,19 +2491,20 @@ type EvaluationSession
 
             // Plumbing fields of state machines, not user variables: those of resumable code
             // (`task`), and of `seq` (a GeneratedSequenceBase<_> subclass).
-            let isPlumbing =
-                let isSeq =
-                    match declaringType.Extends.Value with
-                    | Some baseType when baseType.IsNominal ->
-                        baseType.TypeRef.FullName = "Microsoft.FSharp.Core.CompilerServices.GeneratedSequenceBase`1"
-                    | _ -> false
+            let isSeq =
+                isGeneratedFrame
+                && match declaringType.Extends.Value with
+                   | Some baseType when baseType.IsNominal ->
+                       baseType.TypeRef.FullName = "Microsoft.FSharp.Core.CompilerServices.GeneratedSequenceBase`1"
+                   | _ -> false
 
+            let isPlumbing =
                 let stateMachineFields = set [ "Data"; "ResumptionPoint" ]
                 let seqFields = set [ "pc"; "current"; "enum"; "redirect"; "redirectTo" ]
 
                 fun name ->
                     (isStateMachine && stateMachineFields.Contains name)
-                    || (isGeneratedFrame && isSeq && seqFields.Contains name)
+                    || (isSeq && seqFields.Contains name)
 
             // Where `MoveNext` of a resumable state machine stores to each hoisted variable: first
             // where it is bound, last where its scope ends (the compiler clears it there).
@@ -2601,6 +2629,48 @@ type EvaluationSession
 
             let fieldVariables =
                 originalThisFields @ (ownFields |> List.map (fun (f, _, _) -> f))
+
+            // A class's `static let` values are static fields, in scope in all of its members, as in
+            // source, and in closures and state machines inside them. Only in a type that isn't
+            // generic when the frame is generated: a generated type's typars need not be its type's.
+            let staticFieldVariables =
+                match List.tryLast entities with
+                | Some entity when not entity.IsModuleOrNamespace ->
+                    let td = enclosing[entities.Length - 1]
+
+                    let ownerType =
+                        if not isGeneratedFrame then
+                            Some thisILType
+                        elif td.GenericParams.IsEmpty then
+                            let tref =
+                                mkRefForNestedILTypeDef dllInfo.ILScopeRef (List.take (entities.Length - 1) enclosing, td)
+
+                            Some(if td.IsStruct then mkILValueTy tref [] else mkILBoxedTy tref [])
+                        else
+                            None
+
+                    match ownerType with
+                    | Some ownerType ->
+                        td.Fields.AsList()
+                        |> List.filter (fun f ->
+                            f.IsStatic
+                            && not f.IsLiteral
+                            && not (f.Name.Contains "@")
+                            && not (f.Name.StartsWith "_"))
+                        |> List.choose (fun f ->
+                            let formalType = rescopeILType dllInfo.ILScopeRef f.FieldType
+
+                            tryImportType (instILType ownerType.GenericArgs formalType)
+                            |> Option.map (fun ty ->
+                                let field = mkILFieldSpecInTy (ownerType, f.Name, formalType)
+
+                                {
+                                    Var = mkVariable f.Name ty
+                                    Read = fun m -> mkAsmExpr ([ I_ldsfld(Nonvolatile, field) ], [], [], [ ty ], m)
+                                    Write = Some(fun m value -> mkAsmExpr ([ I_stsfld(Nonvolatile, field) ], [], [ value ], [], m))
+                                }))
+                    | None -> []
+                | _ -> []
 
             // The debugger's intrinsic methods (docs/DESIGN.md §2), called as raw IL against the
             // assembly that defines them, so the checker never imports it.
@@ -2727,7 +2797,15 @@ type EvaluationSession
                         | Some ilType, _ -> ilType
                         | None, _ -> g.obj_ty_ambivalent
 
-                    mkVariable (defaultArg p.Name $"arg{i}") ty)
+                    // `GenerateNext` of a `seq` takes where the sequence continues (`next`): plumbing
+                    // of the state machine, as its fields `pc` and `current` are. It keeps its
+                    // position, under a name that expressions can't write and Locals doesn't list.
+                    let name =
+                        match p.Name with
+                        | Some "next" when isSeq && methodDef.Name = "GenerateNext" -> plumbingParameterName
+                        | name -> defaultArg name $"arg{i}"
+
+                    mkVariable name ty)
 
             // A byref parameter or local (`x: byref<T>`, `let x = &a[0]`) and a struct's `this` read
             // and write as the value they point to. The checker must not see the byref itself in the
@@ -2852,7 +2930,12 @@ type EvaluationSession
 
                 let parameters =
                     parameterVals
-                    |> List.filter (fun v -> not (isHiddenLocalName v.LogicalName || isTuplePiece v.LogicalName))
+                    |> List.filter (fun v ->
+                        not (
+                            isHiddenLocalName v.LogicalName
+                            || isTuplePiece v.LogicalName
+                            || v.LogicalName = plumbingParameterName
+                        ))
                     |> List.map (fun v ->
                         match parameterContents |> List.tryFind (fun (p, _) -> valEq p v) with
                         | Some(_, contents) -> contents.Var.LogicalName, contents.Var.Type, contents.Read
@@ -2974,8 +3057,8 @@ type EvaluationSession
                 frameVals
                 |> List.mapi (fun i v -> v, (fun m value -> mkAsmExpr ([ I_starg(uint16 i) ], [], [ value ], [], m)))
 
-            // Name scopes, outermost first: fields of `this` are shadowed by parameters, those by
-            // locals, and those by the debugger's variables.
+            // Name scopes, outermost first: static fields of the type and fields of `this` are
+            // shadowed by parameters, those by locals, and those by the debugger's variables.
             let scopedVals =
                 let hoisted, captured = ownFields |> List.partition (fun (_, start, _) -> start >= 0)
 
@@ -2987,7 +3070,8 @@ type EvaluationSession
                     |> (if isStateMachine then List.sortBy fst else id)
                     |> List.map snd
 
-                scopedThis
+                (staticFieldVariables |> List.map _.Var)
+                @ scopedThis
                 @ (originalThisFields |> List.map _.Var)
                 @ (captured |> List.map (fun (f, _, _) -> f.Var))
                 @ scopedParameters
@@ -3054,11 +3138,21 @@ type EvaluationSession
             // In a generic frame the checker sees the frame's typars as free in `<>m0` until
             // `bindFrameValues` makes it generic over them, so its scope errors (FS3187, FS3188) wait for
             // the post-inference checks rerun on the rewritten tree.
+            // A variable of a byref-like type (`Span<T>`, an `[<IsByRefLike>]` struct, a byref-like
+            // struct's `this`) is free in `<>m0` in the same way, which the checks see as a closure that
+            // captures it (FS0406). After the rewrite it is an argument of the method, which it can be,
+            // and the checks run again: they still report an expression that captures it in a lambda.
             // An assignment can also store to a field that isn't mutable (a record field, a class's
             // `val`), as the debugger lets users edit any value (§6.6): the checker reports FS0005 as a
             // recoverable error and still builds the store, which IlxGen emits to the backing field.
+            let byrefLikeInScope =
+                scopedVals |> List.exists (fun v -> isByrefLikeTy g m v.Type && not (isByrefTy g v.Type))
+
+            let rerunChecks = not frameTypars.IsEmpty || byrefLikeInScope
+
             let deferredErrors =
                 (if frameTypars.IsEmpty then [] else [ 3187; 3188 ])
+                @ (if byrefLikeInScope then [ 406 ] else [])
                 @ (if assigning then [ 5 ] else [])
 
             let! tcState, topAttrs, implFile, denv =
@@ -3205,7 +3299,8 @@ type EvaluationSession
                     implFile
 
                 let replaced =
-                    fieldVariables
+                    staticFieldVariables
+                    @ fieldVariables
                     @ (parameterContents |> List.map snd)
                     @ (contentsVariables |> List.map snd)
                     @ aliasVariables
@@ -3239,7 +3334,7 @@ type EvaluationSession
                 ),
                 checkedBodies
 
-            if not frameTypars.IsEmpty then
+            if rerunChecks then
                 do!
                     withDiagnostics BuildPhase.TypeCheck (fun () ->
                         let (CheckedImplFile(signature = signature; contents = contents)) = implFile
@@ -3267,6 +3362,7 @@ type EvaluationSession
                 [
                     yield! frameVals
                     yield! fieldVariables |> List.map _.Var
+                    yield! staticFieldVariables |> List.map _.Var
                     for _, contents in parameterContents @ contentsVariables do
                         if contents.Write.IsSome then
                             contents.Var

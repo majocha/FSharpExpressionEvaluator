@@ -528,7 +528,7 @@ one module and are tested against compiler output:
 |---|---|---|
 | closure `Invoke`/`Specialize`, `this :> FSharpFunc` | `CompilationMapping(Closure)` or the `name@line` class pattern | fields of `this`, with compiler suffixes removed; `this` is hidden |
 | `task { }` resumable state machine (`MoveNext` on a generated struct) | `IAsyncStateMachine` + F# naming | user fields of the state-machine data; `ResumptionPoint`, `MethodBuilder` etc. hidden |
-| `seq { }` (`GenerateNext`) | `GeneratedSequenceBase<T>` subclass | user fields; `pc`, `current` hidden |
+| `seq { }` (`GenerateNext`) | `GeneratedSequenceBase<T>` subclass | user fields; `pc`, `current` and the `next` parameter hidden |
 | `async { }` | closures chained through `AsyncActivation` | as for closures |
 | mutable local captured by a closure | local or field of type `FSharpRef<T>` | bound as `x.contents`, both reading and writing **(heuristic: indistinguishable from `let x = ref …` without the CDI in §9; an expression that doesn't check is compiled again with the ref cell as it is; §17, item 15)** |
 
@@ -2032,7 +2032,8 @@ assignments in F# frames, live in VS.
       - Locals other than parameters, and fields of closures and state
         machines, keep their IL types: no F# type is recorded for them (§9).
       - A function generic over a unit of measure (`float<'u>`) has typars
-        that IL does not have, so its parameters keep their IL types.
+        that IL does not have, so its parameters keep their IL types (fixed
+        in item 33).
     - **Tests.** `parameters have the F# types of the frame's function or
       member`: types and values of `d`, `d / t` and `route`, the FS0001 of
       `d + t`, the Locals rows, edits with and without the unit, and an
@@ -2527,7 +2528,7 @@ assignments in F# frames, live in VS.
       error (not only with `FSHARP_EE_LOG_VERBOSE`). This occurs only after a
       failure, so the usual query is not slower. When all variables fail
       alone, the error stays. A byref-like local (`Span<T>`) is such a
-      variable: it has no row yet.
+      variable: it has no row yet (item 33 gives it one).
     - **Variables without a name.** A debugger alias without a full name gave
       a Locals row with a null full name, and Concord threw
       (`DkmClrLocalVariableInfo.Create`). Now aliases and PDB locals without
@@ -2548,6 +2549,65 @@ assignments in F# frames, live in VS.
       and the version`.
     - **Not verified live yet.** The debugger's real blob for a not-loaded
       assembly, and the Locals window and call stack of byref frames.
+
+33. **A sweep of frame shapes (§6.3, §6.4, §6.5, 2026-11-15).** Item 32
+    found the `byref` failure in the owner's log, and no test had a byref
+    parameter. The test `frame shapes` now checks 70 ordinary F# frame shapes
+    (`SweepFixtures.fs`): byref-like and pointer values, struct frames,
+    members of many kinds, functions, variables of many types, closures and
+    state machines. For each shape, `CompileLocals` must list every variable
+    with its F# type from one compiled query. Each variable must compile by
+    its full name. An expression that uses the frame's variables must
+    compile, and it runs in-process where the test can give the frame's
+    values. Before this item, 59 shapes passed. Four causes made the other 11
+    fail:
+    - **Byref-like values.** A `Span<T>` or `ReadOnlySpan<T>` parameter or
+      local, an `[<IsByRefLike>]` struct, and the `this` of such a struct
+      gave FS0406, so Locals left them out (item 32). The checker sees a
+      frame variable as captured by the query's lambda. A byref-like value
+      cannot be captured, but it can be an argument of the query method,
+      which it is after `bindFrameValues`. Now FS0406 waits, and the
+      post-inference checks run again on the rewritten tree, as for a
+      generic frame. They still give FS0406 for an expression that captures
+      the value in a lambda. The Locals row returns the value as the frame
+      has it (`System.Span<int>`), as Roslyn's query does.
+    - **Units of measure in generic frames.** IL has no type parameters for
+      measure typars. The frame's F# value was not found for a function
+      generic over a unit (`float<'u>`), and its parameters had their IL
+      types. Now the typar count leaves out measure typars. The `this` of a
+      member of `Quantity<[<Measure>] 'u, 'T>` is `Quantity<'u,'T>` (before,
+      `Quantity<'T>`, which has the wrong number of arguments).
+    - **The `next` parameter of a `seq`.** `GenerateNext` takes where the
+      sequence continues. This parameter was a Locals row `next`. Now it is
+      plumbing, as the fields `pc` and `current` are: no row, and
+      expressions cannot name it.
+    - **`static let` values.** A class's `static let` values are static
+      fields. Only instance fields were variables, so `table` gave FS0039 in
+      the class's members. Now the static fields of the frame's type are
+      variables that expressions can read and assign. They have no Locals
+      rows, as in C#. In a closure or a state machine, this is only for a
+      type that is not generic.
+    - **Limits.**
+      - A local of a `fixed` pointer (`use p = fixed values`) is
+        `native int` in IL, and nothing records the F# types of locals
+        (§9). `p` reads as `nativeint`, so `NativePtr.read p` gives FS0001.
+        The test `a fixed pointer local reads as a nativeptr` is skipped
+        with the options.
+      - An `async` closure captures only the values that it uses. The
+        closure of a `for` body or a `finally` shows only those values.
+        The `finally` of a `task` around a loop with an await is also such
+        a closure.
+      - A class's `let` fields have their IL types: a field of type
+        `float<'u>` reads as `float`.
+    - **Tests.** `frame shapes` (one case for each shape), `byref-like
+      variables read and run` (through delegates, because reflection cannot
+      give or return a byref-like value), and `static let values read and
+      write as variables of the type's members`. The fallback tests of item
+      32 now use a local whose name F# cannot write, because no tested
+      frame has a variable that fails.
+    - **Not verified live yet.** The Locals row of a `Span<T>` (how the
+      debugger and the result provider show the value that the query
+      returns), and the other new rows.
 
 **Next in M4**
 

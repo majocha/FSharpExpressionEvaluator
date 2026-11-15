@@ -160,7 +160,7 @@ let private debuggeeModule (m: DkmClrModuleInstance) =
 let private referencedModule (appDomain: DkmClrAppDomain) (reference: AssemblyName) =
     try
         let mutable size = 0u
-        let ptr = appDomain.GetMetaDataBytesPtr(reference.FullName, &size)
+        let ptr = Phases.time "debugger" (fun () -> appDomain.GetMetaDataBytesPtr(reference.FullName, &size))
 
         if ptr = 0n || size = 0u then
             log $"no metadata for {reference.FullName}: empty blob"
@@ -183,142 +183,6 @@ let private referencedModule (appDomain: DkmClrAppDomain) (reference: AssemblyNa
     with e ->
         log $"no metadata for {reference.FullName}: {e.GetType().Name}"
         None
-
-/// The compiler's warm-up over devenv's own assemblies (`EvaluationSession.WarmUpCompiler`), run
-/// once per process on a thread-pool thread, from when a debuggee loads FSharp.Core
-/// (docs/DESIGN.md §6.9). The first break then finds most of the compiler compiled by the JIT.
-let private compilerWarmUp =
-    lazy
-        (Task.Run(fun () ->
-            let sw = Stopwatch.StartNew()
-
-            try
-                let modules, compiled = EvaluationSession.WarmUpCompiler()
-                log $"compiler warmed up over {modules} modules in {sw.ElapsedMilliseconds} ms (compiled: {compiled})"
-            with e ->
-                Log.exn "EE" "compiler warm-up" e))
-
-/// Starts the compiler's warm-up, unless it has started already.
-let warmUpCompiler () = compilerWarmUp.Force() |> ignore
-
-/// Waits for the compiler's warm-up to end, if it has started; at most 10 s.
-let private waitForCompilerWarmUp () =
-    if compilerWarmUp.IsValueCreated then
-        compilerWarmUp.Value.Wait(TimeSpan.FromSeconds 10.0) |> ignore
-
-/// The evaluation session of an AppDomain, kept with it while its set of modules stays the same,
-/// built on a thread-pool thread (docs/DESIGN.md §6.9). Replacing it, or the AppDomain going away,
-/// releases the session, once built. A build that failed stays, so that the same modules are not
-/// built again.
-[<AllowNullLiteral>]
-type private SessionItem(modules: Guid[], session: Task<EvaluationSession>) =
-    inherit DkmDataItem()
-    member _.Modules = modules
-    member _.Session = session
-
-    override _.OnClose() =
-        session.ContinueWith(fun (t: Task<EvaluationSession>) ->
-            if t.Status = TaskStatus.RanToCompletion then
-                (t.Result :> IDisposable).Dispose())
-        |> ignore
-
-/// What a session item is built for: the modules loaded in the AppDomain, by MVID in order (compared
-/// as arrays, element by element).
-let private modulesKey (modules: DkmClrModuleInstance[]) =
-    let mvids = modules |> Array.map _.Mvid
-    Array.sortInPlace mvids
-    mvids
-
-/// The session item of the frame's AppDomain for the modules loaded in it now. A new one copies the
-/// modules out of the debuggee here, while it is stopped (the debugger's buffers of referenced
-/// assemblies go away when they load), then builds the session and warms it up in the frame on a
-/// thread-pool thread.
-let private sessionItem (address: DkmClrInstructionAddress) =
-    let appDomain = address.ModuleInstance.AppDomain
-    let modules = modulesInAppDomain address
-    let key = modulesKey modules
-
-    match appDomain.GetDataItem<SessionItem>() with
-    | item when not (isNull item) && item.Modules = key -> item
-    | _ ->
-        let sw = Stopwatch.StartNew()
-        let loaded = modules |> Array.choose debuggeeModule |> List.ofArray
-        let readLoaded = sw.ElapsedMilliseconds
-        let loadedNames = loaded |> List.map (fun (_, name, _) -> name) |> set
-
-        let referenced =
-            loaded
-            |> List.collect (fun (_, _, references) -> references)
-            |> List.filter (fun r -> not (loadedNames.Contains r.Name))
-            |> List.distinctBy _.Name
-            |> List.choose (referencedModule appDomain)
-
-        let debuggeeModules = (loaded |> List.map (fun (m, _, _) -> m)) @ referenced
-        let frameAssembly = assemblyName address.ModuleInstance
-        let methodToken = address.MethodId.Token
-        let read = sw.ElapsedMilliseconds
-
-        let build () =
-            let sw = Stopwatch.StartNew()
-
-            let session =
-                try
-                    EvaluationSession.Create debuggeeModules
-                with e ->
-                    // Logged once: the item stays for these modules, and evaluations fall back to C#
-                    // until they change.
-                    Log.exn
-                        "EE"
-                        $"session for AppDomain {appDomain.Id} ({loaded.Length} loaded and {referenced.Length} referenced modules; C# until they change)"
-                        e
-
-                    reraise ()
-
-            let created = sw.ElapsedMilliseconds
-            // Imports may build beside the compiler's warm-up, but queries are compiled one at a time.
-            waitForCompilerWarmUp ()
-            let waited = sw.ElapsedMilliseconds - created
-            let compiled = session.WarmUp(frameAssembly, methodToken)
-
-            log
-                $"session for AppDomain {appDomain.Id}: {loaded.Length} loaded and {referenced.Length} referenced modules, read in {readLoaded} + {read - readLoaded} ms, built in {created} ms, waited {waited} ms for the compiler's warm-up, warmed up in {sw.ElapsedMilliseconds - created - waited} ms (compiled: {compiled})"
-
-            session
-
-        let item = SessionItem(key, Task.Run build)
-        appDomain.SetDataItem(DkmDataCreationDisposition.CreateAlways, item)
-        item
-
-/// Starts building the session of the frame's AppDomain, unless it is built or being built for the
-/// modules loaded now. The frame decoder calls it at every F# frame; only the first one of a break
-/// after modules changed does more than look.
-let warmUp (address: DkmClrInstructionAddress) = sessionItem address |> ignore
-
-/// The evaluation session for the frame's AppDomain: imports built from every module loaded in it,
-/// rebuilt when modules are loaded or unloaded. Building if it is still being built after
-/// `timeout`; Failed, at once, while the modules are those a build failed for.
-let session (timeout: TimeSpan) (address: DkmClrInstructionAddress) =
-    let item = sessionItem address
-
-    match SessionBuild.state item.Session timeout with
-    | SessionBuild.Building ->
-        log $"session for AppDomain {address.ModuleInstance.AppDomain.Id}: still building after {timeout.TotalSeconds} s"
-        SessionBuild.Building
-    | state -> state
-
-/// The F# names of the types of the frame method's parameters and return type, where the F#
-/// signature says more than IL (`EvaluationSession.SignatureTypeNames`). Only from a session that is
-/// built for the modules loaded now: the decoders neither wait for one nor start one (a breakpoint's
-/// name can be asked for while the debuggee runs), and name the types from IL until then.
-let signatureTypeNames (address: DkmClrInstructionAddress) =
-    match address.ModuleInstance.AppDomain.GetDataItem<SessionItem>() with
-    | item when
-        not (isNull item)
-        && item.Session.Status = TaskStatus.RanToCompletion
-        && item.Modules = modulesKey (modulesInAppDomain address)
-        ->
-        item.Session.Result.SignatureTypeNames(assemblyName address.ModuleInstance, address.MethodId.Token)
-    | _ -> [], None
 
 /// The frame's locals in scope at its IL offset and the namespaces open there, from the portable PDB.
 let private pdbScope (address: DkmClrInstructionAddress) =
@@ -498,3 +362,185 @@ let frameWith (address: DkmClrInstructionAddress) (debuggerAliases: Collections.
 /// The context of the stopped frame: its method, local signature, locals, opens and the aliases.
 let frame (address: DkmClrInstructionAddress) (inspectionContext: DkmInspectionContext) =
     frameWith address (aliases address inspectionContext)
+
+/// When a runtime instance loaded its first module and FSharp.Core (Stopwatch timestamps; 0 when
+/// FSharp.Core is not loaded), for the log of the session build (docs/DESIGN.md §6.9).
+[<AllowNullLiteral>]
+type private LoadTimesItem(firstModule: int64) =
+    inherit DkmDataItem()
+    member _.FirstModule = firstModule
+    member val FSharpCore = 0L with get, set
+
+/// The milliseconds since a Stopwatch timestamp.
+let private msSince (timestamp: int64) =
+    (Stopwatch.GetTimestamp() - timestamp) * 1000L / Stopwatch.Frequency
+
+/// Notes the load of a CLR module, for the log of the session build. Concord calls it on its
+/// event thread, one module at a time.
+let moduleLoaded (moduleInstance: DkmModuleInstance) (isFSharpCore: bool) =
+    let runtime = moduleInstance.RuntimeInstance
+
+    let item =
+        match runtime.GetDataItem<LoadTimesItem>() with
+        | null ->
+            let item = LoadTimesItem(Stopwatch.GetTimestamp())
+            runtime.SetDataItem(DkmDataCreationDisposition.CreateAlways, item)
+            log "the runtime loaded its first module"
+            item
+        | item -> item
+
+    if isFSharpCore && item.FSharpCore = 0L then
+        item.FSharpCore <- Stopwatch.GetTimestamp()
+        log $"FSharp.Core loaded, {msSince item.FirstModule} ms after the runtime's first module"
+
+/// When the session build starts, against the module loads, for the log.
+let private buildStart (runtime: DkmRuntimeInstance) =
+    match runtime.GetDataItem<LoadTimesItem>() with
+    | null -> "no module load seen"
+    | item when item.FSharpCore = 0L -> $"{msSince item.FirstModule} ms after the runtime's first module"
+    | item -> $"{msSince item.FirstModule} ms after the runtime's first module, {msSince item.FSharpCore} ms after FSharp.Core"
+
+/// The compiler's warm-up over devenv's own assemblies (`EvaluationSession.WarmUpCompiler`), run
+/// once per process on a thread-pool thread, from when a debuggee loads FSharp.Core
+/// (docs/DESIGN.md §6.9). The first break then finds most of the compiler compiled by the JIT.
+let private compilerWarmUp =
+    lazy
+        (Task.Run(fun () ->
+            let sw = Stopwatch.StartNew()
+
+            try
+                let modules, compiled = EvaluationSession.WarmUpCompiler()
+                log $"compiler warmed up over {modules} modules in {sw.ElapsedMilliseconds} ms (compiled: {compiled})"
+            with e ->
+                Log.exn "EE" "compiler warm-up" e))
+
+/// Starts the compiler's warm-up, unless it has started already.
+let warmUpCompiler () = compilerWarmUp.Force() |> ignore
+
+/// The evaluation session of an AppDomain, kept with it while its set of modules stays the same,
+/// built on a thread-pool thread (docs/DESIGN.md §6.9). Replacing it, or the AppDomain going away,
+/// releases the session, once built. A build that failed stays, so that the same modules are not
+/// built again.
+[<AllowNullLiteral>]
+type private SessionItem(modules: Guid[], session: Task<EvaluationSession>) =
+    inherit DkmDataItem()
+    member _.Modules = modules
+    member _.Session = session
+
+    override _.OnClose() =
+        session.ContinueWith(fun (t: Task<EvaluationSession>) ->
+            if t.Status = TaskStatus.RanToCompletion then
+                (t.Result :> IDisposable).Dispose())
+        |> ignore
+
+/// What a session item is built for: the modules loaded in the AppDomain, by MVID in order (compared
+/// as arrays, element by element).
+let private modulesKey (modules: DkmClrModuleInstance[]) =
+    let mvids = modules |> Array.map _.Mvid
+    Array.sortInPlace mvids
+    mvids
+
+/// The session item of the frame's AppDomain for the modules loaded in it now. A new one copies the
+/// modules and the frame's context out of the debuggee here, while it is stopped (the debugger's
+/// buffers of referenced assemblies go away when they load). Then it builds the session and warms
+/// it up in the frame on a thread-pool thread.
+let private sessionItem (address: DkmClrInstructionAddress) =
+    let appDomain = address.ModuleInstance.AppDomain
+    let modules = modulesInAppDomain address
+    let key = modulesKey modules
+
+    match appDomain.GetDataItem<SessionItem>() with
+    | item when not (isNull item) && item.Modules = key -> item
+    | _ ->
+        log $"session for AppDomain {appDomain.Id}: build starts, {buildStart address.RuntimeInstance}"
+        let sw = Stopwatch.StartNew()
+        let loaded = modules |> Array.choose debuggeeModule |> List.ofArray
+        let readLoaded = sw.ElapsedMilliseconds
+        let loadedNames = loaded |> List.map (fun (_, name, _) -> name) |> set
+
+        let referenced, referencedTimes =
+            Phases.record (fun () ->
+                loaded
+                |> List.collect (fun (_, _, references) -> references)
+                |> List.filter (fun r -> not (loadedNames.Contains r.Name))
+                |> List.distinctBy _.Name
+                |> List.choose (referencedModule appDomain))
+
+        let debuggeeModules = (loaded |> List.map (fun (m, _, _) -> m)) @ referenced
+
+        // The frame as the first Locals query sees it, without the aliases: the warm-up then loads
+        // the imports of its variables' types.
+        let frame =
+            try
+                frameWith address null
+            with e ->
+                Log.exn "EE" "warm-up frame" e
+                EvaluationSession.MethodFrame(assemblyName address.ModuleInstance, address.MethodId.Token)
+
+        let build () =
+            let sw = Stopwatch.StartNew()
+
+            let session, createTimes =
+                try
+                    Phases.record (fun () -> EvaluationSession.Create debuggeeModules)
+                with e ->
+                    // Logged once: the item stays for these modules, and evaluations fall back to C#
+                    // until they change.
+                    Log.exn
+                        "EE"
+                        $"session for AppDomain {appDomain.Id} ({loaded.Length} loaded and {referenced.Length} referenced modules; C# until they change)"
+                        e
+
+                    reraise ()
+
+            let created = sw.ElapsedMilliseconds
+            // Also beside the compiler's warm-up, if it still runs: the sessions are separate, and the
+            // JIT compiles each method once, for both threads. The frame's own work (its variables'
+            // types) then runs while the compiler warms up.
+            let compiled = session.WarmUp frame
+
+            log
+                $"session for AppDomain {appDomain.Id}: {loaded.Length} loaded and {referenced.Length} referenced modules, read in {readLoaded} + {referencedTimes}, built in {createTimes}, warmed up in {sw.ElapsedMilliseconds - created} ms (compiled: {compiled})"
+
+            session
+
+        let item = SessionItem(key, Task.Run build)
+        appDomain.SetDataItem(DkmDataCreationDisposition.CreateAlways, item)
+        item
+
+/// Starts building the session of the frame's AppDomain, unless it is built or being built for the
+/// modules loaded now. The frame decoder calls it at every F# frame; only the first one of a break
+/// after modules changed does more than look.
+let warmUp (address: DkmClrInstructionAddress) = sessionItem address |> ignore
+
+/// The evaluation session for the frame's AppDomain: imports built from every module loaded in it,
+/// rebuilt when modules are loaded or unloaded. Building if it is still being built after
+/// `timeout`; Failed, at once, while the modules are those a build failed for.
+let session (timeout: TimeSpan) (address: DkmClrInstructionAddress) =
+    let item = sessionItem address
+    let running = not item.Session.IsCompleted
+    let sw = Stopwatch.StartNew()
+
+    match SessionBuild.state item.Session timeout with
+    | SessionBuild.Building ->
+        log $"session for AppDomain {address.ModuleInstance.AppDomain.Id}: still building after {timeout.TotalSeconds} s"
+        SessionBuild.Building
+    | state ->
+        if running then
+            log $"session for AppDomain {address.ModuleInstance.AppDomain.Id}: a query waited {sw.ElapsedMilliseconds} ms for it"
+
+        state
+
+/// The F# names of the types of the frame method's parameters and return type, where the F#
+/// signature says more than IL (`EvaluationSession.SignatureTypeNames`). Only from a session that is
+/// built for the modules loaded now: the decoders neither wait for one nor start one (a breakpoint's
+/// name can be asked for while the debuggee runs), and name the types from IL until then.
+let signatureTypeNames (address: DkmClrInstructionAddress) =
+    match address.ModuleInstance.AppDomain.GetDataItem<SessionItem>() with
+    | item when
+        not (isNull item)
+        && item.Session.Status = TaskStatus.RanToCompletion
+        && item.Modules = modulesKey (modulesInAppDomain address)
+        ->
+        item.Session.Result.SignatureTypeNames(assemblyName address.ModuleInstance, address.MethodId.Token)
+    | _ -> [], None

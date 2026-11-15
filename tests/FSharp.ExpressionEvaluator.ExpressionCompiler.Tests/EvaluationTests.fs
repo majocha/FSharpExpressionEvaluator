@@ -1788,6 +1788,134 @@ let ``the compiler warms up over the runtime's own assemblies`` () =
     Assert.True(compiled)
 
 [<Fact>]
+let ``phase times are recorded on the recording thread only`` () =
+    let value, text =
+        Phases.record (fun () ->
+            Phases.time "a" ignore
+            Phases.time "b" (fun () -> Phases.time "a" ignore)
+            // Another thread records nothing here. A thread of its own: a task can run inline on
+            // the thread that waits for it, and then records there.
+            let other = Threading.Thread(fun () -> Phases.time "c" ignore)
+            other.Start()
+            other.Join()
+            42)
+
+    Assert.Equal(42, value)
+    Assert.Matches(@"^\d+ ms \(a \d+, b \d+\)$", text)
+    // Without a recording, a phase only runs.
+    Assert.Equal(1, Phases.time "d" (fun () -> 1))
+
+/// The debugger compiles in two sessions at the same time: the debuggee's session warms up in the
+/// frame while the compiler's warm-up compiles in its own session (docs/DESIGN.md §17, item 34).
+/// Each session here has its own module set and compiles a mix of queries on a thread of its own,
+/// at the same time as the other. Every result must be the same as in a session that compiled the
+/// same queries alone, assembly bytes included.
+[<Fact>]
+let ``two sessions compile at the same time as each alone`` () =
+    let all = debuggeeModules false
+    let self = Path.GetFileName(Assembly.GetExecutingAssembly().Location)
+
+    // As the compiler's warm-up: a frame in FSharp.Core, and a module set without this assembly.
+    let others =
+        all |> List.filter (fun m -> not (String.Equals(Path.GetFileName m.FileName, self, StringComparison.OrdinalIgnoreCase)))
+
+    let stringLength =
+        typeof<unit>.Assembly.GetType("Microsoft.FSharp.Core.StringModule").GetMethod("Length")
+
+    let coreFrame = EvaluationSession.MethodFrame("FSharp.Core", stringLength.MetadataToken)
+    let add = frameOf (methodOf fixtures "add")
+    let withLocals = frameOf (methodOf fixtures "withLocals")
+
+    let describe (result: Result<byte[] * string, EvaluationDiagnostic list>) =
+        match result with
+        | Ok(assembly, resultType) -> $"Ok {resultType} {Convert.ToBase64String assembly}"
+        | Error diagnostics -> $"""Error {diagnostics |> List.map (fun d -> d.Number) |> List.map string |> String.concat ","}"""
+
+    let expression (s: EvaluationSession) frame text =
+        s.CompileExpression(frame, text) |> Result.map (fun c -> c.Assembly, c.ResultType)
+
+    let locals (s: EvaluationSession) frame =
+        s.CompileLocals(frame, false)
+        |> Result.map (fun c -> c.Assembly, c.Locals |> List.map (fun l -> $"{l.Name}: {l.ResultType}") |> String.concat "; ")
+
+    let debuggeeQueries (s: EvaluationSession) =
+        [
+            for i in 1..15 do
+                expression s add $"x + y + {i}"
+                expression s withLocals "[ x; doubled ] |> List.map (fun i -> i * 2) |> List.sum"
+                locals s withLocals
+                expression s add "undefinedName + x"
+        ]
+        |> List.map describe
+
+    let warmUpQueries (s: EvaluationSession) =
+        [
+            for i in 1..15 do
+                expression s coreFrame $"str.Length + {i}"
+                expression s coreFrame "[ str; str ] |> List.map (fun s -> s.ToUpper()) |> String.concat \",\""
+                locals s coreFrame
+                expression s coreFrame "str + 1"
+        ]
+        |> List.map describe
+
+    let alone (modules, queries) =
+        use s = EvaluationSession.Create modules
+        queries s
+
+    let debuggeeAlone = alone (all, debuggeeQueries)
+    let warmUpAlone = alone (others, warmUpQueries)
+
+    // Fresh sessions, as the counters of compiler-generated names are per session.
+    use debuggeeSession = EvaluationSession.Create all
+    use warmUpSession = EvaluationSession.Create others
+    use start = new Threading.Barrier(2)
+    let clock = Diagnostics.Stopwatch.StartNew()
+
+    let onThread (queries: EvaluationSession -> string list) (s: EvaluationSession) =
+        let mutable results = Error(exn "not run")
+        let mutable span = 0L, 0L
+
+        let thread =
+            Threading.Thread(fun () ->
+                start.SignalAndWait()
+                let started = clock.ElapsedTicks
+
+                results <-
+                    try
+                        Ok(queries s)
+                    with e ->
+                        Error e
+
+                span <- started, clock.ElapsedTicks)
+
+        thread.Start()
+        thread, (fun () -> results, span)
+
+    let debuggeeThread, debuggeeResults = onThread debuggeeQueries debuggeeSession
+    let warmUpThread, warmUpResults = onThread warmUpQueries warmUpSession
+    debuggeeThread.Join()
+    warmUpThread.Join()
+    let debuggeeResults, (debuggeeStart, debuggeeEnd) = debuggeeResults ()
+    let warmUpResults, (warmUpStart, warmUpEnd) = warmUpResults ()
+
+    // The compiles overlapped: each thread started before the other ended.
+    Assert.True(debuggeeStart < warmUpEnd && warmUpStart < debuggeeEnd, "the threads did not run at the same time")
+
+    let check name (expected: string list) (actual: Result<string list, exn>) =
+        match actual with
+        | Error e -> failwithf "%s: %O" name e
+        | Ok actual ->
+            Assert.Equal(60, actual.Length)
+            Assert.True(expected |> List.exists (fun r -> r.StartsWith "Ok"), $"{name}: no query compiled")
+            Assert.True(expected |> List.exists (fun r -> r.StartsWith "Error"), $"{name}: no query failed")
+
+            for i, (e, a) in List.indexed (List.zip expected actual) do
+                Assert.True((e = a), $"{name}, query {i}: alone {e.Substring(0, min 80 e.Length)}, at the same time {a.Substring(0, min 80 a.Length)}")
+
+    check "debuggee session" debuggeeAlone debuggeeResults
+    check "warm-up session" warmUpAlone warmUpResults
+
+[<Fact>]
 let ``timings of the session and of queries`` () =
     match Environment.GetEnvironmentVariable "FSHARP_EE_PERF" with
     | null
@@ -1844,7 +1972,7 @@ let ``timings of the session and of queries`` () =
 
         // As the debugger's session is warmed up on the first break (FSHARP_EE_PERF_WARMUP=0 skips it).
         if Environment.GetEnvironmentVariable "FSHARP_EE_PERF_WARMUP" <> "0" then
-            time "WarmUp" (fun () -> s.WarmUp(withLocals.AssemblyName, withLocals.MethodToken)) |> ignore
+            time "WarmUp" (fun () -> s.WarmUp withLocals) |> ignore
 
         time "CompileExpression 'x + y' (first)" (fun () -> s.CompileExpression(add, "x + y")) |> ok "x + y"
 

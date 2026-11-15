@@ -180,10 +180,12 @@ type ExpressionCompiler() =
                         }
 
                     // CompileLocals tries again without the opens itself, before each variable alone.
-                    match session.CompileLocals(frame, argumentsOnly) with
+                    let compiled, times = Phases.record (fun () -> session.CompileLocals(frame, argumentsOnly))
+
+                    match compiled with
                     | Ok compiled ->
                         Log.verbose "EC" (fun () ->
-                            $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}, {sw.ElapsedMilliseconds} ms")
+                            $"GetClrLocalVariableQuery: {compiled.Locals.Length} variable(s), aliases {frame.Aliases |> List.map (fun a -> displayName a.Name)}, {sw.ElapsedMilliseconds} ms (compiled in {times})")
 
                         // Concord throws on a null name, and the whole query would fall back to C#.
                         let named, unnamed =

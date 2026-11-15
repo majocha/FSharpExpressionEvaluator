@@ -18,6 +18,7 @@
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ResultProvider\FSharpTypes.fs" Link="Core\FSharpTypes.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MetadataTypes.fs" Link="Core\MetadataTypes.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\MethodNames.fs" Link="Core\MethodNames.fs" />
+    <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\Phases.fs" Link="Core\Phases.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\Evaluation.fsi" Link="Core\Evaluation.fsi" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\Evaluation.fs" Link="Core\Evaluation.fs" />
     <Compile Include="..\..\src\FSharp.ExpressionEvaluator.ExpressionCompiler\SessionBuild.fs" Link="Core\SessionBuild.fs" />

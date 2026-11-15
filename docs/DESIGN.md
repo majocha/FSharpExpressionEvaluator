@@ -623,8 +623,16 @@ exceptions. Every assignment sets `PotentialSideEffect`.
 
 - **Targets.** First evaluation in a session under about 2 s; a warm DataTip
   under about 100 ms; the Locals query under about 50 ms warm.
-- **Warm-up.** On the first break in an F# frame, building `TcImports` starts
-  on a background thread. The frame decoder triggers this; it is cheap.
+- **Warm-up.** Two warm-ups run on background threads (§17, items 14 and 34):
+  - When the debuggee loads FSharp.Core, the compiler's warm-up compiles a
+    query over devenv's own FSharp.Core, once per devenv process. The parser
+    and the IL writer warm up beside its imports, on other threads.
+  - On the first break in an F# frame, the frame decoder starts the
+    AppDomain's session build: `TcImports`, then the queries of the stopped
+    frame. It does not wait for the compiler's warm-up.
+- **Phase times.** The log gives the time of each phase of a session build
+  and of the compiler's warm-up (`Phases.fs`), and when the build starts
+  against the module loads.
 - **Threading.** The component is `Synchronized="true"`. FCS thread statics
   (diagnostics logger, build phase) are set up per call.
 - **Cancellation.** Concord calls are synchronous, so long imports must not
@@ -1810,8 +1818,8 @@ assignments in F# frames, live in VS.
       debuggee's own session; a fixed list of names missed
       `System.Runtime.Numerics` and `System.Collections`.
     - **With the debuggee's session.** Its `Create` may run beside the
-      warm-up; its `WarmUp` waits for it (at most 10 s), so two queries
-      never compile at once. The log shows the wait.
+      warm-up. Its `WarmUp` waited for it (at most 10 s), so two queries
+      never compiled at once. Item 34 removed the wait.
     - **Off switch.** `FSHARP_EE_COMPILER_WARMUP=0` in devenv's environment,
       for measuring.
     - **Measured** live, TestDebuggee net10.0, whose first break comes about
@@ -2629,12 +2637,136 @@ assignments in F# frames, live in VS.
       debugger and the result provider show the value that the query
       returns), and the other new rows.
 
+34. **Time to the first session (§6.9, 2026-11-15).** The target is a ready
+    session about 2 s after the first break. Live runs showed 3.6–4.1 s.
+    - **Phase times in the log.** `Phases.fs` records the time of each
+      phase on the thread that records. A phase costs one thread-local read
+      when nothing records. The log now gives:
+      - when the runtime loads its first module and FSharp.Core, and when
+        the session build starts after them;
+      - the read of the modules, with the time in the debugger's calls;
+      - `Create`: resolution, framework imports, other imports;
+      - each warm-up query: Parse, TypeCheck, IlxGen (with optimize,
+        generate and write in it);
+      - how long a query waited for the build, and the phases of each
+        Locals query (verbose).
+    - **What the numbers showed.** The critical path is the compiler's
+      warm-up, and nearly all of its time is the JIT. In a fresh devenv, the
+      first break comes 0.2–0.6 s after FSharp.Core loads. The session's own
+      read and `Create` end about 1.2 s after the break. Then the session
+      waited 2.8–7.5 s for the warm-up. The warm-up ran Parse, TypeCheck and
+      IlxGen one after the other, on one core.
+    - **Change 1: the parser and the IL writer warm up beside the imports.**
+      They need no imports. `WarmUpCompiler` starts them on two other
+      threads: a parse of the warm-up query and a write of a small assembly.
+      The JIT compiles each method once, for all threads. In a .NET
+      Framework process that runs the warm-up alone (3 runs each), the
+      warm-up took 2.77–3.13 s instead of 3.39–3.76 s.
+    - **Change 2: the session warms up in the stopped frame, without a
+      wait.** The frame decoder reads the frame's context (locals, opens,
+      local signature, without aliases) with the modules. The session's
+      `WarmUp` compiles in that frame, so the first Locals query finds the
+      imports of its variables' types. It no longer waits for the compiler's
+      warm-up. The two queries compile at the same time in separate
+      sessions, with separate `TcImports`.
+      - **Process-wide state on the path of a query.** A check of the
+        evaluator and of the FCS code that a query uses found this state.
+        Each item is safe for two sessions at the same time:
+        - `DebuggeeFileSystem.Instance`: installed once by a `lazy`. Its
+          files are in a `ConcurrentDictionary`, under a directory for each
+          session (an `Interlocked` counter).
+        - Stamps and uniques (`newStamp`, `newUnique`), the record-spread
+          name counter: `Interlocked`.
+        - Names of compiler-generated values (`CompilerGlobalState`): one
+          for each `TcGlobals`, so for each session. Its counters are
+          concurrent.
+        - The file index table (`range.fs`): a `ConcurrentDictionary`, and
+          a lock for new files.
+        - The IL reader cache: a lock and a concurrent table. The IL
+          instruction tables (`ilread.fs`) are filled once without a lock,
+          but each fill gives the same tables.
+        - Namespace tables (`il.fs`): concurrent. The overload and type
+          subsumption caches: one for each `TcGlobals` (a weak map).
+        - `global_g`: written by each import, read only by debug printing
+          in a Debug FCS.
+        - The diagnostics logger and build phase: set for each query on its
+          own thread (`withDiagnostics`).
+        - Each session has its own `LexResourceManager`, caches and
+          counter. `Phases` and the log are thread-safe.
+      - **Test.** `two sessions compile at the same time as each alone`.
+        Two sessions over different module sets (this assembly's frames,
+        and FSharp.Core's `String.length` without this assembly) compile 60
+        queries each, on two threads at the same time. The queries are
+        expressions, Locals queries and failing expressions. Each result
+        (Ok or the error numbers, the result type, the assembly bytes) must
+        be the same as in a session that compiled the same queries alone.
+        The test also checks that the two threads overlapped. It passed in
+        three runs of the full suite in a row.
+    - **Measured** live, Release, a fresh devenv, TestDebuggee (net11.0: 15
+      loaded and 72 referenced modules; net48: 7 and 27). Times are in ms,
+      before and after both changes:
+
+      | | net11.0 before | net11.0 after | net48 before | net48 after |
+      |---|---|---|---|---|
+      | Runtime start to FSharp.Core | 81 | 68 | 148 | 62 |
+      | FSharp.Core to build start (break) | 354 | 292 | 565 | 212 |
+      | Warm-up: read, `Create` | 92, 1366 | 75, 1301 | 127, 2531 | 61, 997 |
+      | Warm-up: Parse | 752 | 1136 beside | 1730 | 828 beside |
+      | Warm-up: TypeCheck | 1491 | 1027 | 2449 | 1017 |
+      | Warm-up: IlxGen (write in it) | 1129 (204) | 966 (33) | 2734 (483) | 781 (26) |
+      | Warm-up total | 5115 | 3504 | 10174 | 2980 |
+      | Session: read (debugger) | 590 | 591 (535) | 385 | 178 (125) |
+      | Session: `Create` | 543 | 493 | 1761 | 666 |
+      | Session: wait for the warm-up | 3626 | — | 7461 | — |
+      | Session: `WarmUp` | 153 | 2530 beside | 295 | 2283 beside |
+      | **Build start to ready** | **4914** | **3648** | **9908** | **3147** |
+      | First Locals query (44 variables) | 3784 | 2391 | 8570 | 2324 |
+      | Its compile after ready | 413 | 278 | 708 | 211 |
+
+      The net48 "before" run was slow everywhere: devenv's own start ran
+      beside it. A run with change 1 only took 3390 ms from build start to
+      ready on net48 and 4104 ms on net11.0. Later debug sessions in the
+      same devenv were ready 0.59–0.86 s after the break on net11.0 (before:
+      1.07–2.04 s) and 0.41–0.71 s on net48 (before: 0.65–1.06 s).
+    - **Against the target.** The first session of a devenv process is
+      ready about 3.1–3.6 s after the first break, against 2 s. Later
+      sessions meet the target. The rest is the JIT of the compiler
+      (TypeCheck and IlxGen, about 2 s of the warm-up). Without a cache on
+      disk or native images, only an earlier start can hide it.
+    - **Not done, and why.**
+      - **The build at module load.** The session's read and `Create` end
+        1.0–1.5 s after FSharp.Core loads, while the warm-up ends 3–3.5 s
+        after it. A start 0.2–0.3 s earlier gains nothing, and the module
+        set at the first break is larger, which causes a second build.
+      - **Parallel reads of the modules.** About 95% of the read is the
+        debugger's `GetMetaDataBytesPtr` for the referenced assemblies
+        (4–8 ms each). These calls run on Concord's thread in the stack
+        walk. Calls from other threads while that thread waits can
+        deadlock in a synchronized component.
+      - **The JIT of all FCS methods ahead of time** (`PrepareMethod` on 15
+        threads). Reflection over its 80,000 methods took 10–12 s, and the
+        warm-up became slower (5.7–7.2 s, 47 s of CPU).
+      - **A warm-up at VS start.** It would hide the JIT for the first
+        debug session, but every VS start would pay about 3.5 s of CPU and
+        about 170 MB, also without F# debugging.
+    - **Tests.** `phase times are recorded on the recording thread only`
+      (the other thread is a thread of its own: a task can run inline on
+      the thread that waits for it, and its phases are then recorded too,
+      as `Phases.fs` says). `two sessions compile at the same time as each
+      alone`. `the compiler warms up over the runtime's own assemblies` now also
+      fails when the parser or the IL writer warm-up fails.
+
 **Next in M4**
 
-- Cold start (§6.9): the first break still waits for the JIT when it comes
-  right after FSharp.Core loads. NGen of the private compiler, which VS does
-  for per-machine extensions (the VSIX asset's `Ngen` attributes; not
-  measured: that needs admin and a per-machine install), would remove it.
+- Cold start (§6.9, §17 item 34): the first session of a devenv process is
+  ready 3.1–3.6 s after the first break, against 2 s. The rest is the JIT
+  of the private compiler (`FSharp.ExpressionEvaluator.Compiler.dll`,
+  which devenv has no native image of). NGen of it, which VS does for
+  per-machine extensions (the VSIX asset's `Ngen` attributes; not measured:
+  that needs admin and a per-machine install), would remove most of it.
+- The Locals query of a frame with 44 variables takes about 200 ms warm,
+  most of it in the optimizer (§17 item 34). The target of 50 ms was
+  measured with 24 variables.
 
 
 ---

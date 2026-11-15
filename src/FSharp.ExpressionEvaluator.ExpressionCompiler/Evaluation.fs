@@ -175,7 +175,7 @@ let private withDiagnosticsIgnoring (ignored: int list) (phase: BuildPhase) (f: 
 
     let value =
         try
-            Some(f ())
+            Some(Phases.time (string phase) f)
         with
         | ReportedError _ -> None
         | e ->
@@ -1621,6 +1621,116 @@ let private fieldStores (md: MetadataReader) (methodToken: int) (il: byte[]) : M
 
     stores
 
+/// The options of the IL writer for a query assembly.
+let private writerOptions ilg checksumAlgorithm pathMap : FSharp.Compiler.AbstractIL.ILBinaryWriter.options =
+    {
+        ilg = ilg
+        outfile = QueryTypeName + ".dll"
+        pdbfile = None
+        emitTailcalls = false
+        deterministic = true
+        portablePDB = false
+        embeddedPDB = false
+        embedAllSource = false
+        embedSourceList = []
+        allGivenSources = []
+        sourceLink = ""
+        checksumAlgorithm = checksumAlgorithm
+        signer = None
+        dumpDebugInfo = false
+        referenceAssemblyOnly = false
+        referenceAssemblyAttribOpt = None
+        referenceAssemblySignatureHash = None
+        pathMap = pathMap
+        moduleCustomDebugInfoRows = []
+        methodCustomDebugInfoRows = Map.empty
+    }
+
+/// A new compiler configuration, before the references and the settings of a session.
+let private newTcConfigBuilder binariesDir =
+    TcConfigBuilder.CreateNew(
+        SimulatedMSBuildReferenceResolver.getResolver (),
+        defaultFSharpBinariesDir = binariesDir,
+        reduceMemoryUsage = ReduceMemoryFlag.Yes,
+        implicitIncludeDir = Directory.GetCurrentDirectory(),
+        isInteractive = false,
+        isInvalidationSupported = false,
+        defaultCopyFSharpCore = CopyFSharpCoreFlag.No,
+        tryGetMetadataSnapshot = (fun _ -> None),
+        sdkDirOverride = None,
+        rangeForErrors = range0
+    )
+
+/// The warm-up expression: a closure and FSharp.Core functions, so that optimization and code
+/// generation run through more of the compiler.
+let private warmUpExpression = "[ 0 ] |> List.map (fun i -> i + 1) |> List.sum"
+
+/// Parses the warm-up expression as a query, for the JIT. The parser needs no imports, so this can
+/// run while a session imports (docs/DESIGN.md §6.9).
+let private warmUpParser () =
+    let tcConfig = TcConfig.Create(newTcConfigBuilder AppContext.BaseDirectory, validate = false)
+
+    withDiagnostics BuildPhase.Parse (fun () ->
+        ParseOneInputSourceText(
+            tcConfig,
+            LexResourceManager(),
+            queryFileName,
+            (true, true),
+            DiagnosticsThreadStatics.DiagnosticsLogger,
+            SourceText.ofString (querySource [ warmUpExpression ])
+        ))
+    |> Result.isOk
+
+/// Writes a small assembly, for the JIT. The IL writer needs no imports, so this can run while a
+/// session imports.
+let private warmUpWriter () =
+    let scope (t: Type) =
+        ILScopeRef.Assembly(ILAssemblyRef.FromAssemblyName(t.Assembly.GetName()))
+
+    let ilg = mkILGlobals (scope typeof<obj>, [], scope typeof<unit>)
+
+    let body =
+        mkMethodBody (false, [], 2, nonBranchingInstrsToCode [ I_ldarg 0us; mkLdcInt32 1; AI_add; I_ret ], None, None)
+
+    let methodDef =
+        mkILNonGenericStaticMethod (
+            QueryMethodName,
+            ILMemberAccess.Public,
+            [ mkILParamNamed ("x", ilg.typ_Int32) ],
+            mkILReturn ilg.typ_Int32,
+            body
+        )
+
+    let typeDef =
+        mkILSimpleClass
+            ilg
+            (QueryTypeName,
+             ILTypeDefAccess.Public,
+             mkILMethods [ methodDef ],
+             mkILFields [],
+             emptyILTypeDefs,
+             mkILProperties [],
+             mkILEvents [],
+             emptyILCustomAttrs,
+             ILTypeInit.BeforeField)
+
+    let ilModule =
+        mkILSimpleModule
+            QueryTypeName
+            (QueryTypeName + ".dll")
+            true
+            (4, 0)
+            false
+            (mkILTypeDefs [ typeDef ])
+            None
+            None
+            0x0
+            (mkILExportedTypes [])
+            ""
+
+    let options = writerOptions ilg AbstractIL.ILPdbWriter.HashAlgorithm.Sha256 Internal.Utilities.PathMap.empty
+    (fst (WriteILBinaryInMemory(options, ilModule, id))).Length > 0
+
 /// The core library the queries reference, as the debuggee's runtime has it: System.Runtime on .NET
 /// (Core), mscorlib on .NET Framework. A .NET Framework process doesn't load the System.Runtime facade,
 /// so a query referencing it can't run there.
@@ -1756,7 +1866,8 @@ type EvaluationSession
                 lazy
                     (match m.Image with
                      | DebuggeeImage.PE image -> image
-                     | DebuggeeImage.Metadata(metadata, resources) -> metadataOnlyImage metadata resources))
+                     | DebuggeeImage.Metadata(metadata, resources) ->
+                         Phases.time "PE images" (fun () -> metadataOnlyImage metadata resources)))
 
         // One module that the compiler can't import fails the whole import. An F# assembly that is
         // not loaded is such a module: the debugger gives its metadata only, without the F#
@@ -1807,19 +1918,7 @@ type EvaluationSession
                 |> Option.defaultValue AppContext.BaseDirectory
             | None -> AppContext.BaseDirectory
 
-        let tcConfigB =
-            TcConfigBuilder.CreateNew(
-                SimulatedMSBuildReferenceResolver.getResolver (),
-                defaultFSharpBinariesDir = binariesDir,
-                reduceMemoryUsage = ReduceMemoryFlag.Yes,
-                implicitIncludeDir = Directory.GetCurrentDirectory(),
-                isInteractive = false,
-                isInvalidationSupported = false,
-                defaultCopyFSharpCore = CopyFSharpCoreFlag.No,
-                tryGetMetadataSnapshot = (fun _ -> None),
-                sdkDirOverride = None,
-                rangeForErrors = range0
-            )
+        let tcConfigB = newTcConfigBuilder binariesDir
 
         // Compile against exactly what the debuggee has loaded: implementation assemblies, no SDK packs.
         tcConfigB.implicitlyReferenceDotNetAssemblies <- false
@@ -1841,13 +1940,32 @@ type EvaluationSession
         for file in files do
             tcConfigB.AddReferencedAssemblyByPath(range0, file)
 
-        let tcConfig = TcConfig.Create(tcConfigB, validate = false)
+        let tcConfig = Phases.time "TcConfig" (fun () -> TcConfig.Create(tcConfigB, validate = false))
         let tcConfigP = TcConfigProvider.Constant tcConfig
 
         let tcGlobals, tcImports =
             try
-                TcImports.BuildTcImports(tcConfigP, new DependencyProvider())
-                |> Async.RunSynchronouslyImmediate
+                // As TcImports.BuildTcImports, with a time for each step.
+                let frameworkDLLs, nonFrameworkReferences, knownUnresolved =
+                    Phases.time "resolve" (fun () -> TcAssemblyResolutions.SplitNonFoundationalResolutions tcConfig)
+
+                let tcGlobals, frameworkTcImports =
+                    Phases.time "framework imports" (fun () ->
+                        TcImports.BuildFrameworkTcImports(tcConfigP, frameworkDLLs, nonFrameworkReferences)
+                        |> Async.RunSynchronouslyImmediate)
+
+                let tcImports =
+                    Phases.time "other imports" (fun () ->
+                        TcImports.BuildNonFrameworkTcImports(
+                            tcConfigP,
+                            frameworkTcImports,
+                            nonFrameworkReferences,
+                            knownUnresolved,
+                            new DependencyProvider()
+                        )
+                        |> Async.RunSynchronouslyImmediate)
+
+                tcGlobals, tcImports
             with _ ->
                 DebuggeeFileSystem.Instance.Remove files
                 reraise ()
@@ -2040,33 +2158,50 @@ type EvaluationSession
                     [], None
         )
 
-    member this.WarmUp(assemblyName: string, methodToken: int) =
-        // The frame as far as it is known without the debugger: no locals, opens or aliases.
-        let frame =
-            {
-                AssemblyName = assemblyName
-                MethodToken = methodToken
-                LocalSignatureToken = 0
-                Opens = []
-                Locals = []
-                ILOffset = 0
-                MethodIL = [||]
-                Aliases = []
-                IntrinsicsAssembly = ""
-            }
-
+    member this.WarmUp(frame: FrameContext) =
         try
-            // A closure and FSharp.Core functions, so that optimization and code generation run
-            // through more of the compiler.
-            let expression =
-                this.CompileExpression(frame, "[ 0 ] |> List.map (fun i -> i + 1) |> List.sum")
+            let expression, expressionTimes =
+                Phases.record (fun () -> this.CompileExpression(frame, warmUpExpression))
 
-            let locals = this.CompileLocals(frame, false)
+            let locals, localsTimes = Phases.record (fun () -> this.CompileLocals(frame, false))
+            Log.write "EE" $"warm-up queries: expression {expressionTimes}, Locals {localsTimes}"
             Result.isOk expression && Result.isOk locals
         with _ ->
             false
 
+    /// A frame of a method as far as it is known without the debugger: no locals, opens or aliases.
+    static member MethodFrame(assemblyName: string, methodToken: int) =
+        {
+            AssemblyName = assemblyName
+            MethodToken = methodToken
+            LocalSignatureToken = 0
+            Opens = []
+            Locals = []
+            ILOffset = 0
+            MethodIL = [||]
+            Aliases = []
+            IntrinsicsAssembly = ""
+        }
+
     static member WarmUpCompiler() =
+        let sw = Diagnostics.Stopwatch.StartNew()
+
+        // Beside the imports and the queries, on other threads: the parser and the IL writer need
+        // no imports. The JIT compiles each method once, for all threads.
+        let beside (name: string) (warmUp: unit -> bool) =
+            Threading.Tasks.Task.Run(fun () ->
+                let sw = Diagnostics.Stopwatch.StartNew()
+
+                let ok =
+                    try
+                        warmUp ()
+                    with e ->
+                        Log.exn "EE" $"compiler warm-up: {name}" e
+                        false
+
+                name, ok, sw.ElapsedMilliseconds)
+
+        let besides = [ beside "parser" warmUpParser; beside "IL writer" warmUpWriter ]
         let fsharpCore = typeof<unit>.Assembly.Location
         let runtimeDir = Path.GetDirectoryName(typeof<obj>.Assembly.Location)
 
@@ -2158,8 +2293,15 @@ type EvaluationSession
                 md.GetString method.Name = "Length" && md.GetString declaring.Name = "StringModule")
             |> fun h -> MetadataTokens.GetToken(EntityHandle.op_Implicit h)
 
-        use session = EvaluationSession.Create modules
-        modules.Length, session.WarmUp("FSharp.Core", token)
+        let read = sw.ElapsedMilliseconds
+        let session, createTimes = Phases.record (fun () -> EvaluationSession.Create modules)
+        use session = session
+        Log.write "EE" $"compiler warm-up: {modules.Length} modules read in {read} ms, Create {createTimes}"
+        let compiled = session.WarmUp(EvaluationSession.MethodFrame("FSharp.Core", token))
+        let besides = [ for task in besides -> task.Result ]
+        let text = besides |> List.map (fun (name, ok, ms) -> $"{name} {ms} ms ({ok})") |> String.concat ", "
+        Log.write "EE" $"compiler warm-up beside the imports: {text}"
+        modules.Length, compiled && besides |> List.forall (fun (_, ok, _) -> ok)
 
     member private _.Compile
         (
@@ -3427,7 +3569,8 @@ type EvaluationSession
 
                     let optimized =
                         let (CheckedAssemblyAfterOptimization files), _, _ =
-                            ApplyAllOptimizations(tcConfig, g, tcVal, queryFileName, amap, false, optEnv0, tcState.Ccu, [ implFile ])
+                            Phases.time "optimize" (fun () ->
+                                ApplyAllOptimizations(tcConfig, g, tcVal, queryFileName, amap, false, optEnv0, tcState.Ccu, [ implFile ]))
 
                         files
                         |> List.map (fun f ->
@@ -3461,7 +3604,8 @@ type EvaluationSession
                                 alwaysInline = tcConfig.alwaysInline
                             }
 
-                        ilxGenerator.GenerateCode(options, optimized, topAttrs.assemblyAttrs, topAttrs.netModuleAttrs)
+                        Phases.time "generate" (fun () ->
+                            ilxGenerator.GenerateCode(options, optimized, topAttrs.assemblyAttrs, topAttrs.netModuleAttrs))
 
                     // The frame's class type parameters move from `<>m0` to `<>x`, as the debugger
                     // instantiates the query class like the frame's: IL numbers class type parameters
@@ -3553,31 +3697,8 @@ type EvaluationSession
                                         }
                             }
 
-                    let options =
-                        {
-                            ilg = g.ilg
-                            outfile = QueryTypeName + ".dll"
-                            pdbfile = None
-                            emitTailcalls = false
-                            deterministic = true
-                            portablePDB = false
-                            embeddedPDB = false
-                            embedAllSource = false
-                            embedSourceList = []
-                            allGivenSources = []
-                            sourceLink = ""
-                            checksumAlgorithm = tcConfig.checksumAlgorithm
-                            signer = None
-                            dumpDebugInfo = false
-                            referenceAssemblyOnly = false
-                            referenceAssemblyAttribOpt = None
-                            referenceAssemblySignatureHash = None
-                            pathMap = tcConfig.pathMap
-                            moduleCustomDebugInfoRows = []
-                            methodCustomDebugInfoRows = Map.empty
-                        }
-
-                    fst (WriteILBinaryInMemory(options, ilModule, id)))
+                    let options = writerOptions g.ilg tcConfig.checksumAlgorithm tcConfig.pathMap
+                    Phases.time "write" (fun () -> fst (WriteILBinaryInMemory(options, ilModule, id))))
 
             return
                 assembly,

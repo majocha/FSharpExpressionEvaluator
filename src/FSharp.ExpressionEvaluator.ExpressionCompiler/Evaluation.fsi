@@ -254,10 +254,14 @@ type EvaluationSession =
     /// when the method is not an F# value. Cached by method.
     member SignatureTypeNames: assemblyName: string * methodToken: int -> string option list * string option
 
-    /// Compiles queries in a frame of the given method and throws them away, so that the first
-    /// real ones find the imports they need loaded and the compiler's code compiled by the JIT
-    /// (docs/DESIGN.md §6.9). Returns whether both compiled; errors are otherwise ignored.
-    member WarmUp: assemblyName: string * methodToken: int -> bool
+    /// Compiles an expression and the Locals query in the frame and throws them away, so that the
+    /// first real queries find the imports they need loaded and the compiler's code compiled by the
+    /// JIT (docs/DESIGN.md §6.9). Returns whether both compiled; errors are otherwise ignored.
+    member WarmUp: frame: FrameContext -> bool
+
+    /// A frame of the given method as far as it is known without the debugger: no locals, opens or
+    /// aliases.
+    static member MethodFrame: assemblyName: string * methodToken: int -> FrameContext
 
     /// Runs the compiler once over a session of this process's own FSharp.Core and runtime
     /// assemblies, read from disk, then disposes it. Started before the debuggee's first break, it

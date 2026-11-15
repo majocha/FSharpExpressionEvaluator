@@ -15,11 +15,13 @@ type CompilerWarmUp() =
     interface IDkmModuleInstanceLoadNotification with
         member _.OnModuleInstanceLoad(moduleInstance, _workList, _eventDescriptor) =
             try
-                if
-                    not off
-                    && String.Equals(moduleInstance.Name, "FSharp.Core.dll", StringComparison.OrdinalIgnoreCase)
-                    && Settings.enabled ()
-                then
-                    Debuggee.warmUpCompiler ()
+                if Settings.enabled () then
+                    let isFSharpCore =
+                        String.Equals(moduleInstance.Name, "FSharp.Core.dll", StringComparison.OrdinalIgnoreCase)
+
+                    Debuggee.moduleLoaded moduleInstance isFSharpCore
+
+                    if isFSharpCore && not off then
+                        Debuggee.warmUpCompiler ()
             with e ->
                 Log.exn "WU" "compiler warm-up" e
